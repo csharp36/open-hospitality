@@ -1,0 +1,26 @@
+employee_ref,full_name,email,role,department,pay_type
+11900,Gina Marsh,gina.marsh@example.test,property_gm,Administrative & General,salary
+11901,Alan Reyes,alan.reyes@example.test,accountant,Administrative & General,salary
+11902,Priya Raman,priya.raman@example.test,payroll_admin,Administrative & General,salary
+11903,Dana Poe,dana.poe@example.test,department_manager,Front Office,salary
+11904,Ruth Calder,,,Front Office,hourly
+11905,Elias Fonseca,,,Front Office,hourly
+11906,Junie Alvarado,,,Front Office,hourly
+11907,Peter Nakamura,,,Front Office,hourly
+11908,Sasha Bell,,,Front Office,hourly
+11909,Marisol Vega,marisol.vega@example.test,department_manager,Housekeeping,salary
+11910,Ada Quintero,,,Housekeeping,hourly
+11911,Bev Osei,,,Housekeeping,hourly
+11912,Corina Duarte,,,Housekeeping,hourly
+11913,Delia Mwangi,,,Housekeeping,hourly
+11914,Esme Rojas,,,Housekeeping,hourly
+11915,Farrah Idris,,,Housekeeping,hourly
+11916,Gita Sandoval,,,Housekeeping,hourly
+11917,Hana Lindqvist,,,Housekeeping,hourly
+11918,Tomas Klein,,,Maintenance,hourly
+11919,Nadia Haddad,nadia.haddad@example.test,department_manager,Breakfast,salary
+11920,Owen Pratt,,,Breakfast,hourly
+11921,Carla Nunes,carla.nunes@example.test,department_manager,Sales,salary
+11922,Vince Abara,,,Sales,hourly
+11923,Maria Garcia,,,Housekeeping,hourly
+11924,Maria Garcia,,,Front Office,hourly

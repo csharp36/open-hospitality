@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💡 Feature idea or general discussion
+    url: https://github.com/csharp36/open-hospitality/discussions/categories/ideas
+    about: Share and discuss ideas before they become tracked work. The triage bot dedupes against the roadmap.
+  - name: 💬 Question / help
+    url: https://github.com/csharp36/open-hospitality/discussions/categories/q-a
+    about: Ask how to do something — no bug required.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/csharp36/open-hospitality/security/advisories/new
+    about: Never file security issues publicly. Use private vulnerability reporting.

@@ -1,0 +1,17 @@
+# USALI schedules per edition. Names per docs/reference/usali/schedules.md.
+- {edition: 12, schedule_id: 1,  name: "Rooms"}
+- {edition: 12, schedule_id: 2,  name: "Food & Beverage"}
+- {edition: 12, schedule_id: 3,  name: "Other & Minor Operated Departments"}
+- {edition: 12, schedule_id: 4,  name: "Miscellaneous Income"}
+- {edition: 12, schedule_id: 5,  name: "Administrative & General"}
+- {edition: 12, schedule_id: 6,  name: "Information & Telecommunications Systems"}
+- {edition: 12, schedule_id: 7,  name: "Sales & Marketing"}
+- {edition: 12, schedule_id: 8,  name: "Property Operations & Maintenance"}
+- {edition: 12, schedule_id: 9,  name: "Energy, Water & Waste"}
+- {edition: 12, schedule_id: 10, name: "Management Fees"}
+- {edition: 12, schedule_id: 11, name: "Non-Operating Income & Expenses"}
+- {edition: 12, schedule_id: 12, name: "House Laundry"}
+- {edition: 12, schedule_id: 13, name: "Staff Dining"}
+- {edition: 12, schedule_id: 14, name: "Payroll Related Expenses"}
+- {edition: 12, schedule_id: 15, name: "Payroll / FTE Reporting"}
+- {edition: 12, schedule_id: 16, name: "Annual Mandatory Brand & Operator Costs"}

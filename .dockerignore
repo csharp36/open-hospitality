@@ -1,0 +1,24 @@
+# Pillar K1 — pinned by tests/test_k1_container.py: nothing from the
+# encrypted volume's orbit may enter a build context. The image must be
+# buildable ONLY into a fictitious world.
+.git
+.dev
+.env
+*.env
+punch-photos
+.demo-kiosk-token
+
+# Bulk that the build stages produce themselves or never need.
+.venv
+node_modules
+frontend/node_modules
+frontend/dist
+models
+docs
+tests
+!tests/fixtures/faces
+.pytest_cache
+.mypy_cache
+.ruff_cache
+**/__pycache__
+*.pyc

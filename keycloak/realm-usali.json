@@ -1,0 +1,213 @@
+{
+  "realm": "usali",
+  "enabled": true,
+  "organizationsEnabled": true,
+  "organizations": [
+    {
+      "name": "Pilot Hotel Group",
+      "alias": "pilot-hotel-group",
+      "enabled": true,
+      "domains": [
+        {
+          "name": "pilot-hotel-group.example",
+          "verified": false
+        }
+      ],
+      "members": [
+        {
+          "username": "dev-gm",
+          "membershipType": "UNMANAGED"
+        },
+        {
+          "username": "dev-payroll",
+          "membershipType": "UNMANAGED"
+        },
+        {
+          "username": "dev-admin",
+          "membershipType": "UNMANAGED"
+        },
+        {
+          "username": "dev-accountant",
+          "membershipType": "UNMANAGED"
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "org_admin"
+      },
+      {
+        "name": "accountant"
+      },
+      {
+        "name": "property_gm"
+      },
+      {
+        "name": "department_manager"
+      },
+      {
+        "name": "payroll_admin"
+      },
+      {
+        "name": "employee"
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "operator-portal",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "http://localhost:5173/*",
+        "http://127.0.0.1:8100/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173",
+        "http://127.0.0.1:8100"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "email",
+        "basic",
+        "organization"
+      ],
+      "protocolMappers": [
+        {
+          "name": "usali-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "usali-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "employee-portal",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": [
+        "http://localhost:5173/*"
+      ],
+      "webOrigins": [
+        "http://localhost:5173"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      }
+    },
+    {
+      "clientId": "usali-admin",
+      "enabled": true,
+      "publicClient": false,
+      "standardFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "secret": "dev-admin-secret"
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-usali-admin",
+      "enabled": true,
+      "serviceAccountClientId": "usali-admin",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "query-users",
+          "manage-users"
+        ]
+      }
+    },
+    {
+      "username": "dev-gm",
+      "enabled": true,
+      "email": "dev-gm@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "devpass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "property_gm"
+      ],
+      "firstName": "Dev",
+      "lastName": "GM"
+    },
+    {
+      "username": "dev-payroll",
+      "enabled": true,
+      "email": "dev-payroll@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "devpass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "payroll_admin"
+      ],
+      "firstName": "Dev",
+      "lastName": "Payroll"
+    },
+    {
+      "username": "dev-admin",
+      "enabled": true,
+      "email": "dev-admin@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "devpass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "org_admin"
+      ],
+      "firstName": "Dev",
+      "lastName": "Admin"
+    },
+    {
+      "username": "dev-accountant",
+      "enabled": true,
+      "email": "dev-accountant@example.com",
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "devpass",
+          "temporary": false
+        }
+      ],
+      "realmRoles": [
+        "accountant"
+      ],
+      "firstName": "Dev",
+      "lastName": "Accountant"
+    }
+  ],
+  "loginTheme": "usali",
+  "rememberMe": true,
+  "resetPasswordAllowed": true
+}

@@ -1,0 +1,195 @@
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  /* surfaces */
+  --color-surface: oklch(98.4% 0.003 247.9);        /* slate-50 */
+  --color-surface-raised: #ffffff;
+  --color-surface-sunken: oklch(96.8% 0.007 247.9); /* slate-100 */
+  --color-line: oklch(92.9% 0.013 255.5);           /* slate-200 */
+  --color-line-strong: oklch(86.9% 0.022 252.9);    /* slate-300 */
+  /* text */
+  --color-ink: oklch(20.8% 0.042 265.8);            /* slate-900 */
+  --color-ink-muted: oklch(55.4% 0.046 257.4);      /* slate-500 */
+  --color-ink-faint: oklch(70.4% 0.04 256.8);       /* slate-400 */
+  /* accent (indigo) — the lavender identity the UI revamp is built on. The
+     categorical chart series below is anchored on THIS hue and was validated
+     against it, so the two move together or not at all. */
+  --color-accent: oklch(51.1% 0.262 276.9);         /* indigo-600 */
+  --color-accent-soft: oklch(96.2% 0.018 272.3);    /* indigo-50 */
+  --color-accent-ink: oklch(39.8% 0.195 277.4);     /* indigo-800 */
+  /* status tones — names deliberately contain the legacy color words so
+     test regexes stay meaningful: ok-green, warn-amber, danger-red, info-blue */
+  --color-ok-green: oklch(52.7% 0.154 150.1);
+  --color-ok-green-soft: oklch(96.2% 0.044 156.7);
+  --color-warn-amber: oklch(55.5% 0.163 48.998);
+  --color-warn-amber-soft: oklch(96.2% 0.059 95.6);
+  --color-danger-red: oklch(50.5% 0.213 27.5);
+  --color-danger-red-soft: oklch(93.6% 0.032 17.7);
+  --color-info-blue: oklch(48.8% 0.243 264.4);
+  --color-info-blue-soft: oklch(93.2% 0.032 255.6);
+  /* Categorical series (payroll dashboard) — a JEWEL family anchored on the
+     brand indigo: indigo, pink, cyan, violet, magenta, blue. Cool and
+     lavender-adjacent so the charts read as part of this product rather than a
+     stock rainbow.
+
+     NOT a single-hue lavender ramp, though that was tried first: a one-hue ramp
+     encodes MAGNITUDE, and these slots encode IDENTITY. The validator settles
+     it — six steps of violet score ΔE 0.9 on the worst adjacent pair, i.e.
+     indistinguishable, against a floor of 15 for normal vision alone.
+
+     Light passes all five checks. Dark passes four; the cyan/pink pair sits at
+     ΔE 6.9, inside the 6–8 band the method allows ONLY with secondary encoding
+     — which is present three times over: a legend with swatches, a 2px surface
+     gap between stacked segments, and a table listing every department with the
+     same swatch beside its name.
+
+     The ORDER is part of the result: checks run on adjacent pairs, so
+     reordering invalidates the run. Assign in order, never cycle; a 7th
+     department folds into "Other" on the neutral. */
+  --color-cat-1: #4f46e5;   /* indigo — the accent itself */
+  --color-cat-2: #db2777;   /* pink */
+  --color-cat-3: #0891b2;   /* cyan */
+  --color-cat-4: #7c3aed;   /* violet */
+  --color-cat-5: #be185d;   /* magenta */
+  --color-cat-6: #2563eb;   /* blue */
+  --color-cat-other: oklch(55.4% 0.046 257.4);
+  /* Schedule chips — SOLID fills, so they need their own ink rather than the
+     -soft pairs (a chip is a filled badge, not a tinted one). Kept mid-lightness
+     in BOTH modes so one ink color carries AA on either surface; that is why
+     these are separate tokens instead of reusing ok-green / danger-red, whose
+     dark remaps go light and would take white text below contrast.
+     Status colors, so they are never the only cue — every chip carries its time
+     and, when open, the word OPEN. */
+  --color-shift-on: oklch(50% 0.13 152);            /* scheduled, still ahead */
+  --color-shift-open: oklch(52% 0.19 27);           /* nobody assigned */
+  --color-shift-past: oklch(62% 0.02 257);          /* already happened */
+  --color-shift-ink: oklch(99% 0 0);
+  /* sidebar active item — the mockup's lavender pill (violet, one hue off the
+     indigo accent so the nav highlight reads distinct from accent buttons) */
+  --color-nav-active: oklch(94.3% 0.029 294.6);      /* violet-100 */
+  --color-nav-active-ink: oklch(28.3% 0.141 291.1);  /* violet-950 */
+  /* chart series (dashboard) — pair validated for CVD separation, chroma, and
+     contrast on both surfaces (dataviz validator); labor additionally dashed */
+  --color-chart-1: #4f46e5;                          /* revenue — indigo-600 */
+  --color-chart-2: #0d9488;                          /* labor est — teal-600 */
+  /* text on accent-filled surfaces (dark-mode accent is lighter, so this flips) */
+  --color-accent-contrast: #ffffff;
+  /* dialog/overlay backdrop — deliberately dark in BOTH modes (no .dark remap):
+     a scrim dims the page behind an overlay; a light veil in dark mode would
+     be backwards. */
+  --color-scrim: oklch(20.8% 0.042 265.8 / 0.4);
+  /* radii + shadows */
+  --radius-card: 0.625rem;
+  --radius-control: 0.5rem;
+  --shadow-card: 0 1px 3px oklch(20.8% 0.042 265.8 / 0.06), 0 4px 12px oklch(20.8% 0.042 265.8 / 0.04);
+  --shadow-overlay: 0 10px 40px oklch(20.8% 0.042 265.8 / 0.25);
+}
+
+/* Native form controls (selects, date/month pickers, scrollbars) render UA
+   chrome that tokens cannot reach — color-scheme keeps them in step. */
+:root {
+  color-scheme: light;
+}
+
+/* Dark mode: remap the SAME semantic variables — components need no dark: variants.
+   Plain CSS (not @theme) so utilities pick up the remapped values at runtime. */
+.dark {
+  color-scheme: dark;
+  --color-surface: oklch(20.8% 0.042 265.8);         /* slate-900 */
+  --color-surface-raised: oklch(27.9% 0.041 260.0);  /* slate-800 */
+  --color-surface-sunken: oklch(17% 0.036 265);
+  --color-line: oklch(37.2% 0.044 257.3);            /* slate-700 */
+  --color-line-strong: oklch(44.6% 0.043 257.3);
+  --color-ink: oklch(92.9% 0.013 255.5);             /* slate-200 */
+  --color-ink-muted: oklch(70.4% 0.04 256.8);
+  --color-ink-faint: oklch(55.4% 0.046 257.4);
+  --color-accent: oklch(67.3% 0.182 276.7);          /* indigo-400 */
+  --color-accent-soft: oklch(28% 0.07 272 / 0.6);
+  --color-accent-ink: oklch(78.5% 0.115 274.7);
+  --color-ok-green: oklch(79.2% 0.209 151.7);
+  --color-ok-green-soft: oklch(26% 0.06 152 / 0.5);
+  --color-warn-amber: oklch(82.8% 0.189 84.4);
+  --color-warn-amber-soft: oklch(28% 0.07 70 / 0.5);
+  --color-danger-red: oklch(70.4% 0.191 22.2);
+  --color-danger-red-soft: oklch(26% 0.09 25 / 0.5);
+  --color-info-blue: oklch(70.7% 0.165 254.6);
+  --color-info-blue-soft: oklch(28% 0.09 260 / 0.5);
+  /* Re-picked for the dark surface rather than lightened by rule — the dark
+     lightness band is narrow (0.48–0.67) and the light set falls out of it. Same
+     six hues, same order. */
+  --color-cat-1: #6d6af0;
+  --color-cat-2: #e34d94;
+  --color-cat-3: #0d9db3;
+  --color-cat-4: #9b6ef3;
+  --color-cat-5: #d9598a;
+  --color-cat-6: #3f8ae0;
+  --color-cat-other: oklch(70.4% 0.04 256.8);
+  /* Schedule chips lift slightly on the dark surface but stay dark enough for
+     the same near-white ink — one ink, both modes. */
+  --color-shift-on: oklch(56% 0.14 152);
+  --color-shift-open: oklch(57% 0.19 27);
+  --color-shift-past: oklch(48% 0.02 257);
+  --color-nav-active: oklch(32% 0.09 293 / 0.7);     /* deep violet */
+  --color-nav-active-ink: oklch(89.4% 0.057 293.3);  /* violet-200 */
+  --color-chart-1: #6366f1;                          /* indigo-500 (dark band) */
+  --color-chart-2: #0d9488;
+  /* dark-mode accent is indigo-400 — white text fails AA on it */
+  --color-accent-contrast: oklch(20.8% 0.042 265.8);
+  /* --color-scrim intentionally NOT remapped — stays dark in both modes */
+}
+
+@layer base {
+  body {
+    @apply bg-surface text-ink antialiased;
+  }
+}
+
+@layer components {
+  /* Dashboard hero: a LIVE liquid mesh. A blurred oversized color layer
+     (blue, violet, green, amber, cyan, pink fields) slowly rotates and
+     breathes behind the content, so every hue sweeps across the whole bar —
+     nothing is pinned to a corner. A soft dark veil keeps the white copy
+     readable wherever the colors happen to be. Identical in both themes:
+     it's the one vivid element on the page. */
+  .dash-hero {
+    position: relative;
+    isolation: isolate;
+    overflow: hidden;
+    background: #4f56d3;
+  }
+  .dash-hero::before {
+    content: '';
+    position: absolute;
+    z-index: -2;
+    inset: -70%;
+    background:
+      radial-gradient(32% 28% at 22% 30%, #3b5bdb 0%, transparent 62%),
+      radial-gradient(28% 30% at 72% 22%, #0ca678 0%, transparent 60%),
+      radial-gradient(26% 26% at 46% 68%, #f5b301 0%, transparent 58%),
+      radial-gradient(30% 30% at 86% 70%, #f06595 0%, transparent 62%),
+      radial-gradient(24% 26% at 56% 34%, #66d9e8 0%, transparent 58%),
+      radial-gradient(30% 28% at 16% 76%, #9775fa 0%, transparent 62%),
+      linear-gradient(120deg, #4263eb 0%, #9775fa 50%, #f783ac 100%);
+    filter: blur(44px) saturate(1.2);
+    animation: dash-hero-flow 9s ease-in-out infinite alternate;
+  }
+  .dash-hero::after {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: 0;
+    background: linear-gradient(95deg, rgba(20, 16, 52, 0.45), rgba(20, 16, 52, 0.12) 55%, transparent);
+  }
+  @keyframes dash-hero-flow {
+    0%   { transform: rotate(0deg) scale(1); }
+    50%  { transform: rotate(95deg) scale(1.18); }
+    100% { transform: rotate(185deg) scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .dash-hero::before { animation: none; }
+  }
+}

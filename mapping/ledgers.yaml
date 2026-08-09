@@ -1,0 +1,16 @@
+# (source, ledger_label as staged) -> canonical ledger code + display name + curated kind.
+# Promotion is LENIENT like statistics: unmapped labels stay staged, informational — no
+# exceptions. Facts carry the curated `kind` (the A/R report filters on it); promote warns
+# if it disagrees with the parser's label heuristic.
+# Labels under a per-ledger heading are heading-qualified ("Guest Ledger / Balance Today")
+# because the same label can appear under two headings with opposite signs.
+#
+# Balances — the canonical closing balance is each ledger's own "Balance Today" row:
+- {source: OPERA, label: "Guest Ledger / Balance Today", code: GUEST_LEDGER, name: "Guest Ledger", kind: balance}
+- {source: OPERA, label: "AR Ledger / Balance Today", code: AR_LEDGER, name: "AR / City Ledger", kind: balance}
+- {source: OPERA, label: "Deposit Ledger / Balance Today", code: DEPOSIT_LEDGER, name: "Deposit Ledger", kind: balance}
+- {source: OPERA, label: "Package Ledger / Balance Today", code: PACKAGE_LEDGER, name: "Package Ledger", kind: balance}
+- {source: OPERA, label: "Hotel Balance", code: HOTEL_BALANCE, name: "Hotel Balance", kind: balance}
+# Activity — A/R movement for the CPA pack's receivables report:
+- {source: OPERA, label: "AR Ledger / Charges and Transfers", code: AR_CHARGES, name: "AR Charges and Transfers", kind: activity}
+- {source: OPERA, label: "AR Ledger / Payments", code: AR_PAYMENTS, name: "AR Payments", kind: activity}

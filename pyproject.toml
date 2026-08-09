@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-hospitality"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.1",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "typer>=0.12",
+    "pdfplumber>=0.11",
+    "pyyaml>=6.0",
+    "watchdog>=4.0",
+    "fastapi>=0.111",
+    "uvicorn>=0.30",
+    "python-multipart>=0.0.9",
+    "httpx>=0.27",
+    "pyjwt[crypto]>=2.8",
+    "cryptography>=42",
+    "pyhpke>=0.6",
+    "google-cloud-storage>=3.13.0",
+]
+
+[project.optional-dependencies]
+# Face matching (Pillar F): heavy, optional, dark-flagged. The core install
+# never pays for onnxruntime; the engine imports lazily and fails loudly.
+face = [
+    "onnxruntime>=1.18",
+    "numpy>=1.26",
+    "pillow>=10",
+]
+dev = [
+    "pytest>=8.0",
+    "testcontainers[postgres]>=4.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "types-PyYAML",
+]
+
+[project.scripts]
+usali = "usali.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+usali = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-ra"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/test_models.py" = ["F401"]
+"tests/test_stage.py" = ["F401"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["usali"]
+strict = true

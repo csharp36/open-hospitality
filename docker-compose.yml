@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: usali
+      POSTGRES_PASSWORD: usali
+      POSTGRES_DB: usali
+    ports:
+      # Host 5433 (container 5432) to avoid colliding with other local Postgres instances.
+      - "5433:5432"
+    volumes:
+      - usali_pgdata:/var/lib/postgresql/data
+      # L2: the RLS-bound app role (usali_app). initdb runs this on a FRESH
+      # volume only; scripts/dev.sh re-applies it (idempotent) on every start.
+      - ./scripts/dev_pg_init.sql:/docker-entrypoint-initdb.d/10-usali-app-role.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U usali"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # admin/admin bootstrap creds are local-dev-only. Never use in prod.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HTTP_PORT: "9080"
+    ports:
+      - "9080:9080"
+    volumes:
+      - ./keycloak/realm-usali.json:/opt/keycloak/data/import/realm-usali.json:ro
+      # Custom login theme (start-dev leaves theme caching off, so CSS/FTL
+      # edits show up on refresh without a container restart).
+      - ./keycloak/themes:/opt/keycloak/themes:ro
+
+volumes:
+  usali_pgdata:

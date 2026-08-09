@@ -1,0 +1,37 @@
+# (source, segment_code) -> USALI Rooms segment. STRICT: promotion fails on unmapped codes.
+# Segments: TRANSIENT | GROUP | CONTRACT | COMPLIMENTARY | HOUSE_USE
+- {source: OPERA, code: "D", segment: TRANSIENT, confidence: HIGH, review_status: reviewed, notes: "Discount"}
+- {source: OPERA, code: "G", segment: TRANSIENT, confidence: MEDIUM, review_status: reviewed, notes: "Corp-Global negotiated; transient unless contracted"}
+- {source: OPERA, code: "H", segment: HOUSE_USE, confidence: HIGH, review_status: reviewed, notes: "House Use"}
+- {source: OPERA, code: "J", segment: TRANSIENT, confidence: HIGH, review_status: reviewed, notes: "Package-Weekend"}
+- {source: OPERA, code: "K", segment: TRANSIENT, confidence: HIGH, review_status: reviewed, notes: "Package-Leisure"}
+- {source: OPERA, code: "L", segment: TRANSIENT, confidence: MEDIUM, review_status: reviewed, notes: "Corp-Negotiated Accts"}
+- {source: OPERA, code: "M", segment: TRANSIENT, confidence: MEDIUM, review_status: needs-review, notes: "Gov/Dipl/Military"}
+- {source: OPERA, code: "N", segment: COMPLIMENTARY, confidence: HIGH, review_status: reviewed, notes: "Complimentary"}
+- {source: OPERA, code: "P", segment: TRANSIENT, confidence: HIGH, review_status: reviewed, notes: "Corp-Key Accts and BTA"}
+- {source: OPERA, code: "V", segment: TRANSIENT, confidence: MEDIUM, review_status: needs-review, notes: "Industry Programs"}
+- {source: OPERA, code: "W", segment: TRANSIENT, confidence: MEDIUM, review_status: needs-review, notes: "Wholesale/FIT"}
+- {source: OPERA, code: "X", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "(Unassigned)"}
+- {source: OPERA, code: "Y", segment: CONTRACT, confidence: LOW, review_status: needs-review, notes: "Long-Term; verify contract status"}
+- {source: OPERA, code: "Z", segment: GROUP, confidence: HIGH, review_status: reviewed, notes: "Group"}
+- {source: AUTOCLERK, code: "CLC", segment: CONTRACT, confidence: LOW, review_status: needs-review, notes: "Corporate Lodging Consultants crew lodging"}
+- {source: AUTOCLERK, code: "FX2", segment: COMPLIMENTARY, confidence: LOW, review_status: needs-review, notes: "$0.00 rate plan"}
+- {source: AUTOCLERK, code: "15C", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "2UB", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "9Q", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "9QB", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "BC5", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "BC6", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "BK5", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "BW", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "EC5", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "EC6", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "EC9", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "ECR", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "ECZ", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "GTL", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "PLZ", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "RACK", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "RFB", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "SR5", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}
+- {source: AUTOCLERK, code: "XN", segment: TRANSIENT, confidence: LOW, review_status: needs-review, notes: "brand rate plan; unverifiable from samples"}

@@ -1,0 +1,14 @@
+# Code owners — required reviewers, and the vetted set who may merge.
+# GitHub requests review from these owners automatically; branch rules
+# restrict merges to them. New maintainers are added here as they earn it.
+
+# Default owners for everything in the repo.
+*                       @csharp36 @suyashjaju16
+
+# Security-sensitive seams get owner review no matter who else approves.
+/migrations/            @csharp36
+/src/usali/workforce.py @csharp36
+/src/usali/portal_api.py @csharp36
+/SECURITY.md            @csharp36
+/CLA.md                 @csharp36
+/LICENSE                @csharp36

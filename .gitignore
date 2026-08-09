@@ -1,0 +1,62 @@
+# OS
+.DS_Store
+
+# Duplicated archives of the sample data (the extracted dirs are tracked instead)
+*.zip
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Local runtime artifacts (created by the pipeline once it exists)
+inbox/
+processed/
+failed/
+
+# Frontend (P7 portal) build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+
+# e2e auth: minted operator + org_admin + kiosk device tokens
+# (scripts/e2e_backend.py) + the Playwright storageStates the globalSetup
+# builds from them. All per-run secrets.
+.e2e-token
+.e2e-admin-token
+.e2e-kiosk-token
+.e2e-payroll-token
+# GM demo kiosk device tokens (scripts/demo_seed.py) — per-seed secrets.
+.demo-kiosk-token
+frontend/e2e/.auth/
+.superpowers/
+.dev/
+
+# Real rosters used to seed a local realm. Names and emails of actual staff are
+# PII and do not belong in the repo. Only the synthetic example and the README
+# are tracked.
+#
+# DENY EVERYTHING, then allow back. An extension allowlist (seed/*.csv) misses
+# seed/export/roster.csv, seed/roster.xlsx, and seed/roster.txt -- a real export
+# dropped anywhere but the top level would have been committed.
+seed/**
+!seed/README.md
+!seed/roster.example.csv
+
+# Runtime punch-photo store (LocalPhotoStore default dir): AES-GCM encrypted
+# evidence photos written by the dev/demo server. Never source, never committed.
+punch-photos/
+
+# Face-matching ONNX models (F2): fetched sha256-pinned by
+# scripts/fetch_face_models.py, ~300MB of weights that never belong in git.
+models/

@@ -1,0 +1,25 @@
+# (source, metric_label as staged) -> canonical metric_code. Periods canonicalize
+# separately (DAY/Today -> DAY, MONTH/MTD -> MTD, YEAR/YTD -> YTD; others stage-only).
+- {source: OPERA, label: "% Rooms Occupied", code: OCCUPANCY_PCT}
+- {source: OPERA, label: "ADR", code: ADR}
+- {source: OPERA, label: "Revenue per Available Room minus OOO", code: REVPAR}
+- {source: OPERA, label: "Total Revenue", code: TOTAL_REVENUE}
+- {source: OPERA, label: "Room Revenue", code: ROOM_REVENUE}
+- {source: OPERA, label: "Food And Beverage Revenue", code: FB_REVENUE}
+- {source: OPERA, label: "Other Revenue", code: OTHER_REVENUE}
+- {source: OPERA, label: "Total Rooms in Hotel", code: TOTAL_ROOMS}
+- {source: OPERA, label: "Available Rooms minus OOO Rooms", code: ROOMS_AVAILABLE}
+- {source: OPERA, label: "Rooms Occupied", code: ROOMS_OCCUPIED}
+- {source: OPERA, label: "Arrival Rooms", code: ARRIVALS}
+- {source: OPERA, label: "Departure Rooms", code: DEPARTURES}
+- {source: OPERA, label: "No Show Rooms", code: NO_SHOWS}
+- {source: OPERA, label: "Total In-House Persons", code: IN_HOUSE_PERSONS}
+- {source: AUTOCLERK, label: "Occupancy - Occupied", code: ROOMS_OCCUPIED}
+- {source: AUTOCLERK, label: "Occupancy - Occupied Percent", code: OCCUPANCY_PCT}
+- {source: AUTOCLERK, label: "Occupancy - ADR", code: ADR}
+- {source: AUTOCLERK, label: "Occupancy - REVPAR", code: REVPAR}
+- {source: AUTOCLERK, label: "Occupancy - Total", code: IN_HOUSE_PERSONS}
+- {source: AUTOCLERK, label: "Statistics - Arrivals", code: ARRIVALS}
+- {source: AUTOCLERK, label: "Statistics - Departures", code: DEPARTURES}
+- {source: AUTOCLERK, label: "Statistics - In-House", code: IN_HOUSE_ROOMS}
+- {source: AUTOCLERK, label: "Statistics - No Shows", code: NO_SHOWS}

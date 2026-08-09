@@ -1,0 +1,4 @@
+# Property registry: resolve property_id from the name printed in the report header.
+# `match` is an UPPERCASED substring of the report's own text; pms_source is a cross-check.
+- {match: "HOLIDAY INN & SUITES SAN JOSE", property_id: HISJ, pms_source: OPERA, wage_jurisdiction: US-CA, crm_ref: DELPHI-HISJ}
+- {match: "SURESTAY PLUS BY BW", property_id: SSSJ, pms_source: AUTOCLERK, wage_jurisdiction: US-CA}

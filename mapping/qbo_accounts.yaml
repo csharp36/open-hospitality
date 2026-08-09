@@ -1,0 +1,51 @@
+# Placeholder QuickBooks Online chart of accounts for the P8 journal-entry push.
+#
+# PENDING THE CPA'S REAL CHART OF ACCOUNTS: these codes/names are placeholders.
+# When the CPA supplies the real CoA, replace the account codes here AND the
+# gl_account_code values in mapping/opera.yaml + mapping/autoclerk.yaml, then
+# rerun `usali seed-mappings` — the transform copies dictionary GL codes onto
+# newly promoted facts, and the mock QBO serves this file as its Account list.
+#
+# NOTE: the Task 4 JE builder hardcodes account "1210" (Guest Ledger Clearing)
+# as the balancing line for each day's un-settled remainder — if you renumber
+# it, update the JE builder's constant too. Direct-bill settlement debits post
+# to "1200"; keeping 1200 and 1210 distinct keeps both movements legible.
+# Both clearing accounts are deliberately Other Current Asset, NOT QBO's
+# Accounts Receivable type: QBO allows at most one AccountsReceivable line per
+# journal entry and requires a Customer ref on it — clearing accounts must not
+# trip that rule.
+#
+# Journal-entry usage: revenue facts (USALI schedules 1-4) are CREDITED to their
+# Income accounts, pass-through taxes CREDITED to 2100, settlements DEBITED to
+# their clearing accounts (1000 cash / 1100 card / 1200 direct-bill).
+# Non-Operating facts (e.g. write-offs) are DEBITED to their GL account and
+# reduce the balancing-line remainder; the Task 4 JE builder must handle this
+# bucket explicitly (remainder = revenue + taxes - settlements - non-operating
+# debits) — otherwise they are silently dropped and the remainder overstates.
+- account_code: "1000"
+  name: "Cash Clearing"
+  account_type: Bank
+- account_code: "1100"
+  name: "Credit Card Clearing"
+  account_type: Other Current Asset
+- account_code: "1200"
+  name: "Accounts Receivable Clearing"
+  account_type: Other Current Asset
+- account_code: "1210"
+  name: "Guest Ledger Clearing"
+  account_type: Other Current Asset
+- account_code: "2100"
+  name: "Sales & Occupancy Tax Payable"
+  account_type: Other Current Liability
+- account_code: "4000"
+  name: "Room Revenue"
+  account_type: Income
+- account_code: "4100"
+  name: "Other Operated Departments Revenue"
+  account_type: Income
+- account_code: "4200"
+  name: "Miscellaneous Income"
+  account_type: Income
+- account_code: "6000"
+  name: "Write-Offs & Bad Debt"
+  account_type: Expense

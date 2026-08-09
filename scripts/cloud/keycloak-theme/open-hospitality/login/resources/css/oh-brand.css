@@ -1,0 +1,163 @@
+/* Open Hospitality — pine & brass over the stock Keycloak login theme.
+   Selectors target the classic (PatternFly 4) login markup Keycloak 26
+   serves for parent=keycloak: id hooks (#kc-header-wrapper, #kc-login)
+   plus .pf-c-* and legacy class fallbacks, so a class rename upstream
+   degrades to the base theme rather than a broken page. Colors are the
+   brand constants: pine #14342B / #0E2620, brass #B0813A / #CFA257. */
+
+:root {
+  --oh-pine: #14342b;
+  --oh-pine-deep: #0e2620;
+  --oh-brass: #b0813a;
+  --oh-brass-bright: #cfa257;
+  --oh-ivory: #f1ebde;
+  --oh-muted: #a7bcae;
+  --oh-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+}
+
+/* --- Background: deep pine, no low-poly triangles --- */
+body.login-pf,
+.login-pf body,
+html {
+  background: radial-gradient(130% 120% at 80% -10%, #1c463a 0%, var(--oh-pine) 45%, var(--oh-pine-deep) 100%) fixed !important;
+  background-color: var(--oh-pine-deep) !important;
+}
+.login-pf-page { background: transparent !important; }
+
+/* --- Header wordmark (realm.displayNameHtml renders in this wrapper) --- */
+#kc-header-wrapper {
+  font-family: var(--oh-serif);
+  color: var(--oh-ivory) !important;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  text-transform: none !important;
+  white-space: normal;
+  padding: 20px 0 8px;
+  line-height: 1.2;
+}
+/* the brass arch mark, centered above the wordmark */
+#kc-header-wrapper::before {
+  content: "";
+  display: block;
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 10px;
+  background-image: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48"><rect x="1.5" y="1.5" width="45" height="45" rx="13" fill="%230e2620" stroke="%232f5346" stroke-width="1"/><path d="M15 37 L15 25 A9 9 0 0 1 33 25 L33 37" fill="none" stroke="%23cfa257" stroke-width="2.8" stroke-linecap="round"/><path d="M12.5 37.5 H35.5" stroke="%23cfa257" stroke-width="2.8" stroke-linecap="round"/></svg>');
+  background-size: contain;
+  background-repeat: no-repeat;
+}
+
+/* --- The login card --- */
+.login-pf-page .card-pf,
+#kc-content-wrapper .card-pf,
+div.card-pf {
+  background: rgba(255, 255, 255, 0.06) !important;
+  border: 1px solid rgba(207, 162, 87, 0.28) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.38) !important;
+  color: #e7eee9 !important;
+}
+#kc-page-title {
+  font-family: var(--oh-serif);
+  color: var(--oh-ivory) !important;
+  font-weight: 600;
+}
+
+/* --- Labels --- */
+.login-pf-page .pf-c-form__label,
+.login-pf-page .pf-c-form__label-text,
+#kc-form-login label,
+label {
+  color: var(--oh-muted) !important;
+}
+
+/* --- Inputs --- */
+.login-pf-page input.pf-c-form-control,
+#kc-form-login input[type="text"],
+#kc-form-login input[type="password"],
+#kc-form-login input[type="email"],
+input#username,
+input#password {
+  background: rgba(9, 22, 18, 0.55) !important;
+  border: 1px solid rgba(207, 162, 87, 0.24) !important;
+  color: #dce7df !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+.login-pf-page input.pf-c-form-control:focus,
+#kc-form-login input:focus {
+  border-color: var(--oh-brass-bright) !important;
+  outline: 2px solid rgba(207, 162, 87, 0.35) !important;
+  outline-offset: 1px;
+}
+input::placeholder { color: #7f948a !important; }
+
+/* The password field sits in a .pf-c-input-group with the show/hide
+   visibility toggle — style the wrapper and the toggle button so it
+   matches the dark inputs instead of the light PatternFly default. */
+.login-pf-page .pf-c-input-group,
+.pf-c-input-group {
+  background: transparent !important;
+}
+.login-pf-page .pf-c-input-group input.pf-c-form-control,
+.pf-c-input-group input#password,
+.pf-c-input-group input[type="password"] {
+  background: rgba(9, 22, 18, 0.55) !important;
+  border: 1px solid rgba(207, 162, 87, 0.24) !important;
+  border-right: 0 !important;
+  color: #dce7df !important;
+}
+.login-pf-page .pf-c-button.pf-m-control,
+button.pf-c-button.pf-m-control,
+.pf-c-input-group > button {
+  background: rgba(9, 22, 18, 0.55) !important;
+  border: 1px solid rgba(207, 162, 87, 0.24) !important;
+  border-left: 0 !important;
+  color: var(--oh-brass-bright) !important;
+  box-shadow: none !important;
+}
+.login-pf-page .pf-c-button.pf-m-control:hover,
+button.pf-c-button.pf-m-control:hover {
+  filter: brightness(1.15);
+  color: var(--oh-brass-bright) !important;
+}
+
+/* --- Primary button: brass gradient, dark ink --- */
+.login-pf-page .pf-c-button.pf-m-primary,
+input[type="submit"]#kc-login,
+button#kc-login,
+#kc-login,
+.btn-primary {
+  background: linear-gradient(180deg, var(--oh-brass-bright), var(--oh-brass)) !important;
+  border: 0 !important;
+  color: #201607 !important;
+  font-weight: 700 !important;
+  border-radius: 8px !important;
+  text-shadow: none !important;
+}
+.login-pf-page .pf-c-button.pf-m-primary:hover,
+#kc-login:hover {
+  filter: brightness(1.05);
+}
+
+/* --- Links & secondary text --- */
+a,
+#kc-registration a,
+#kc-info-message a,
+.login-pf-page .pf-c-button.pf-m-link {
+  color: var(--oh-brass-bright) !important;
+}
+#kc-form-options,
+.login-pf-page .pf-c-check__label,
+#kc-info-message,
+.instruction {
+  color: var(--oh-muted) !important;
+}
+
+/* --- Alerts keep their semantic color but sit on the dark card --- */
+.pf-c-alert,
+.alert {
+  background: rgba(9, 22, 18, 0.5) !important;
+  color: #e7eee9 !important;
+}

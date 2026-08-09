@@ -1,0 +1,315 @@
+{
+  "_fictitious": "Every person in this file is invented for the public cloud demo (Pillar K, decision 1). Employee numbers live in the 9000+ range so no real Inn-Flow employee_number can ever collide. This file deliberately contains NO compensation fields: the importer would drop them unread, but the cloud demo's posture is that they never exist at all.",
+  "employees": [
+    {
+      "employee_number": 9001,
+      "username": "marisol.vance",
+      "first_name": "Marisol",
+      "last_name": "Vance",
+      "status": "Active",
+      "pay_type": "Salary Exempt from OT",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "GENERAL MANAGER"
+      ]
+    },
+    {
+      "employee_number": 9002,
+      "username": "teodora.quill",
+      "first_name": "Teodora",
+      "last_name": "Quill",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9003,
+      "username": "bram.okafor-finch",
+      "first_name": "Bram",
+      "last_name": "Okafor-Finch",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9004,
+      "username": "lucinda.marsh",
+      "first_name": "Lucinda",
+      "last_name": "Marsh",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9005,
+      "username": "yusuf.tanner",
+      "first_name": "Yusuf",
+      "last_name": "Tanner",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9006,
+      "username": "petra.villanueva-kai",
+      "first_name": "Petra",
+      "last_name": "Villanueva-Kai",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9007,
+      "username": "odette.brine",
+      "first_name": "Odette",
+      "last_name": "Brine",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "LAUNDRY ATTENDANT"
+      ]
+    },
+    {
+      "employee_number": 9008,
+      "username": "callum.reyes-north",
+      "first_name": "Callum",
+      "last_name": "Reyes-North",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "FRONT DESK ASSOCIATE"
+      ]
+    },
+    {
+      "employee_number": 9009,
+      "username": "imogen.faulk",
+      "first_name": "Imogen",
+      "last_name": "Faulk",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "FRONT DESK ASSOCIATE"
+      ]
+    },
+    {
+      "employee_number": 9010,
+      "username": "desmond.ashby",
+      "first_name": "Desmond",
+      "last_name": "Ashby",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "NIGHT AUDITOR"
+      ]
+    },
+    {
+      "employee_number": 9011,
+      "username": "priya.coldstream",
+      "first_name": "Priya",
+      "last_name": "Coldstream",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "BREAKFAST ATTENDANT"
+      ]
+    },
+    {
+      "employee_number": 9012,
+      "username": "anton.merriweather",
+      "first_name": "Anton",
+      "last_name": "Merriweather",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "BREAKFAST ATTENDANT"
+      ]
+    },
+    {
+      "employee_number": 9013,
+      "username": "gideon.falls",
+      "first_name": "Gideon",
+      "last_name": "Falls",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES"
+      ],
+      "positions": [
+        "FACILITIES ENG"
+      ]
+    },
+    {
+      "employee_number": 9014,
+      "username": "renata.squall",
+      "first_name": "Renata",
+      "last_name": "Squall",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9015,
+      "username": "hollis.grey-umber",
+      "first_name": "Hollis",
+      "last_name": "Grey-Umber",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9016,
+      "username": "sable.trench",
+      "first_name": "Sable",
+      "last_name": "Trench",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9017,
+      "username": "ezra.pinewood",
+      "first_name": "Ezra",
+      "last_name": "Pinewood",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "HOUSEKEEPER"
+      ]
+    },
+    {
+      "employee_number": 9018,
+      "username": "noor.halloway",
+      "first_name": "Noor",
+      "last_name": "Halloway",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "FRONT DESK ASSOCIATE"
+      ]
+    },
+    {
+      "employee_number": 9019,
+      "username": "tobias.rooke",
+      "first_name": "Tobias",
+      "last_name": "Rooke",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "FRONT DESK ASSOCIATE"
+      ]
+    },
+    {
+      "employee_number": 9020,
+      "username": "fern.aldercott",
+      "first_name": "Fern",
+      "last_name": "Aldercott",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "NIGHT AUDITOR"
+      ]
+    },
+    {
+      "employee_number": 9021,
+      "username": "silas.bramblewick",
+      "first_name": "Silas",
+      "last_name": "Bramblewick",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "58033"
+      ],
+      "positions": [
+        "BREAKFAST ATTENDANT"
+      ]
+    },
+    {
+      "employee_number": 9022,
+      "username": "wren.costa-silva",
+      "first_name": "Wren",
+      "last_name": "Costa-Silva",
+      "status": "Active",
+      "pay_type": "Hourly Wage",
+      "ehids": [
+        "SJCES",
+        "58033"
+      ],
+      "positions": [
+        "HOUSEKEEPER",
+        "HOUSEKEEPER"
+      ]
+    }
+  ]
+}

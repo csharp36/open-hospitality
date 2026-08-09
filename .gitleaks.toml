@@ -1,0 +1,29 @@
+# Open Hospitality — gitleaks configuration.
+#
+# Extends the default ruleset and allowlists a small set of SYNTHETIC test
+# material. These are fake by construction, not credentials:
+#   - the field-key test constant base64-decodes to the literal string
+#     "not-a-real-key-but-32-bytes-long!!" and exists only to satisfy the
+#     production key-FORMAT fail-fast in tests;
+#   - the HPKE interop fixture is a fixed DEV recipient keypair used to prove
+#     JS-sealed data can be opened by Python. Production refuses these dev keys
+#     (see tests/test_config_failfast.py, tests/test_pii_api.py).
+#
+# Everything else is scanned normally.
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic test/fixture crypto material — verified fake, not live secrets."
+paths = [
+  '''tests/fixtures/hpke_interop\.json''',
+  '''frontend/scripts/gen_hpke_fixture\.mjs''',
+  '''tests/test_config_biometric\.py''',
+  '''tests/test_config_failfast\.py''',
+  '''tests/test_pii_api\.py''',
+]
+# Also allow the specific fake field-key wherever it appears.
+regexes = [
+  '''bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ==''',
+]

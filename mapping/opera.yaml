@@ -1,0 +1,16 @@
+# Opera -> USALI (12th edition). Confidence per docs/reference/usali/*.
+# gl_account_code references the placeholder CoA in mapping/qbo_accounts.yaml (P8).
+- {source: OPERA, code: "1000", edition: 12, schedule_id: 1, major: "Operated Departments", sub: "Rooms", line_item: "Room Revenue", gl_account_code: "4000", confidence: HIGH, review_status: reviewed, notes: "*Accommodation"}
+- {source: OPERA, code: "5105", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Parking", line_item: "Parking", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "Parking classification unverified"}
+- {source: OPERA, code: "5106", edition: 12, schedule_id: 3, major: "Operated Departments", sub: "Other Operated Departments", line_item: "Gift Shop Revenue", gl_account_code: "4100", confidence: MEDIUM, review_status: needs-review, notes: "Gift Shop Taxable"}
+- {source: OPERA, code: "5107", edition: 12, schedule_id: 3, major: "Operated Departments", sub: "Other Operated Departments", line_item: "Gift Shop Revenue", gl_account_code: "4100", confidence: MEDIUM, review_status: needs-review, notes: "Gift Shop Non Taxable"}
+- {source: OPERA, code: "5007", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "District Assessments", line_item: "Hotel BID Fee", gl_account_code: "2100", confidence: LOW, review_status: needs-review, notes: "Opera Non-Revenue bucket"}
+- {source: OPERA, code: "7100", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Occupancy Taxes", line_item: "Transient Occupancy Tax", gl_account_code: "2100", confidence: HIGH, review_status: reviewed, notes: "TOT 10%"}
+- {source: OPERA, code: "7101", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Occupancy Taxes", line_item: "CCFD", gl_account_code: "2100", confidence: MEDIUM, review_status: needs-review, notes: "CCFD 4%"}
+- {source: OPERA, code: "7102", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Tourism Assessment", line_item: "CA Tourism", gl_account_code: "2100", confidence: MEDIUM, review_status: needs-review, notes: "CA Tourism 0.195%"}
+- {source: OPERA, code: "7104", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Sales Tax", line_item: "Sales Tax", gl_account_code: "2100", confidence: HIGH, review_status: reviewed, notes: "Sale Tax 9.38%"}
+- {source: OPERA, code: "9002", edition: 12, schedule_id: null, major: "Settlements", sub: "Direct Bill", line_item: "City Ledger", gl_account_code: "1200", confidence: HIGH, review_status: reviewed}
+- {source: OPERA, code: "9003", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "American Express", gl_account_code: "1100", confidence: HIGH, review_status: reviewed}
+- {source: OPERA, code: "9004", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "Visa", gl_account_code: "1100", confidence: HIGH, review_status: reviewed}
+- {source: OPERA, code: "9005", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "MasterCard", gl_account_code: "1100", confidence: HIGH, review_status: reviewed}
+- {source: OPERA, code: "9007", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "Discover", gl_account_code: "1100", confidence: HIGH, review_status: reviewed}
