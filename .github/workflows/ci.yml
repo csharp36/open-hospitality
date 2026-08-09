@@ -12,8 +12,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install uv
         uses: astral-sh/setup-uv@v5
-      - name: Sync (with dev extras)
-        run: uv sync --extra dev
+      - name: Sync (dev + face extras)
+        # `face` pulls numpy + onnxruntime. The engine imports them lazily
+        # (face_match.py guards them behind TYPE_CHECKING / try-except), but
+        # strict mypy still resolves those imports at type-check time, so they
+        # must be installed or the type job fails with import-not-found.
+        run: uv sync --extra dev --extra face
       - name: Lint (ruff)
         run: uv run ruff check
       - name: Types (mypy strict, src only)
@@ -30,7 +34,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          # Match the dev/test runtime. Node 20's WebCrypto SubtleCrypto.importKey
+          # rejects the typed-array key material piiSeal.ts passes (cross-realm
+          # ArrayBuffer check), failing the HPKE seal tests and the EmployeesPage
+          # tests that render sealed values. Node 22 (current LTS) accepts it.
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
