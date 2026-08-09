@@ -1,3 +1,20 @@
 {
-   "signedContributors": []
+  "signedContributors": [
+    {
+      "name": "csharp36",
+      "id": 25519202,
+      "comment_id": 5233294828,
+      "created_at": "2026-08-09T18:50:32Z",
+      "repoId": 1328747991,
+      "pullRequestNo": 4
+    },
+    {
+      "name": "csharp36",
+      "id": 25519202,
+      "comment_id": 5233305063,
+      "created_at": "2026-08-09T18:53:17Z",
+      "repoId": 1328747991,
+      "pullRequestNo": 4
+    }
+  ]
 }
