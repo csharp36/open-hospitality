@@ -1,7 +1,27 @@
 # Open Hospitality — Architecture
 
-Local, no-cloud pipeline that ingests hotel PMS report PDFs, maps transactions to USALI
-schedules, and loads a unified financial database. See `docs/` for design and reference.
+Open Hospitality is a USALI hospitality-accounting engine. It ingests hotel PMS report
+PDFs (Opera, AutoClerk), maps every transaction to the USALI schedule of accounts, and
+loads a unified financial database — then layers time & attendance, payroll, scheduling,
+and CPA/QBO exports on top.
+
+It **runs fully local** (one Postgres, no cloud dependency) and **deploys to GCP** as two
+scale-to-zero Cloud Run services. It is **multi-tenant by construction** — tenant isolation
+is enforced at both the database (Postgres row-level security) and the application layer —
+while operationally running a single founding org today; self-service onboarding is not yet
+a live surface.
+
+At a glance:
+
+- **Ingestion** — detect → parse → map (USALI dictionary) → Core facts; transactional, fail-loud, quarantine-on-error.
+- **Identity** — Keycloak (OIDC), one realm + Organizations; per-request authority comes from DB grants, not token roles.
+- **Tenancy** — shared-schema `org_id` behind a two-wall RLS design; composite `(org_id, x_id)` FKs on the money/PII spine.
+- **PII** — HPKE client-side sealing for store-and-forward secrets; symmetric field encryption for compute-on data; per-org photo keys.
+- **Disclosure** — a ≥2-priced-employees suppression rule, complementary totals, and direction-aware feeds.
+- **Deployment** — local Postgres, or GCP Cloud Run (app + Keycloak) over one Cloud SQL, scale-to-zero, no load balancer.
+
+The major design decisions are recorded as ADRs in [`docs/adr/`](adr/). See the rest of
+`docs/` for per-pillar design and reference notes.
 
 ## Quickstart
 
@@ -1144,6 +1164,38 @@ Every org is **fictitious by construction**, per-org: the live cloud demo
 stays a single invented tenant (org 1), and the two-tenant coexistence proof
 is a test (`tests/test_l7_two_org_walk.py`), never the default seed.
 
+## Deployment (local & GCP)
+
+Open Hospitality runs two ways from the same codebase.
+
+**Local.** `scripts/dev.sh` brings up Postgres, Keycloak, the API, and the SPA on one
+machine — no cloud account, no external services. This is the default for development and
+for the full test suite (Testcontainers spins up throwaway Postgres).
+
+**GCP.** The engine deploys to Google Cloud as **two scale-to-zero Cloud Run services** —
+the application and a Keycloak identity service — sharing **one Cloud SQL Postgres** instance
+(separate `usali` and `keycloak` databases). Photos live in a Cloud Storage bucket as
+app-side ciphertext with public access prevented; runtime secrets (the HPKE key, the
+field-encryption key, DB credentials) live in Secret Manager. The deliberate shape:
+
+- **No load balancer.** TLS terminates at the platform and the app opts into
+  `--proxy-headers`. A managed LB alone would exceed the entire monthly bill — the core of
+  the GCP-over-AWS decision (ADR-008).
+- **Scale-to-zero.** Both services idle at $0; the always-on Cloud SQL instance is the
+  dominant steady-state cost.
+- **Private database.** Cloud Run reaches Cloud SQL through the Cloud SQL Auth Proxy
+  sidecar — the instance has no public IP.
+- **Serving role ≠ owner.** The app connects as the non-owner `usali_app` role (no
+  `BYPASSRLS`), so a bug cannot escape a tenant's RLS; the schema owner is used only by the
+  migrate/seed job.
+- **Ordering invariant.** Provision infrastructure (which creates the `usali_app` role) →
+  run migrations + seed as a one-shot job → ship the app revision. The RLS migration refuses
+  to run until the role exists, and the app revision assumes a migrated schema.
+
+Deploy scripts live in `scripts/cloud/`. Cloud environments are **fictitious by
+construction** — the reference demo runs a single invented tenant, never real guest or
+employee data.
+
 ## Test
 
 ```bash
@@ -1152,8 +1204,11 @@ is a test (`tests/test_l7_two_org_walk.py`), never the default seed.
 
 ## Layout
 
-- `src/usali/` — pipeline: PDF adaptors, normalization, stage repo, mapping loader, transform, CLI
-- `mapping/` — curated USALI schedule + Opera→USALI mapping YAML
+- `src/usali/` — the engine: PDF adaptors, normalization, stage repo, mapping loader, transform, tenancy, auth, payroll, scheduling, reporting, CLI
+- `frontend/` — the operator SPA (React + Vite)
+- `mapping/` — curated USALI schedule + PMS→USALI mapping YAML
 - `migrations/` — Alembic schema migrations
-- `docs/` — design docs, USALI reference, source-system notes, and sample PDFs
+- `scripts/cloud/` — GCP deploy scripts and the Keycloak realm/theme
+- `docs/adr/` — Architecture Decision Records (the major design decisions)
+- `docs/` — design docs, USALI reference, and source-system notes
 - `tests/` — unit + Testcontainers integration tests
