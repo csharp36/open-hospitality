@@ -1,0 +1,63 @@
+# Open Hospitality — canonical roadmap.
+#
+# THIS FILE IS THE SINGLE SOURCE OF TRUTH the triage bot dedups new feature
+# requests against (see .github/scripts/triage_issue.py). Keep it curated:
+# one entry per planned or accepted capability, with a stable `id` the bot can
+# cite in a "this is already on the roadmap" comment.
+#
+# Fields:
+#   id       stable slug, never reused (OH-<n>)
+#   title    one line
+#   summary  what it delivers and why — this is what the bot matches against,
+#            so describe the USER-FACING capability, not the implementation
+#   status   planned | in-progress | shipped | considering
+#   tags     freeform, for humans
+#
+# The seed entries below are a STARTING POINT — replace them with your real
+# roadmap. The bot only dedups against what's here.
+
+roadmap:
+  - id: OH-1
+    title: Self-service tenant onboarding
+    summary: >
+      A new hotel group can sign up, land in a time-boxed sandbox, and promote
+      to production with real PMS integrations and billing — no manual setup.
+      Turns the single-org trust boundary into a real multi-tenant security
+      boundary between strangers.
+    status: planned
+    tags: [multi-tenancy, onboarding, billing]
+
+  - id: OH-2
+    title: Additional PMS connectors
+    summary: >
+      Ingest report/exports from more property-management systems beyond the
+      currently supported set (Opera, AutoClerk), via the extensible source
+      detection registry. Covers new file shapes and per-property quirks.
+    status: considering
+    tags: [ingestion, pms, integrations]
+
+  - id: OH-3
+    title: Observability and telemetry
+    summary: >
+      Metrics, tracing, and structured logs for a hosted deployment — while
+      honoring the disclosure rules (logs carry employee_ids, never names).
+      Dashboards for ingestion health, RLS denials, and per-tenant usage.
+    status: planned
+    tags: [ops, observability]
+
+  - id: OH-4
+    title: CI/CD automation
+    summary: >
+      Automated build, test, and deploy pipeline replacing the scripted-manual
+      cloud deploys, so releases are one-click and reproducible.
+    status: planned
+    tags: [ops, ci-cd]
+
+  - id: OH-5
+    title: Self-hostable deploy guide
+    summary: >
+      A vendor-neutral "run your own Open Hospitality" guide and parametrized
+      deploy scripts, so an operator can stand up their own instance on their
+      own cloud without the private hosted-demo specifics.
+    status: considering
+    tags: [docs, deployment, self-host]
