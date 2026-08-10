@@ -1,12 +1,14 @@
 from datetime import date
 
 from fastapi.testclient import TestClient
+from sqlalchemy import func, select as _select
 
 from tests.authkit import DEFAULT_ORG_ALIAS, make_authkit
 from tests.grants import grant_role
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
 from usali.models import (
+    AuditEvent,
     FiscalCalendar,
     Organization,
     OutOfOrderRoom,
@@ -107,4 +109,113 @@ def test_read_refuses_out_of_scope_property(db_engine, db_session, tmp_path):
     tok = mint(roles=["property_gm"], sub="gm-other",
                scopes=[{"property_id": "SSSJ", "department_id": None}])
     r = c.get("/api/properties/HISJ/config", headers={"Authorization": f"Bearer {tok}"})
+    assert r.status_code == 403
+
+
+def test_post_inventory_creates_and_audits(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    r = c.post("/api/properties/HISJ/inventory",
+               json={"effective_date": "2026-01-01", "total_rooms": 140}, headers=h)
+    assert r.status_code == 201
+    db_session.expire_all()
+    assert db_session.execute(_select(func.count()).select_from(RoomInventory)).scalar_one() == 1
+    audits = db_session.execute(
+        _select(AuditEvent).where(AuditEvent.action == "property_inventory_set")
+    ).scalars().all()
+    assert len(audits) == 1 and audits[0].resource_id == "HISJ"
+
+
+def test_post_inventory_same_date_is_a_correction(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    c.post("/api/properties/HISJ/inventory",
+           json={"effective_date": "2026-01-01", "total_rooms": 140}, headers=h)
+    r = c.post("/api/properties/HISJ/inventory",
+               json={"effective_date": "2026-01-01", "total_rooms": 145}, headers=h)
+    assert r.status_code == 201
+    db_session.expire_all()
+    rows = db_session.execute(_select(RoomInventory)).scalars().all()
+    assert len(rows) == 1 and rows[0].total_rooms == 145  # upsert, not a duplicate
+
+
+def test_post_inventory_rejects_nonpositive(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.post("/api/properties/HISJ/inventory",
+               json={"effective_date": "2026-01-01", "total_rooms": 0},
+               headers=_admin_headers(mint, db_session))
+    assert r.status_code == 422
+
+
+def test_post_and_delete_ooo(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    r = c.post("/api/properties/HISJ/out-of-order",
+               json={"start_date": "2026-02-01", "end_date": "2026-02-07",
+                     "room_count": 3, "reason_code": "renovation"}, headers=h)
+    assert r.status_code == 201
+    ooo_id = r.json()["ooo_id"]
+    r2 = c.delete(f"/api/properties/HISJ/out-of-order/{ooo_id}", headers=h)
+    assert r2.status_code == 204
+    db_session.expire_all()
+    assert db_session.execute(_select(func.count()).select_from(OutOfOrderRoom)).scalar_one() == 0
+
+
+def test_post_ooo_rejects_bad_reason_and_backwards_range(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    assert c.post("/api/properties/HISJ/out-of-order",
+                  json={"start_date": "2026-02-01", "end_date": "2026-02-07",
+                        "room_count": 3, "reason_code": "bogus"}, headers=h).status_code == 422
+    assert c.post("/api/properties/HISJ/out-of-order",
+                  json={"start_date": "2026-02-07", "end_date": "2026-02-01",
+                        "room_count": 3, "reason_code": "damage"}, headers=h).status_code == 422
+
+
+def test_put_fiscal_calendar_requires_weekday_for_445(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    # 445 without a weekday -> 422 at the boundary
+    assert c.put("/api/properties/HISJ/fiscal-calendar",
+                 json={"calendar_type": "445", "fiscal_year_start_month": 1}, headers=h).status_code == 422
+    # calendar_month with a weekday -> 422
+    assert c.put("/api/properties/HISJ/fiscal-calendar",
+                 json={"calendar_type": "calendar_month", "fiscal_year_start_month": 1,
+                       "week_start_weekday": 6}, headers=h).status_code == 422
+    # valid 445 upserts
+    r = c.put("/api/properties/HISJ/fiscal-calendar",
+              json={"calendar_type": "445", "fiscal_year_start_month": 1, "week_start_weekday": 6},
+              headers=h)
+    assert r.status_code == 200
+    db_session.expire_all()
+    row = db_session.get(FiscalCalendar, "HISJ")
+    assert row.calendar_type == "445" and row.week_start_weekday == 6
+
+
+def test_write_refuses_out_of_scope_and_audits_nothing_extra(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    # The other hotel has to EXIST for a grant to name it — the composite FK
+    # (org_id, property_id) is the tenancy wall doing its job (same fix Task 5
+    # applied to test_read_refuses_out_of_scope_property).
+    _org_and_property(db_session, "SSSJ")
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    grant_role(db_session, "property_gm", sub="gm-sss", property_id="SSSJ")
+    tok = mint(roles=["property_gm"], sub="gm-sss",
+               scopes=[{"property_id": "SSSJ", "department_id": None}])
+    r = c.post("/api/properties/HISJ/inventory",
+               json={"effective_date": "2026-01-01", "total_rooms": 140},
+               headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 403
