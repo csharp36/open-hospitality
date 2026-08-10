@@ -12,9 +12,12 @@
 #            so describe the USER-FACING capability, not the implementation
 #   status   planned | in-progress | shipped | considering
 #   tags     freeform, for humans
+#   issue    optional GitHub issue number this capability is tracked in
 #
-# The seed entries below are a STARTING POINT — replace them with your real
-# roadmap. The bot only dedups against what's here.
+# OH-1..OH-5 are the productization roadmap. OH-6..OH-14 mirror the analytics
+# backlog tracked in issue #17 — one roadmap entry per child issue — so the bot
+# dedups incoming analytics/reporting requests against it. The bot only dedups
+# against what's here, and matches on `summary`, so keep those user-facing.
 
 roadmap:
   - id: OH-1
@@ -61,3 +64,101 @@ roadmap:
       own cloud without the private hosted-demo specifics.
     status: considering
     tags: [docs, deployment, self-host]
+
+  # --- Analytics backlog (tracked in issue #17) ------------------------------
+
+  - id: OH-6
+    title: Property configuration — room inventory and fiscal calendar
+    summary: >
+      Configure a property's sellable room inventory (effective-dated), track
+      out-of-order rooms by date range, and define the fiscal calendar
+      (calendar-month or 4-4-5). The authoritative basis every occupancy and
+      RevPAR figure divides by.
+    status: planned
+    tags: [analytics, configuration]
+    issue: 8
+
+  - id: OH-7
+    title: Core performance statistics (occupancy, ADR, RevPAR, TRevPAR, GOPPAR, CPOR)
+    summary: >
+      Occupancy, ADR, RevPAR, TRevPAR, GOPPAR, and cost-per-occupied-room for
+      any date range or fiscal period, with prior-period and prior-year
+      comparison, drilling through to the underlying transactions.
+    status: planned
+    tags: [analytics, reporting]
+    issue: 9
+
+  - id: OH-8
+    title: Budget import and variance reporting
+    summary: >
+      Import an annual budget (by USALI line and month, money and statistical
+      lines) and render the operating statement with actual / budget / variance
+      / variance% columns. Versioned budgets with one reporting baseline.
+    status: planned
+    tags: [analytics, ingestion, reporting]
+    issue: 10
+
+  - id: OH-9
+    title: Ledger anomaly detection
+    summary: >
+      Deterministic, server-side detectors that flag absent accruals, magnitude
+      breaks against trailing/prior-year, cross-source divergence, and
+      sign/classification errors in the ledger — with a dismissible,
+      carry-forward flag lifecycle.
+    status: considering
+    tags: [analytics, ai]
+    issue: 11
+
+  - id: OH-10
+    title: GOP-to-net-income bridge and debt service coverage (DSCR)
+    summary: >
+      Extend the statement below GOP — management fees, fixed charges, FF&E
+      reserve, interest, depreciation — with a per-property debt schedule and
+      derived EBITDA, NOI, net income, and debt-service-coverage ratio, each
+      with its definition stated.
+    status: planned
+    tags: [analytics, reporting]
+    issue: 12
+
+  - id: OH-11
+    title: Portfolio roll-up across properties
+    summary: >
+      Consolidated operating statement and rooms-weighted statistics across a
+      set of properties on a common USALI structure, with per-property
+      drill-through and explicit handling of mismatched fiscal calendars.
+    status: planned
+    tags: [analytics, reporting]
+    issue: 13
+
+  - id: OH-12
+    title: Monthly narrative and open-items register
+    summary: >
+      A generated period narrative — performance versus prior period, prior
+      year, and budget; variance drivers; anomaly flags — plus an open-items
+      register carried across periods. Numbers are computed; the generator
+      writes prose about them and never introduces a figure of its own.
+    status: considering
+    tags: [reporting, ai]
+    issue: 14
+
+  - id: OH-13
+    title: STAR / comp-set ingestion and index reporting
+    summary: >
+      Ingest STAR/STR comp-set data (index, rank, comp-set occupancy/ADR/
+      RevPAR), report it alongside the platform's own statistics, and reconcile
+      STAR-reported against platform-computed revenue. Pending a data-licensing
+      review before implementation.
+    status: considering
+    tags: [analytics, ingestion]
+    issue: 15
+
+  - id: OH-14
+    title: Reporting packet export (Word, PDF, Excel)
+    summary: >
+      Export a configurable reporting packet — operating statement, statistics,
+      variance, the monthly narrative, and open items — to Word, PDF, and Excel
+      for lenders, accountants, and partners, with exported figures matching the
+      on-screen report exactly.
+    status: planned
+    tags: [reporting]
+    issue: 16
