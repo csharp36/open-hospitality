@@ -1,10 +1,11 @@
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from usali.fiscal import (
     FiscalCalendarNotConfigured,
     FiscalConfig,
+    _fy_anchor,
     period_containing,
     periods_in_year,
     resolve_period,
@@ -65,15 +66,42 @@ def test_445_anchor_is_start_month_first_when_it_lands_on_the_weekday():
 
 
 def test_445_final_period_absorbs_a_53rd_week():
-    """A 53-week fiscal year: the year's last period runs 6 weeks so the
-    calendar tiles right up to the next year's anchor."""
+    """A genuinely 53-week fiscal year: the year's last period runs 6 weeks
+    so the calendar tiles right up to the next year's anchor.
+
+    FY2012 is 53 weeks under this anchor scheme: anchor(2012) = 2012-01-01
+    (a Sunday, so it IS the anchor), anchor(2013) = 2013-01-06, and
+    (2013-01-06 - 2012-01-01).days == 371 == 53 * 7. Verified directly
+    against `_fy_anchor` rather than assumed."""
     cfg = FiscalConfig(calendar_type="445", fiscal_year_start_month=1, week_start_weekday=6)
-    periods = periods_in_year(cfg, 2020)  # 2020 anchor Jan 5; 2021 anchor Jan 3 => 52 weeks... choose a 53-week case
-    # Assert the final period ends the day before next year's anchor, whatever the length.
-    from usali.fiscal import _fy_anchor  # internal helper is fine to pin
-    assert periods[-1][2] == _fy_anchor(cfg, 2021) - __import__("datetime").timedelta(days=1)
-    weeks_in_last = ((periods[-1][2] - periods[-1][1]).days + 1) // 7
-    assert weeks_in_last in (5, 6)  # 5 normally, 6 in a 53-week year
+    anchor_2012 = _fy_anchor(cfg, 2012)
+    anchor_2013 = _fy_anchor(cfg, 2013)
+    assert anchor_2012 == date(2012, 1, 1)
+    assert anchor_2013 == date(2013, 1, 6)
+    assert (anchor_2013 - anchor_2012).days == 53 * 7  # confirms FY2012 is 53 weeks
+
+    periods = periods_in_year(cfg, 2012)
+    final_key, final_start, final_end = periods[-1]
+    assert final_key == "2012-P12"
+    assert final_end == anchor_2013 - timedelta(days=1)
+    assert (final_end - final_start).days + 1 == 6 * 7  # strictly 6 weeks, the absorption branch
+    assert period_containing(cfg, final_end) == "2012-P12"  # round-trips back to P12
+
+
+def test_445_final_period_is_five_weeks_in_a_normal_52_week_year():
+    """Pin the non-absorbing branch too: FY2020 is a plain 52-week year
+    (anchor 2020-01-05 -> anchor 2021-01-03, 364 days), so the final period
+    should be exactly 5 weeks, not 6."""
+    cfg = FiscalConfig(calendar_type="445", fiscal_year_start_month=1, week_start_weekday=6)
+    anchor_2020 = _fy_anchor(cfg, 2020)
+    anchor_2021 = _fy_anchor(cfg, 2021)
+    assert (anchor_2021 - anchor_2020).days == 52 * 7  # confirms FY2020 is 52 weeks
+
+    periods = periods_in_year(cfg, 2020)
+    final_key, final_start, final_end = periods[-1]
+    assert final_key == "2020-P12"
+    assert final_end == anchor_2021 - timedelta(days=1)
+    assert (final_end - final_start).days + 1 == 5 * 7  # strictly 5 weeks, no absorption
 
 
 def test_period_containing_445_round_trips():
