@@ -163,10 +163,19 @@ def test_post_and_delete_ooo(db_engine, db_session, tmp_path):
                      "room_count": 3, "reason_code": "renovation"}, headers=h)
     assert r.status_code == 201
     ooo_id = r.json()["ooo_id"]
+    db_session.expire_all()
+    added = db_session.execute(
+        _select(AuditEvent).where(AuditEvent.action == "ooo_added")
+    ).scalars().all()
+    assert len(added) == 1 and added[0].resource_id == "HISJ"
     r2 = c.delete(f"/api/properties/HISJ/out-of-order/{ooo_id}", headers=h)
     assert r2.status_code == 204
     db_session.expire_all()
     assert db_session.execute(_select(func.count()).select_from(OutOfOrderRoom)).scalar_one() == 0
+    removed = db_session.execute(
+        _select(AuditEvent).where(AuditEvent.action == "ooo_removed")
+    ).scalars().all()
+    assert len(removed) == 1 and removed[0].resource_id == "HISJ"
 
 
 def test_post_ooo_rejects_bad_reason_and_backwards_range(db_engine, db_session, tmp_path):
@@ -202,6 +211,10 @@ def test_put_fiscal_calendar_requires_weekday_for_445(db_engine, db_session, tmp
     db_session.expire_all()
     row = db_session.get(FiscalCalendar, "HISJ")
     assert row.calendar_type == "445" and row.week_start_weekday == 6
+    audits = db_session.execute(
+        _select(AuditEvent).where(AuditEvent.action == "fiscal_calendar_set")
+    ).scalars().all()
+    assert len(audits) == 1 and audits[0].resource_id == "HISJ"
 
 
 def test_write_refuses_out_of_scope_and_audits_nothing_extra(db_engine, db_session, tmp_path):
@@ -219,3 +232,8 @@ def test_write_refuses_out_of_scope_and_audits_nothing_extra(db_engine, db_sessi
                json={"effective_date": "2026-01-01", "total_rooms": 140},
                headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 403
+    db_session.expire_all()
+    audits = db_session.execute(
+        _select(AuditEvent).where(AuditEvent.resource_id == "HISJ")
+    ).scalars().all()
+    assert len(audits) == 0
