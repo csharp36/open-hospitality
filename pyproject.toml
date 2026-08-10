@@ -21,7 +21,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "httpx>=0.27",
     "pyjwt[crypto]>=2.8",
-    "cryptography>=42",
+    "cryptography>=50.0.0",
     "pyhpke>=0.6",
     "google-cloud-storage>=3.13.0",
 ]
