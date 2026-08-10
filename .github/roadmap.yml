@@ -150,8 +150,9 @@ roadmap:
     summary: >
       Ingest STAR/STR comp-set data (index, rank, comp-set occupancy/ADR/
       RevPAR), report it alongside the platform's own statistics, and reconcile
-      STAR-reported against platform-computed revenue. Pending a data-licensing
-      review before implementation.
+      STAR-reported against platform-computed revenue. Built behind a feature
+      flag; enablement is gated on the operator's own STR license and a
+      subscriber-terms review (see #15).
     status: considering
     tags: [analytics, ingestion]
     issue: 15
