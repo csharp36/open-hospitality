@@ -52,7 +52,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   stubCamera()
-  vi.mocked(getKioskRoster).mockResolvedValue([{ employee_id: 7, full_name: 'Hank H' }])
+  vi.mocked(getKioskRoster).mockResolvedValue([{ employee_id: 7, full_name: 'Hank H', state: 'out' }])
   vi.mocked(postPunch).mockResolvedValue({
     punch_id: 1, employee_id: 7, punch_type: 'clock_in', business_date: '2026-07-07',
   })
@@ -93,8 +93,8 @@ describe('KioskPage', () => {
   it('shows my week: OWN shifts from the published schedule, never another employee\'s', async () => {
     localStorage.setItem('usali.kiosk.token', 'dev-tok')
     vi.mocked(getKioskRoster).mockResolvedValue([
-      { employee_id: 7, full_name: 'Hank H' },
-      { employee_id: 8, full_name: 'Rosa R' },
+      { employee_id: 7, full_name: 'Hank H', state: 'out' },
+      { employee_id: 8, full_name: 'Rosa R', state: 'out' },
     ])
     // The server only ever returns the requested employee's shifts; the mock
     // mirrors that so the assertion below proves the UI renders exactly what
@@ -251,7 +251,7 @@ describe('KioskPage', () => {
     const { ApiError } = await vi.importActual<typeof import('../api/client')>('../api/client')
     vi.mocked(getKioskRoster).mockImplementation(async (tok) => {
       if (tok === 'tok-sssj') throw new ApiError(403, 'revoked', 'revoked')
-      return [{ employee_id: 7, full_name: 'Hank H' }]
+      return [{ employee_id: 7, full_name: 'Hank H', state: 'out' }]
     })
     renderKiosk()
     await userEvent.click(await screen.findByRole('button', { name: 'SureStay' }))
