@@ -555,6 +555,13 @@ class Position(OrgScoped, Base):
 EXCLUDE_FROM_PAYROLL = "exclude_from_payroll"
 PAY_TYPES = frozenset({"hourly", "salary", EXCLUDE_FROM_PAYROLL})
 
+# Closed vocabularies for property config (property_config_api + demo seed).
+# The DB CHECKs below are the literal SCHEMA MIRROR of these sets — kept literal
+# on purpose so the database refuses an unknown value independently of the app
+# import, the org_settings.crm_provider idiom.
+OOO_REASON_CODES = frozenset({"maintenance", "renovation", "damage", "deep_clean", "other"})
+CALENDAR_TYPES = frozenset({"calendar_month", "445"})
+
 
 class Employee(OrgScoped, Base):
     __tablename__ = "employee"
@@ -1225,6 +1232,103 @@ class PaySchedule(OrgScoped, Base):
     anchor: Mapped[date] = mapped_column(Date)
     check_date_offset_days: Mapped[int] = mapped_column(Integer, default=5)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RoomInventory(OrgScoped, Base):
+    """A property's sellable-room count, EFFECTIVE-DATED. The count in force
+    for a date D is the row with the greatest `effective_date <= D`; to change
+    the count you INSERT a new row, so a renovation never rewrites history
+    (issue #8). One count per property per effective date; a re-POST for the
+    same date is a correction (upsert)."""
+
+    __tablename__ = "room_inventory"
+    __table_args__ = (
+        UniqueConstraint("property_id", "effective_date", name="uq_room_inventory_prop_date"),
+        CheckConstraint("total_rooms > 0", name="ck_room_inventory_total_positive"),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_room_inventory_property_org",
+        ),
+    )
+
+    inventory_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    property_id: Mapped[str] = mapped_column(String(50))
+    effective_date: Mapped[date] = mapped_column(Date)
+    total_rooms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class OutOfOrderRoom(OrgScoped, Base):
+    """A block of rooms out of order / out of service for a date range, with a
+    reason (issue #8). Blocks may overlap the query window partially and may
+    overlap each other; room-nights sum across blocks."""
+
+    __tablename__ = "out_of_order_room"
+    __table_args__ = (
+        CheckConstraint("end_date >= start_date", name="ck_ooo_range"),
+        CheckConstraint("room_count > 0", name="ck_ooo_count_positive"),
+        # Literal mirror of OOO_REASON_CODES (kept in sync by test).
+        CheckConstraint(
+            "reason_code IN ('maintenance', 'renovation', 'damage', 'deep_clean', 'other')",
+            name="ck_ooo_reason_code",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_ooo_property_org",
+        ),
+    )
+
+    ooo_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    property_id: Mapped[str] = mapped_column(String(50))
+    start_date: Mapped[date] = mapped_column(Date)
+    end_date: Mapped[date] = mapped_column(Date)
+    room_count: Mapped[int] = mapped_column(Integer)
+    reason_code: Mapped[str] = mapped_column(String(20))
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class FiscalCalendar(OrgScoped, Base):
+    """A property's fiscal calendar (issue #8). One row per property (the
+    PaySchedule precedent). `calendar_month` runs the twelve calendar months
+    from `fiscal_year_start_month`; `445` runs 4/4/5-week periods anchored on
+    the first `week_start_weekday` on/after the 1st of the start month. The two
+    are a pair: `week_start_weekday` is present iff the type is `445`."""
+
+    __tablename__ = "fiscal_calendar"
+    __table_args__ = (
+        CheckConstraint(
+            "calendar_type IN ('calendar_month', '445')", name="ck_fiscal_type"
+        ),
+        CheckConstraint(
+            "fiscal_year_start_month BETWEEN 1 AND 12", name="ck_fiscal_start_month"
+        ),
+        CheckConstraint(
+            "week_start_weekday IS NULL OR week_start_weekday BETWEEN 0 AND 6",
+            name="ck_fiscal_weekday_range",
+        ),
+        # Paired: 445 <=> a weekday is set (the biometric notice-pair idiom).
+        CheckConstraint(
+            "(calendar_type = '445') = (week_start_weekday IS NOT NULL)",
+            name="ck_fiscal_weekday_pair",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_fiscal_calendar_property_org",
+        ),
+    )
+
+    property_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    calendar_type: Mapped[str] = mapped_column(String(20))
+    fiscal_year_start_month: Mapped[int] = mapped_column(Integer)
+    week_start_weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class ProviderEmployeeRef(OrgScoped, Base):
