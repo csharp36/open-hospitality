@@ -92,6 +92,7 @@ const SECTIONS: NavSection[] = [
       { to: '/timecards', label: 'Timecards', icon: ClockIcon, show: isScheduler },
       { to: '/kiosk', label: 'Kiosk', icon: KioskIcon },
       { to: '/kiosk-devices', label: 'Kiosks', icon: KioskIcon, show: isScheduler },
+      { to: '/property-config', label: 'Property config', icon: FileIcon, show: isScheduler },
     ],
   },
   {
