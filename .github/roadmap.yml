@@ -81,9 +81,10 @@ roadmap:
   - id: OH-7
     title: Core performance statistics (occupancy, ADR, RevPAR, TRevPAR, GOPPAR, CPOR)
     summary: >
-      Occupancy, ADR, RevPAR, TRevPAR, GOPPAR, and cost-per-occupied-room for
-      any date range or fiscal period, with prior-period and prior-year
-      comparison, drilling through to the underlying transactions.
+      Occupancy, ADR, RevPAR, TRevPAR, GOPPAR, cost-per-occupied-room, and
+      labor-hours per occupied room for any date range or fiscal period — with
+      prior-period, prior-year, week-over-week, month-to-date, and 30-day
+      rolling comparisons, drilling through to the underlying transactions.
     status: planned
     tags: [analytics, reporting]
     issue: 9
@@ -92,8 +93,9 @@ roadmap:
     title: Budget import and variance reporting
     summary: >
       Import an annual budget (by USALI line and month, money and statistical
-      lines) and render the operating statement with actual / budget / variance
-      / variance% columns. Versioned budgets with one reporting baseline.
+      lines, including labor-hours budgets) and render the operating statement
+      with actual / budget / variance / variance% columns — money and
+      labor-hours variance alike. Versioned budgets with one reporting baseline.
     status: planned
     tags: [analytics, ingestion, reporting]
     issue: 10
@@ -131,12 +133,14 @@ roadmap:
     issue: 13
 
   - id: OH-12
-    title: Monthly narrative and open-items register
+    title: Weekly and monthly performance narrative and open-items register
     summary: >
-      A generated period narrative — performance versus prior period, prior
-      year, and budget; variance drivers; anomaly flags — plus an open-items
-      register carried across periods. Numbers are computed; the generator
-      writes prose about them and never introduces a figure of its own.
+      A generated performance narrative on a weekly or monthly cadence — with
+      daily standouts, week-over-week and month-over-month deltas, day-of-week
+      patterns, labor commentary, anomaly flags, and cross-property synthesis —
+      plus an open-items register carried across periods. Numbers are computed;
+      the generator writes prose about them and never introduces a figure of
+      its own.
     status: considering
     tags: [reporting, ai]
     issue: 14
@@ -162,3 +166,14 @@ roadmap:
     status: planned
     tags: [reporting]
     issue: 16
+
+  - id: OH-15
+    title: Operational KPI alerts (daily/weekly performance flash)
+    summary: >
+      Per-property alerts on the operating KPIs — out-of-range ADR/RevPAR/
+      occupancy, week-over-week day-of-week swings, 30-day rolling-mean
+      outliers, labor over budget, and data-completeness gaps — deterministic
+      and computed server-side, distinct from ledger anomaly detection (OH-9).
+    status: considering
+    tags: [analytics, reporting, ai]
+    issue: 19
