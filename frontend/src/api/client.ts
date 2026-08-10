@@ -14,10 +14,13 @@ import type {
   FaceTemplateEnrolled,
   FaceTemplateStatus,
   FetchResultsResponse,
+  FiscalConfig,
+  FiscalPeriod,
   ForecastDay,
   ForecastSaved,
   ForecastUpsertBody,
   IngestResult,
+  InventoryRow,
   JePlan,
   EnrolledKiosk,
   KioskConfig,
@@ -34,6 +37,7 @@ import type {
   Me,
   Onboarded,
   OnboardEmployeeRequest,
+  OooRow,
   PayrollProfileStatus,
   PayrollPublicKey,
   PayRunCreateBody,
@@ -41,6 +45,7 @@ import type {
   PayRunLines,
   PayRunSummary,
   PayRate,
+  PropertyConfig,
   PropertyInfo,
   Punched,
   PunchType,
@@ -700,6 +705,75 @@ export async function putAvailabilityNote(
   if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
   if (!res.ok) await raiseApiError(res)
   return res.json() as Promise<AvailabilityNote>
+}
+
+// --- Property configuration: room inventory & fiscal calendar (issue #8) ----
+// org_admin | property_gm (confined to assigned properties) on the server via
+// require_grants(ORG_ADMIN, PROPERTY_GM) + _require_onboardable_property; reads
+// gate on _require_readable_property. Every write is audited server-side.
+
+export function getPropertyConfig(propertyId: string): Promise<PropertyConfig> {
+  return getJson(`/api/properties/${propertyId}/config`)
+}
+
+export async function setInventory(
+  propertyId: string,
+  body: { effective_date: string; total_rooms: number },
+): Promise<InventoryRow> {
+  const res = await fetch(`/api/properties/${propertyId}/inventory`, {
+    method: 'POST',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<InventoryRow>
+}
+
+export async function addOoo(
+  propertyId: string,
+  body: Omit<OooRow, 'ooo_id'>,
+): Promise<OooRow> {
+  const res = await fetch(`/api/properties/${propertyId}/out-of-order`, {
+    method: 'POST',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<OooRow>
+}
+
+export async function removeOoo(propertyId: string, oooId: number): Promise<void> {
+  const res = await fetch(`/api/properties/${propertyId}/out-of-order/${oooId}`, {
+    method: 'DELETE',
+    headers: await authHeaders(),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+}
+
+export async function setFiscalCalendar(
+  propertyId: string,
+  body: FiscalConfig,
+): Promise<FiscalConfig> {
+  const res = await fetch(`/api/properties/${propertyId}/fiscal-calendar`, {
+    method: 'PUT',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<FiscalConfig>
+}
+
+export function getFiscalPeriods(
+  propertyId: string,
+  fiscalYear: number,
+): Promise<{ periods: FiscalPeriod[] }> {
+  return getJson(`/api/properties/${propertyId}/fiscal-periods`, {
+    fiscal_year: String(fiscalYear),
+  })
 }
 
 export async function postIngest(file: File): Promise<IngestResult> {

@@ -939,3 +939,43 @@ export interface Timecard extends TimecardSummary {
   period_end: string
   days: TimecardDay[]
 }
+
+// --- Property configuration: room inventory & fiscal calendar (issue #8) ----
+// Mirrors InventoryRow/OooRow/FiscalConfigModel/ConfigResponse/PeriodRow in
+// src/usali/property_config_api.py field-for-field.
+
+export interface InventoryRow {
+  inventory_id: number
+  effective_date: string
+  total_rooms: number
+}
+
+export interface OooRow {
+  ooo_id: number
+  start_date: string
+  end_date: string
+  room_count: number
+  reason_code: string
+  note: string | null
+}
+
+export interface FiscalConfig {
+  calendar_type: 'calendar_month' | '445'
+  fiscal_year_start_month: number
+  week_start_weekday: number | null
+}
+
+export interface PropertyConfig {
+  property_id: string
+  inventory: InventoryRow[]
+  out_of_order: OooRow[]
+  fiscal_calendar: FiscalConfig | null
+}
+
+export interface FiscalPeriod {
+  key: string
+  start: string
+  end: string
+}
+
+export const OOO_REASONS = ['maintenance', 'renovation', 'damage', 'deep_clean', 'other'] as const
