@@ -51,7 +51,7 @@ def upgrade() -> None:
         sa.Column("property_id", sa.String(length=50), nullable=False),
         sa.Column("effective_date", sa.Date(), nullable=False),
         sa.Column("total_rooms", sa.Integer(), nullable=False),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.UniqueConstraint("property_id", "effective_date", name="uq_room_inventory_prop_date"),
         sa.CheckConstraint("total_rooms > 0", name="ck_room_inventory_total_positive"),
         sa.ForeignKeyConstraint(
@@ -71,7 +71,7 @@ def upgrade() -> None:
         sa.Column("room_count", sa.Integer(), nullable=False),
         sa.Column("reason_code", sa.String(length=20), nullable=False),
         sa.Column("note", sa.String(length=200), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.CheckConstraint("end_date >= start_date", name="ck_ooo_range"),
         sa.CheckConstraint("room_count > 0", name="ck_ooo_count_positive"),
         sa.CheckConstraint(
@@ -92,7 +92,7 @@ def upgrade() -> None:
         sa.Column("calendar_type", sa.String(length=20), nullable=False),
         sa.Column("fiscal_year_start_month", sa.Integer(), nullable=False),
         sa.Column("week_start_weekday", sa.Integer(), nullable=True),
-        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
         sa.CheckConstraint("calendar_type IN ('calendar_month', '445')", name="ck_fiscal_type"),
         sa.CheckConstraint("fiscal_year_start_month BETWEEN 1 AND 12", name="ck_fiscal_start_month"),
         sa.CheckConstraint(
