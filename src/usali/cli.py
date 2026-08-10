@@ -366,7 +366,12 @@ def cpa_pack_cmd(
     if fmt not in ("text", "json", "csv"):
         raise typer.BadParameter("--format must be one of csv, json, text")
     if fmt == "csv" and out is None:
-        raise typer.BadParameter("--format csv writes three files; pass --out DIR")
+        # Plain stderr line (not typer.BadParameter): the Rich-rendered usage
+        # panel wraps/annotates the option token under a narrow terminal, so a
+        # caller — or a test — can't reliably see "--out" in the message. Match
+        # the loud-FAILED style used for the unknown-property case below.
+        typer.echo("FAILED: --format csv writes three files; pass --out DIR", err=True)
+        raise typer.Exit(code=1)
     try:
         reporting.month_bounds(month)
     except ValueError as exc:

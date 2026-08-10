@@ -16,7 +16,8 @@ plan offered 404-the-router or refuse-loudly; a named refusal is the G1
 absence posture, and it cannot be confused with a typo'd path).
 """
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
@@ -89,11 +90,12 @@ def _gm(mint, prop="HISJ", sub="gm"):
 
 
 def _days():
+    d1, d2 = _horizon_days()
     return [
-        CrmDemandDay(stay_date=date(2026, 8, 6), rooms_on_books=132,
+        CrmDemandDay(stay_date=d1, rooms_on_books=132,
                      group_rooms=50, event_covers=None,
                      labels=("Acme Corp Annual", "Delta Sigma Reunion")),
-        CrmDemandDay(stay_date=date(2026, 8, 7), rooms_on_books=118,
+        CrmDemandDay(stay_date=d2, rooms_on_books=118,
                      group_rooms=30, event_covers=None,
                      labels=("Acme Corp Annual",)),
     ]
@@ -102,6 +104,17 @@ def _days():
 @pytest.fixture
 def crm_on(monkeypatch):
     monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")
+
+
+def _horizon_days():
+    """The two consecutive in-horizon stay dates the endpoint tests feed and
+    assert on. Anchored to the property-local today the pull uses (HISJ
+    defaults to America/Los_Angeles) and offset a couple days in, so they stay
+    inside the [today, today+90] horizon as real time advances — a hardcoded
+    calendar date rots out of the window and the pull refuses it (502) before
+    the behavior under test runs."""
+    today = datetime.now(ZoneInfo("America/Los_Angeles")).date()
+    return today + timedelta(days=1), today + timedelta(days=2)
 
 
 # --- the pull endpoint -------------------------------------------------------
@@ -146,10 +159,11 @@ def test_refresh_writes_a_batch_and_audits(
     rows = db_session.execute(
         select(CrmDemandSnapshot).order_by(CrmDemandSnapshot.stay_date)
     ).scalars().all()
+    d1, d2 = _horizon_days()
     assert [(s.stay_date, s.rooms_on_books, s.group_rooms, s.event_covers)
             for s in rows] == [
-        (date(2026, 8, 6), 132, 50, None),
-        (date(2026, 8, 7), 118, 30, None),
+        (d1, 132, 50, None),
+        (d2, 118, 30, None),
     ]
     assert rows[0].labels == "Acme Corp Annual, Delta Sigma Reunion"
 
@@ -172,10 +186,11 @@ def test_a_re_pull_appends_never_updates(
     feed = InMemoryCrmFeed(days=_days())
     c = _client(db_engine, tmp_path, verifier, feed)
 
+    d1, d2 = _horizon_days()
     assert c.post("/api/crm/refresh", headers=_gm(mint),
                   json={"property": "HISJ"}).status_code == 201
     feed.days = [
-        CrmDemandDay(stay_date=date(2026, 8, 6), rooms_on_books=140,
+        CrmDemandDay(stay_date=d1, rooms_on_books=140,
                      group_rooms=55, event_covers=None,
                      labels=("Acme Corp Annual", "Delta Sigma Reunion")),
     ]
@@ -186,24 +201,26 @@ def test_a_re_pull_appends_never_updates(
     assert len(batches) == 2
     aug6 = db_session.execute(
         select(CrmDemandSnapshot)
-        .where(CrmDemandSnapshot.stay_date == date(2026, 8, 6))
+        .where(CrmDemandSnapshot.stay_date == d1)
         .order_by(CrmDemandSnapshot.batch_id)
     ).scalars().all()
     assert [s.rooms_on_books for s in aug6] == [132, 140]  # both voices kept
 
     current = latest_demand(
-        db_session, "HISJ", date(2026, 8, 1), date(2026, 8, 31)
+        db_session, "HISJ", d1, d2
     )
     by_date = {d.stay_date: d for d in current}
-    assert by_date[date(2026, 8, 6)].rooms_on_books == 140  # newest batch
+    assert by_date[d1].rooms_on_books == 140  # newest batch
     # Aug 7 is GONE, not stale: the second pull covered the full horizon
     # and stated nothing for it — silence within a covered horizon is a
     # cancellation, and serving the old 118 would staff a dead event
     # (the J7 money High).
-    assert date(2026, 8, 7) not in by_date
+    assert d2 not in by_date
 
 
-def test_roles_and_property_confinement(db_engine, db_session, tmp_path, crm_on):
+def test_roles_and_property_confinement(
+    db_engine, db_session, tmp_path, crm_on
+):
     """Scheduler roles only (org_admin / property_gm), property-confined
     via assignment scope — the schedule_api convention. The 403 detail
     names nothing."""
@@ -351,8 +368,9 @@ def test_stored_labels_are_joined_and_bounded(
     _seed(db_session)
     verifier, mint = make_authkit()
     many = tuple(f"Block {i} {'x' * 40}" for i in range(10))
+    d1, _ = _horizon_days()
     feed = InMemoryCrmFeed(days=[
-        CrmDemandDay(stay_date=date(2026, 8, 6), rooms_on_books=None,
+        CrmDemandDay(stay_date=d1, rooms_on_books=None,
                      group_rooms=10, event_covers=None, labels=many),
     ])
     c = _client(db_engine, tmp_path, verifier, feed)
@@ -547,8 +565,9 @@ def test_j7_a_malformed_pull_is_502_audited_and_writes_nothing(
     _seed(db_session)
     verifier, mint = make_authkit()
 
+    d1, _ = _horizon_days()  # in-horizon, so the DUPLICATE is what's refused
     dup = InMemoryCrmFeed(days=[
-        _day(date(2026, 8, 6), 100), _day(date(2026, 8, 6), 111),
+        _day(d1, 100), _day(d1, 111),
     ])
     c = _client(db_engine, tmp_path, verifier, dup)
     r = c.post("/api/crm/refresh", headers=_gm(mint),
