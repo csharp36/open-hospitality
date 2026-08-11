@@ -1363,6 +1363,31 @@ class PropertyStatConfig(OrgScoped, Base):
     )
 
 
+class IngestionCoverage(OrgScoped, Base):
+    """Which source report types landed for a property on a business date
+    (issue #9). One row per (property, business_date, report_type). A metric is
+    'complete' for a day when the required report types are present; trend bases
+    exclude data-incomplete days. Also the visibility surface for the #26 expense
+    ingestion as it comes online (a new report_type appears here)."""
+
+    __tablename__ = "ingestion_coverage"
+    __table_args__ = (
+        UniqueConstraint("property_id", "business_date", "report_type",
+                         name="uq_ingestion_coverage_prop_date_report"),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_ingestion_coverage_property_org"),
+    )
+
+    coverage_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    property_id: Mapped[str] = mapped_column(String(50))
+    business_date: Mapped[date] = mapped_column(Date)
+    report_type: Mapped[str] = mapped_column(String(40))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ProviderEmployeeRef(OrgScoped, Base):
     """The provider-side id for an employee, per provider — so switching
     providers re-syncs rather than clobbering the old mapping."""

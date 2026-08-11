@@ -50,15 +50,30 @@ def upgrade() -> None:
             ["org_id", "property_id"], ["property.org_id", "property.property_id"],
             name="fk_property_stat_config_property_org"),
     )
-    _enable_rls("property_stat_config")
-    # NOTE: Task A3 will append the ingestion_coverage create_table here and
-    # switch this to a `for table in _NEW_TABLES: _enable_rls(table)` loop.
+    op.create_table(
+        "ingestion_coverage",
+        sa.Column("coverage_id", sa.BigInteger(), primary_key=True, autoincrement=True),
+        sa.Column("org_id", sa.Integer(),
+                  sa.ForeignKey("organization.org_id", name="fk_ingestion_coverage_org"),
+                  server_default=sa.text("1"), nullable=False, index=True),
+        sa.Column("property_id", sa.String(length=50), nullable=False),
+        sa.Column("business_date", sa.Date(), nullable=False),
+        sa.Column("report_type", sa.String(length=40), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now(), nullable=False),
+        sa.UniqueConstraint("property_id", "business_date", "report_type",
+                            name="uq_ingestion_coverage_prop_date_report"),
+        sa.ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_ingestion_coverage_property_org"),
+    )
+    for table in _NEW_TABLES:
+        _enable_rls(table)
 
 
 def downgrade() -> None:
-    # NOTE: Task A3 will add ingestion_coverage's DROP POLICY + drop_table here
-    # and switch to a loop over _NEW_TABLES.
-    op.execute(f"DROP POLICY {_POLICY} ON property_stat_config")
+    for table in _NEW_TABLES:
+        op.execute(f"DROP POLICY {_POLICY} ON {table}")
+    op.drop_table("ingestion_coverage")
     op.drop_table("property_stat_config")
     op.drop_constraint("ck_ooo_reason_code", "out_of_order_room", type_="check")
     op.create_check_constraint(
