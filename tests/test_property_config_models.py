@@ -8,7 +8,7 @@ import re
 from datetime import date
 
 import pytest
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import create_engine, func, select, text
 from sqlalchemy.exc import IntegrityError
 
 os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
@@ -97,9 +97,10 @@ def test_fiscal_calendar_paired_check(db_session):
 
 
 def test_reason_and_calendar_vocab_constants():
-    assert OOO_REASON_CODES == frozenset(
-        {"maintenance", "renovation", "damage", "deep_clean", "other"}
-    )
+    assert OOO_REASON_CODES == frozenset({
+        "maintenance", "renovation", "damage", "deep_clean", "other",
+        "do_not_rent", "owner_occupied",
+    })
     assert CALENDAR_TYPES == frozenset({"calendar_month", "445"})
 
 
@@ -118,6 +119,18 @@ def test_check_constraints_match_the_vocab_frozensets(db_session):
 
     assert _in_list("ck_ooo_reason_code") == set(OOO_REASON_CODES)
     assert _in_list("ck_fiscal_type") == set(CALENDAR_TYPES)
+
+
+def test_out_of_order_accepts_dnr_reason_codes(db_session):
+    _property(db_session)
+    db_session.add_all([
+        OutOfOrderRoom(property_id="HISJ", start_date=date(2026, 2, 1), end_date=date(2026, 2, 28),
+                       room_count=2, reason_code="do_not_rent"),
+        OutOfOrderRoom(property_id="HISJ", start_date=date(2026, 3, 1), end_date=date(2026, 3, 31),
+                       room_count=1, reason_code="owner_occupied"),
+    ])
+    db_session.commit()
+    assert db_session.execute(select(func.count()).select_from(OutOfOrderRoom)).scalar_one() == 2
 
 
 # --- populated-downgrade pin -------------------------------------------------

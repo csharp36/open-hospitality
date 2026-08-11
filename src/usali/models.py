@@ -559,7 +559,10 @@ PAY_TYPES = frozenset({"hourly", "salary", EXCLUDE_FROM_PAYROLL})
 # The DB CHECKs below are the literal SCHEMA MIRROR of these sets — kept literal
 # on purpose so the database refuses an unknown value independently of the app
 # import, the org_settings.crm_provider idiom.
-OOO_REASON_CODES = frozenset({"maintenance", "renovation", "damage", "deep_clean", "other"})
+OOO_REASON_CODES = frozenset({
+    "maintenance", "renovation", "damage", "deep_clean", "other",
+    "do_not_rent", "owner_occupied",
+})
 CALENDAR_TYPES = frozenset({"calendar_month", "445"})
 
 
@@ -1271,7 +1274,8 @@ class OutOfOrderRoom(OrgScoped, Base):
         CheckConstraint("room_count > 0", name="ck_ooo_count_positive"),
         # Literal mirror of OOO_REASON_CODES (kept in sync by test).
         CheckConstraint(
-            "reason_code IN ('maintenance', 'renovation', 'damage', 'deep_clean', 'other')",
+            "reason_code IN ('maintenance', 'renovation', 'damage', 'deep_clean', "
+            "'other', 'do_not_rent', 'owner_occupied')",
             name="ck_ooo_reason_code",
         ),
         ForeignKeyConstraint(
