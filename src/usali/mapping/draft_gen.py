@@ -9,11 +9,15 @@ dictionary (a separate artifact) -- this draft is never loaded directly into
 the database.
 """
 
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
+from xml.etree.ElementTree import Element
 
 import yaml
+from defusedxml import ElementTree as defused_et
+
+
+_MAX_XML_BYTES = 5 * 1024 * 1024
 
 # Opera TC_GROUP -> (schedule_id, major, sub). schedule_id None = non-P&L.
 GROUP_MAP: dict[str, tuple[int | None, str, str]] = {
@@ -34,7 +38,7 @@ GROUP_MAP: dict[str, tuple[int | None, str, str]] = {
 }
 
 
-def _text(el: ET.Element, tag: str) -> str:
+def _text(el: Element, tag: str) -> str:
     child = el.find(tag)
     return (child.text or "").strip() if child is not None and child.text else ""
 
@@ -49,7 +53,13 @@ def generate_draft(xml_path: str | Path, out_path: str | Path, *, edition: int =
 
     Returns the number of unique rows written.
     """
-    root = ET.parse(xml_path).getroot()
+    xml_bytes = Path(xml_path).read_bytes()
+    if len(xml_bytes) > _MAX_XML_BYTES:
+        raise ValueError(f"Opera catalog XML exceeds {_MAX_XML_BYTES} bytes")
+    # defusedxml rejects DTD/entity constructs before they can expand or read
+    # external resources. Parsing the already-bounded bytes also prevents the
+    # parser from consuming an arbitrarily large local export.
+    root = defused_et.fromstring(xml_bytes)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for g in root.iter("G_TRX_CODE"):
