@@ -18,8 +18,9 @@ import { errorMessage } from '../lib/errors'
  * Decimals arrive as EXACT strings and a `null` figure is WITHHELD (e.g.
  * occupancy with no rooms available) — never zero. We render withheld figures
  * as "—" and format occupancy as a percentage, ADR/RevPAR/TRevPAR as currency.
- * Labor productivity is NOT part of the PerformanceResponse shape, so this page
- * renders exactly what the response carries and nothing more.
+ * Labor productivity (issue #9) rides on the same response: labor hours and
+ * cost per occupied room, with cost withheld (a "cost withheld" note) when the
+ * single-employee suppression fires (`labor.cost_suppressed`).
  */
 
 // The four core KPIs, keyed by the metric name the delta/recon maps use.
@@ -35,6 +36,13 @@ function formatValue(value: string | null, kind: 'pct' | 'money'): string {
   const n = Number(value)
   if (Number.isNaN(n)) return '—'
   return kind === 'pct' ? `${(n * 100).toFixed(1)}%` : `$${n.toFixed(2)}`
+}
+
+function formatHours(value: string | null): string {
+  if (value === null) return '—'
+  const n = Number(value)
+  if (Number.isNaN(n)) return '—'
+  return n.toFixed(2)
 }
 
 function formatDelta(value: string | null | undefined): { text: string; positive: boolean | null } {
@@ -163,6 +171,38 @@ function PerformanceBody({ data }: { data: PerformanceResponse }) {
             <dd className="text-ink">{data.days_excluded}</dd>
           </div>
         </dl>
+      </Card>
+
+      <Card role="region" aria-label="labor productivity">
+        <h2 className="mb-3 text-sm font-semibold text-ink">Labor productivity</h2>
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+          <div>
+            <dt className="text-xs font-medium text-ink-muted">Labor hours per occupied room</dt>
+            <dd className="text-2xl font-semibold text-ink">
+              {formatHours(data.labor.hours_per_occupied_room)}
+            </dd>
+          </div>
+          <div>
+            <dt className="text-xs font-medium text-ink-muted">Labor cost per occupied room</dt>
+            {data.labor.cost_suppressed ? (
+              <dd className="flex items-center gap-2">
+                <span className="text-2xl font-semibold text-ink-muted">—</span>
+                <Badge tone="neutral">Cost withheld</Badge>
+              </dd>
+            ) : (
+              <dd className="text-2xl font-semibold text-ink">
+                {formatValue(data.labor.cost_per_occupied_room, 'money')}
+              </dd>
+            )}
+          </div>
+        </dl>
+        {data.labor.cost_suppressed && (
+          <p className="mt-3 text-xs text-ink-muted">
+            Labor cost is withheld for this window: a contributing day had too few priced
+            employees to show cost without disclosing an individual&apos;s pay rate. Hours are
+            always shown.
+          </p>
+        )}
       </Card>
 
       <Card role="region" aria-label="reconciliation">

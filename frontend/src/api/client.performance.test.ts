@@ -35,6 +35,14 @@ const perfBody: PerformanceResponse = {
   prior_year_delta_pct: {},
   reconciliation: {},
   trends: { anchor: '2026-01-31', wow: {}, mtd: {}, rolling_30: {}, dow: {} },
+  labor: {
+    labor_hours: null,
+    rooms_sold: null,
+    hours_per_occupied_room: null,
+    labor_cost: null,
+    cost_per_occupied_room: null,
+    cost_suppressed: false,
+  },
   days_excluded: 0,
 }
 

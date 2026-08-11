@@ -63,12 +63,14 @@ from usali.performance import (
     AdrBasisUnavailable,
     Comparison,
     CoreMetrics,
+    LaborProductivity,
     ReconLine,
     RollingStat,
     TrendPair,
     Trends,
     compare,
     complete_days,
+    labor_productivity,
     reconciliation,
     trends,
 )
@@ -876,6 +878,18 @@ class TrendsModel(BaseModel):
     dow: dict[str, TrendPairModel]
 
 
+class LaborProductivityModel(BaseModel):
+    # Hours are pure operational detail (never disclosure-gated); cost fields are
+    # None + cost_suppressed True when any contributing day withheld its labor
+    # cost (single-employee rate-derivation guard) — see `labor_productivity`.
+    labor_hours: str | None
+    rooms_sold: str | None
+    hours_per_occupied_room: str | None
+    labor_cost: str | None
+    cost_per_occupied_room: str | None
+    cost_suppressed: bool
+
+
 class PerformanceResponse(BaseModel):
     property_id: str
     adr_room_basis: str
@@ -889,6 +903,7 @@ class PerformanceResponse(BaseModel):
     prior_year_delta_pct: dict[str, str | None]
     reconciliation: dict[str, ReconLineModel]
     trends: TrendsModel
+    labor: LaborProductivityModel
     days_excluded: int
 
 
@@ -957,6 +972,17 @@ def _trends_model(t: Trends) -> TrendsModel:
     )
 
 
+def _labor_productivity_model(labor: LaborProductivity) -> LaborProductivityModel:
+    return LaborProductivityModel(
+        labor_hours=_dec(labor.labor_hours),
+        rooms_sold=_dec(labor.rooms_sold),
+        hours_per_occupied_room=_dec(labor.hours_per_occupied_room),
+        labor_cost=_dec(labor.labor_cost),
+        cost_per_occupied_room=_dec(labor.cost_per_occupied_room),
+        cost_suppressed=labor.cost_suppressed,
+    )
+
+
 def _performance_response(
     property_id: str,
     basis: str,
@@ -966,6 +992,7 @@ def _performance_response(
     cmp: Comparison,
     recon: dict[str, ReconLine],
     trend: Trends,
+    labor: LaborProductivity,
     excluded: int,
 ) -> PerformanceResponse:
     return PerformanceResponse(
@@ -981,6 +1008,7 @@ def _performance_response(
         prior_year_delta_pct={k: _dec(v) for k, v in cmp.prior_year_delta_pct.items()},
         reconciliation={k: _recon_line_model(v) for k, v in recon.items()},
         trends=_trends_model(trend),
+        labor=_labor_productivity_model(labor),
         days_excluded=excluded,
     )
 
@@ -1036,13 +1064,17 @@ def get_performance(
         cmp = compare(session, property, start, end, basis=basis)
         recon = reconciliation(session, property, start, end, cmp.current)
         trend = trends(session, property, end, basis=basis)
+        # Labor productivity (#9): hours/cost per occupied room. Safe inside this
+        # try — it never calls rooms_available, but keeping it here holds the one
+        # response-shaping block together.
+        labor = labor_productivity(session, property, start, end)
         # TODO(#25 rebase): add InventoryInconsistent to this except tuple once
         # PR #25 lands it on this branch (it does not exist here yet).
         excluded = (end - start).days + 1 - len(complete_days(session, property, start, end))
     except (InventoryNotConfigured, AdrBasisUnavailable) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return _performance_response(
-        property, basis, resolved_period, start, end, cmp, recon, trend, excluded
+        property, basis, resolved_period, start, end, cmp, recon, trend, labor, excluded
     )
 
 

@@ -1034,6 +1034,20 @@ export interface Trends {
   dow: Record<string, TrendPair>
 }
 
+/** Labor productivity (issue #9): labor hours and cost per occupied room over
+ *  the window. Mirrors LaborProductivityModel in portal_api.py. Hours are pure
+ *  operational detail (never withheld); the cost fields are null and
+ *  `cost_suppressed` is true when any contributing day withheld its labor cost
+ *  (single-employee rate-derivation guard) — a WITHHELD figure, not zero. */
+export interface LaborProductivity {
+  labor_hours: string | null
+  rooms_sold: string | null
+  hours_per_occupied_room: string | null
+  labor_cost: string | null
+  cost_per_occupied_room: string | null
+  cost_suppressed: boolean
+}
+
 export interface PerformanceResponse {
   property_id: string
   adr_room_basis: string
@@ -1050,6 +1064,8 @@ export interface PerformanceResponse {
   prior_year_delta_pct: Record<string, string | null>
   reconciliation: Record<string, ReconLine>
   trends: Trends
+  // Labor hours/cost per occupied room; cost fields withheld when suppressed.
+  labor: LaborProductivity
   // Window length minus its data-complete days.
   days_excluded: number
 }

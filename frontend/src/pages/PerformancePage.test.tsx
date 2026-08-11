@@ -57,6 +57,14 @@ function sampleResponse(): PerformanceResponse {
       rolling_30: {},
       dow: {},
     },
+    labor: {
+      labor_hours: '4960.00',
+      rooms_sold: '2480.0000',
+      hours_per_occupied_room: '2.0000',
+      labor_cost: '124000.00',
+      cost_per_occupied_room: '50.0000',
+      cost_suppressed: false,
+    },
     days_excluded: 0,
   }
 }
@@ -98,5 +106,31 @@ describe('PerformancePage', () => {
   it('flags a reconciliation divergence when a metric does not agree', async () => {
     renderPage()
     expect(await screen.findByText(/divergence/i)).toBeInTheDocument()
+  })
+
+  it('renders the labor productivity section with hours and cost per occupied room', async () => {
+    renderPage()
+    expect(await screen.findByText(/labor productivity/i)).toBeInTheDocument()
+    expect(screen.getByText(/labor hours per occupied room/i)).toBeInTheDocument()
+    expect(screen.getByText('2.00')).toBeInTheDocument() // hours per occupied room
+    expect(screen.getByText('$50.00')).toBeInTheDocument() // cost per occupied room
+  })
+
+  it('shows a cost-withheld note when labor cost is suppressed', async () => {
+    vi.mocked(getPerformance).mockResolvedValue({
+      ...sampleResponse(),
+      labor: {
+        labor_hours: '4960.00',
+        rooms_sold: '2480.0000',
+        hours_per_occupied_room: '2.0000',
+        labor_cost: null,
+        cost_per_occupied_room: null,
+        cost_suppressed: true,
+      },
+    })
+    renderPage()
+    expect(await screen.findByText(/cost withheld/i)).toBeInTheDocument()
+    // hours are never withheld
+    expect(screen.getByText('2.00')).toBeInTheDocument()
   })
 })
