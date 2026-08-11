@@ -8,10 +8,17 @@ from usali.models import (
     Organization,
     PmsDailyStatisticStage,
     Property,
+    RoomInventory,
     UsaliSegmentFact,
     UsaliStatisticFact,
 )
-from usali.performance import AdrBasisUnavailable, _stat_by_day, adr_rooms_sold
+from usali.performance import (
+    AdrBasisUnavailable,
+    CoreMetrics,
+    _stat_by_day,
+    adr_rooms_sold,
+    core_metrics,
+)
 
 
 def _prop(session, pid="HISJ"):
@@ -91,3 +98,37 @@ def test_adr_rooms_sold_refuses_exclude_without_segments(db_session):
     db_session.commit()  # no segment rows for the day
     with pytest.raises(AdrBasisUnavailable):
         adr_rooms_sold(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), "exclude_comp_house")
+
+
+def test_core_metrics_and_revpar_crosscheck(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "TOTAL_REVENUE", 18000),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    assert isinstance(m, CoreMetrics)
+    assert m.rooms_available == Decimal("100")
+    assert m.rooms_sold == Decimal("80")
+    assert m.occupancy == Decimal("0.8000")
+    assert m.adr == Decimal("150.0000")
+    assert m.revpar == Decimal("120.0000")
+    assert m.trevpar == Decimal("180.0000")
+    assert abs(m.adr * m.occupancy - m.revpar) <= Decimal("0.01")
+
+
+@pytest.mark.skip(reason="InventoryInconsistent lands with the PR #25 rebase")
+def test_core_metrics_refuses_negative_denominator(db_session):
+    from usali.inventory import InventoryInconsistent
+    from usali.models import OutOfOrderRoom
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=10))
+    db_session.add(OutOfOrderRoom(property_id="HISJ", start_date=date(2026, 1, 1),
+                                  end_date=date(2026, 1, 1), room_count=25, reason_code="do_not_rent"))
+    db_session.add(_stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 5))
+    db_session.commit()
+    with pytest.raises(InventoryInconsistent):
+        core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")

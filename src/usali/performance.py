@@ -9,12 +9,14 @@ window cannot be a differencing oracle. Denominators come from
 inventory.rooms_available (fail-loud). #26 adds the expense side (GOPPAR/CPOR).
 """
 
+from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from usali.inventory import rooms_available
 from usali.models import UsaliSegmentFact, UsaliStatisticFact
 
 
@@ -101,3 +103,57 @@ def adr_rooms_sold(
             )
     comp_house = _comp_house_rooms_by_day(session, property_id, start, end)
     return total - sum(comp_house.values(), Decimal("0"))
+
+
+_Q4 = Decimal("0.0001")
+
+
+def _ratio(num: Decimal, den: Decimal) -> Decimal | None:
+    if den == 0:
+        return None
+    return (num / den).quantize(_Q4)
+
+
+@dataclass(frozen=True)
+class CoreMetrics:
+    start: date
+    end: date
+    rooms_available: Decimal
+    rooms_sold: Decimal
+    adr_rooms_sold: Decimal
+    room_revenue: Decimal
+    total_revenue: Decimal
+    occupancy: Decimal | None
+    adr: Decimal | None
+    revpar: Decimal | None
+    trevpar: Decimal | None
+    adr_room_basis: str
+
+
+def core_metrics(
+    session: Session, property_id: str, start: date, end: date, *, basis: str
+) -> CoreMetrics:
+    """Occupancy, ADR, RevPAR, TRevPAR over [start, end]. Denominator is
+    inventory.rooms_available (fail-loud). ADR divides room revenue by the
+    basis-adjusted rooms-sold; occupancy uses ROOMS_OCCUPIED as-is."""
+    avail = Decimal(str(rooms_available(session, property_id, start, end)))
+    sold = sum(
+        _stat_by_day(session, property_id, start, end, "ROOMS_OCCUPIED").values(),
+        Decimal("0"),
+    )
+    adr_sold = adr_rooms_sold(session, property_id, start, end, basis)
+    room_rev = sum(
+        _stat_by_day(session, property_id, start, end, "ROOM_REVENUE").values(),
+        Decimal("0"),
+    )
+    total_rev = sum(
+        _stat_by_day(session, property_id, start, end, "TOTAL_REVENUE").values(),
+        Decimal("0"),
+    )
+    return CoreMetrics(
+        start=start, end=end, rooms_available=avail, rooms_sold=sold, adr_rooms_sold=adr_sold,
+        room_revenue=room_rev, total_revenue=total_rev,
+        occupancy=_ratio(sold, avail), adr=_ratio(room_rev, adr_sold),
+        revpar=_ratio(room_rev, avail), trevpar=_ratio(total_rev, avail),
+        adr_room_basis=basis,
+    )
