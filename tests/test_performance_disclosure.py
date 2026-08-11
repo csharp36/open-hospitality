@@ -130,3 +130,56 @@ def test_two_priced_employees_disclose_cost(db_session):
     assert p.cost_per_occupied_room == Decimal("4.5000")  # 360/80
     assert p.labor_hours == Decimal("16.00")
     assert p.hours_per_occupied_room == Decimal("0.2000")  # 16/80
+
+
+# A and B are two days in the SAME workweek (anchor _ANCHOR = the Monday), so
+# both promote cleanly off one grid. A is a two-priced-employee day (discloses),
+# B is a solo-priced day (suppresses).
+_DAY_A = date(2026, 1, 5)  # Monday, == _ANCHOR
+_DAY_B = date(2026, 1, 6)  # Tuesday
+
+
+def test_multi_day_window_none_on_any_suppressed_day_defeats_differencing(db_session):
+    """The whole-window-None rule is what stops [A] and [A,B] from being
+    subtracted to isolate day B's single employee's pay.
+
+    A day whose cost came from ONE priced employee must suppress the WHOLE
+    window's cost (not just that day's), because a caller selects whole days:
+      window [A]     discloses cost_total(A)      (A has two priced employees)
+      window [A, B]  MUST be None                 (B is solo → cost_suppressed)
+    If [A,B] disclosed cost_total(A)+cost_total(B) instead of None, the caller
+    computes cost([A,B]) - cost([A]) = day B's cost, and cost/hours re-derives
+    B's solitary employee's exact rate. So [A,B] must withhold everything.
+
+    Kills the `labor_cost = cost_total` (unconditional) mutant: under it [A,B]
+    would return a value and this test fails.
+    """
+    dept, pos, device = _seed_property(db_session)
+    _rooms_occupied(db_session, _DAY_A, 80)
+    _rooms_occupied(db_session, _DAY_B, 90)
+    # Day A: two priced employees -> cost discloses on its own.
+    _priced_worker(db_session, dept, pos, device, "Ann A", pay_rate="20.00", day=_DAY_A)
+    _priced_worker(db_session, dept, pos, device, "Ben B", pay_rate="25.00", day=_DAY_A)
+    # Day B: a single priced employee -> cost suppresses on its own.
+    _priced_worker(db_session, dept, pos, device, "Cal C", pay_rate="30.00", day=_DAY_B)
+
+    only_a = labor_productivity(db_session, "HISJ", _DAY_A, _DAY_A)
+    only_b = labor_productivity(db_session, "HISJ", _DAY_B, _DAY_B)
+    both = labor_productivity(db_session, "HISJ", _DAY_A, _DAY_B)
+
+    # [A] discloses: two priced employees, 8h×$20 + 8h×$25 = 360.
+    assert only_a.cost_suppressed is False
+    assert only_a.labor_cost == Decimal("360.0000")
+    assert only_a.cost_per_occupied_room == Decimal("4.5000")  # 360/80
+
+    # [B] alone suppresses: one priced employee.
+    assert only_b.cost_suppressed is True
+    assert only_b.labor_cost is None
+    assert only_b.cost_per_occupied_room is None
+
+    # [A, B] suppresses the WHOLE window because B is suppressed — so [A,B] and
+    # [A] cannot be differenced to recover B. Hours stay complete throughout.
+    assert both.cost_suppressed is True
+    assert both.labor_cost is None
+    assert both.cost_per_occupied_room is None
+    assert both.labor_hours == Decimal("24.00")  # 8 + 8 + 8, hours never gated
