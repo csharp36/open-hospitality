@@ -979,3 +979,77 @@ export interface FiscalPeriod {
 }
 
 export const OOO_REASONS = ['maintenance', 'renovation', 'damage', 'deep_clean', 'other'] as const
+
+// --- Core performance statistics (issue #9) ---------------------------------
+// Mirrors CoreMetricsModel/ReconLineModel/TrendPairModel/RollingStatModel/
+// TrendsModel/PerformanceResponse in src/usali/portal_api.py field-for-field.
+// Every decimal is an exact string (never a float); a `string | null` figure is
+// WITHHELD (e.g. occupancy with no rooms available), not zero. The ADR basis is
+// the property's stat-config choice, echoed on every metrics block.
+
+export type AdrRoomBasis = 'as_reported' | 'exclude_comp_house'
+
+export interface CoreMetrics {
+  start: string
+  end: string
+  rooms_available: string
+  rooms_sold: string
+  adr_rooms_sold: string
+  room_revenue: string
+  total_revenue: string
+  occupancy: string | null
+  adr: string | null
+  revpar: string | null
+  trevpar: string | null
+  adr_room_basis: string
+}
+
+/** One line of the PMS-KPI reconciliation: our computed value vs the ingested
+ *  statistic, and whether they agree. Any field is null when its side is absent. */
+export interface ReconLine {
+  computed: string | null
+  ingested: string | null
+  agrees: boolean | null
+}
+
+/** A current-vs-prior trend basis (WoW / same-day-of-week). */
+export interface TrendPair {
+  current: string | null
+  prior: string | null
+  delta_pct: string | null
+}
+
+/** A 30-day rolling stat: mean, standard deviation, and the sample size `n`. */
+export interface RollingStat {
+  avg: string | null
+  stdev: string | null
+  n: number
+}
+
+export interface Trends {
+  anchor: string
+  wow: Record<string, TrendPair>
+  mtd: Record<string, string | null>
+  rolling_30: Record<string, RollingStat>
+  dow: Record<string, TrendPair>
+}
+
+export interface PerformanceResponse {
+  property_id: string
+  adr_room_basis: string
+  // Echoes the fiscal period key when the `period=YYYY-Pnn` form was used;
+  // null for an explicit `from`+`to` range.
+  period: string | null
+  start: string
+  end: string
+  current: CoreMetrics
+  // null when there is no comparable prior window (e.g. no earlier data).
+  prior_period: CoreMetrics | null
+  prior_year: CoreMetrics | null
+  prior_period_delta_pct: Record<string, string | null>
+  prior_year_delta_pct: Record<string, string | null>
+  reconciliation: Record<string, ReconLine>
+  trends: Trends
+  // Window length minus its data-complete days.
+  days_excluded: number
+}
