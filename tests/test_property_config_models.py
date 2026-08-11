@@ -4,6 +4,7 @@ composite (org_id, property_id) FKs pinned on the real schema, plus a
 populated-downgrade pin proving the migration round-trips with rows present."""
 
 import os
+import re
 from datetime import date
 
 import pytest
@@ -100,6 +101,23 @@ def test_reason_and_calendar_vocab_constants():
         {"maintenance", "renovation", "damage", "deep_clean", "other"}
     )
     assert CALENDAR_TYPES == frozenset({"calendar_month", "445"})
+
+
+def test_check_constraints_match_the_vocab_frozensets(db_session):
+    # The DB CHECK IN-lists and the Python frozensets are otherwise two
+    # independent literals (the CHECK pinned via compare_metadata, the frozenset
+    # via the vocab test above). Couple them directly here so that adding a code
+    # to the frozenset — and the vocab test — while forgetting the CHECK (or the
+    # reverse) fails HERE, honouring the models.py "kept in sync by test" claim.
+    def _in_list(conname: str) -> set[str]:
+        ddl = db_session.execute(
+            text("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :n"),
+            {"n": conname},
+        ).scalar_one()
+        return set(re.findall(r"'([^']*)'", ddl))
+
+    assert _in_list("ck_ooo_reason_code") == set(OOO_REASON_CODES)
+    assert _in_list("ck_fiscal_type") == set(CALENDAR_TYPES)
 
 
 # --- populated-downgrade pin -------------------------------------------------

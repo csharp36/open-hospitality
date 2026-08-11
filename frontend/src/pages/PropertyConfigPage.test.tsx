@@ -59,4 +59,35 @@ describe('PropertyConfigPage', () => {
     const select = await screen.findByLabelText(/reason/i)
     expect(select.querySelectorAll('option')).toHaveLength(5)
   })
+
+  it('shows the count in force today, not a future-dated row, as "current"', async () => {
+    // Newest row is dated far in the future (a planned renovation); the count
+    // in force today is the older 140-room row. inventory arrives newest-first.
+    vi.mocked(getPropertyConfig).mockResolvedValue({
+      property_id: 'HISJ',
+      inventory: [
+        { inventory_id: 2, effective_date: '2999-01-01', total_rooms: 99 },
+        { inventory_id: 1, effective_date: '2020-01-01', total_rooms: 140 },
+      ],
+      out_of_order: [],
+      fiscal_calendar: null,
+    })
+    renderPage()
+    // "Current count" reflects the in-force 140, never the future 99.
+    const current = await screen.findByText(/current count/i)
+    expect(current).toHaveTextContent('140')
+    expect(current).not.toHaveTextContent('99')
+  })
+
+  it('labels a future-only inventory as not yet in force', async () => {
+    vi.mocked(getPropertyConfig).mockResolvedValue({
+      property_id: 'HISJ',
+      inventory: [{ inventory_id: 1, effective_date: '2999-01-01', total_rooms: 99 }],
+      out_of_order: [],
+      fiscal_calendar: null,
+    })
+    renderPage()
+    await screen.findByText(/no count in force yet/i)
+    expect(screen.queryByText(/current count/i)).toBeNull()
+  })
 })

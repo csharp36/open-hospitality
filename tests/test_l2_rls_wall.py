@@ -52,6 +52,13 @@ assert _spec is not None and _spec.loader is not None
 _l2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_l2)
 
+_m1_spec = importlib.util.spec_from_file_location(
+    "m1a0propcfg", "migrations/versions/m1a0propcfg_property_config_tables.py"
+)
+assert _m1_spec is not None and _m1_spec.loader is not None
+_m1 = importlib.util.module_from_spec(_m1_spec)
+_m1_spec.loader.exec_module(_m1)
+
 
 # ---------------------------------------------------------------- fixtures
 
@@ -388,6 +395,15 @@ def test_the_wall_constants_are_pinned_as_literals():
     assert APP_DB_ROLE == "usali_app"
     assert RLS_ORG_VAR == "app.org_id"
     assert FOUNDING_ORG_ID == 1
+
+
+def test_the_property_config_rls_predicate_matches_l2_verbatim():
+    """m1a0propcfg (#8) transcribes l2a0rlswall's org_wall predicate into its
+    own `_PREDICATE` literal. The migration docstring claims it is "reused
+    verbatim so the policies cannot drift" — pin that claim: a future edit to
+    the l2 predicate that isn't mirrored into m1 (or vice versa) fails HERE
+    rather than silently leaving the #8 tables on a stale wall."""
+    assert _m1._PREDICATE == _l2._PREDICATE
 
 
 def test_the_rls_inventory_is_complete_and_forced(db_engine):
