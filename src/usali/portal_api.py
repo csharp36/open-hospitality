@@ -52,7 +52,22 @@ from sqlalchemy.orm import Session
 
 from usali import qbo_push, reporting
 from usali.auth import Principal, request_session_factory, require_operator
+from usali.inventory import InventoryNotConfigured
 from usali.models import Property, QboPushLedger
+from usali.performance import (
+    AdrBasisUnavailable,
+    Comparison,
+    CoreMetrics,
+    ReconLine,
+    RollingStat,
+    TrendPair,
+    Trends,
+    compare,
+    complete_days,
+    reconciliation,
+    trends,
+)
+from usali.property_config_api import _adr_room_basis
 from usali.qbo_client import QboClient
 from usali.workforce import require_property_access, resolve_scope
 
@@ -810,6 +825,170 @@ def labor_analytics(
         suppressed_departments=a.suppressed_departments,
         unpriced_hours=a.unpriced_hours,
     )
+
+
+# --- Core performance statistics (issue #9) --------------------------------------
+
+
+class CoreMetricsModel(BaseModel):
+    start: str
+    end: str
+    rooms_available: str
+    rooms_sold: str
+    adr_rooms_sold: str
+    room_revenue: str
+    total_revenue: str
+    occupancy: str | None
+    adr: str | None
+    revpar: str | None
+    trevpar: str | None
+    adr_room_basis: str
+
+
+class ReconLineModel(BaseModel):
+    computed: str | None
+    ingested: str | None
+    agrees: bool | None
+
+
+class TrendPairModel(BaseModel):
+    current: str | None
+    prior: str | None
+    delta_pct: str | None
+
+
+class RollingStatModel(BaseModel):
+    avg: str | None
+    stdev: str | None
+    n: int
+
+
+class TrendsModel(BaseModel):
+    anchor: str
+    wow: dict[str, TrendPairModel]
+    mtd: dict[str, str | None]
+    rolling_30: dict[str, RollingStatModel]
+    dow: dict[str, TrendPairModel]
+
+
+class PerformanceResponse(BaseModel):
+    property_id: str
+    adr_room_basis: str
+    start: str
+    end: str
+    current: CoreMetricsModel
+    prior_period: CoreMetricsModel | None
+    prior_year: CoreMetricsModel | None
+    prior_period_delta_pct: dict[str, str | None]
+    prior_year_delta_pct: dict[str, str | None]
+    reconciliation: dict[str, ReconLineModel]
+    trends: TrendsModel
+    days_excluded: int
+
+
+def _dec(value: Decimal | None) -> str | None:
+    """Optional money/ratio -> exact string, mirroring `_opt` for the perf models."""
+    return None if value is None else str(value)
+
+
+def _core_metrics_model(m: CoreMetrics) -> CoreMetricsModel:
+    return CoreMetricsModel(
+        start=m.start.isoformat(),
+        end=m.end.isoformat(),
+        rooms_available=str(m.rooms_available),
+        rooms_sold=str(m.rooms_sold),
+        adr_rooms_sold=str(m.adr_rooms_sold),
+        room_revenue=str(m.room_revenue),
+        total_revenue=str(m.total_revenue),
+        occupancy=_dec(m.occupancy),
+        adr=_dec(m.adr),
+        revpar=_dec(m.revpar),
+        trevpar=_dec(m.trevpar),
+        adr_room_basis=m.adr_room_basis,
+    )
+
+
+def _recon_line_model(line: ReconLine) -> ReconLineModel:
+    return ReconLineModel(
+        computed=_dec(line.computed), ingested=_dec(line.ingested), agrees=line.agrees
+    )
+
+
+def _trend_pair_model(pair: TrendPair) -> TrendPairModel:
+    return TrendPairModel(
+        current=_dec(pair.current), prior=_dec(pair.prior), delta_pct=_dec(pair.delta_pct)
+    )
+
+
+def _rolling_stat_model(stat: RollingStat) -> RollingStatModel:
+    return RollingStatModel(avg=_dec(stat.avg), stdev=_dec(stat.stdev), n=stat.n)
+
+
+def _trends_model(t: Trends) -> TrendsModel:
+    return TrendsModel(
+        anchor=t.anchor.isoformat(),
+        wow={k: _trend_pair_model(v) for k, v in t.wow.items()},
+        mtd={k: _dec(v) for k, v in t.mtd.items()},
+        rolling_30={k: _rolling_stat_model(v) for k, v in t.rolling_30.items()},
+        dow={k: _trend_pair_model(v) for k, v in t.dow.items()},
+    )
+
+
+def _performance_response(
+    property_id: str,
+    basis: str,
+    start: date,
+    end: date,
+    cmp: Comparison,
+    recon: dict[str, ReconLine],
+    trend: Trends,
+    excluded: int,
+) -> PerformanceResponse:
+    return PerformanceResponse(
+        property_id=property_id,
+        adr_room_basis=basis,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        current=_core_metrics_model(cmp.current),
+        prior_period=None if cmp.prior_period is None else _core_metrics_model(cmp.prior_period),
+        prior_year=None if cmp.prior_year is None else _core_metrics_model(cmp.prior_year),
+        prior_period_delta_pct={k: _dec(v) for k, v in cmp.prior_period_delta_pct.items()},
+        prior_year_delta_pct={k: _dec(v) for k, v in cmp.prior_year_delta_pct.items()},
+        reconciliation={k: _recon_line_model(v) for k, v in recon.items()},
+        trends=_trends_model(trend),
+        days_excluded=excluded,
+    )
+
+
+@router.get("/performance", dependencies=[Depends(require_property_access)])
+def get_performance(
+    session: SessionDep,
+    property: Annotated[str, Query(alias="property")],
+    from_: Annotated[date, Query(alias="from")],
+    to: Annotated[date, Query(alias="to")],
+) -> PerformanceResponse:
+    """Core performance statistics for [from, to]: current-window occupancy/ADR/
+    RevPAR/TRevPAR with prior-period + prior-year comparisons, a PMS-KPI
+    reconciliation, and operator trend bases anchored on `to`. `days_excluded`
+    is the window length minus its data-complete days.
+
+    Fail-loud service exceptions (inventory not configured, ADR basis missing its
+    segment data) map to 409 — a request the data cannot yet answer, distinct from
+    a malformed request (422).
+    """
+    if to < from_:
+        raise HTTPException(status_code=422, detail="'to' must not precede 'from'")
+    basis = _adr_room_basis(session, property)
+    try:
+        cmp = compare(session, property, from_, to, basis=basis)
+        recon = reconciliation(session, property, from_, to, cmp.current)
+        trend = trends(session, property, to, basis=basis)
+        # TODO(#25 rebase): add InventoryInconsistent to this except tuple once
+        # PR #25 lands it on this branch (it does not exist here yet).
+        excluded = (to - from_).days + 1 - len(complete_days(session, property, from_, to))
+    except (InventoryNotConfigured, AdrBasisUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return _performance_response(property, basis, from_, to, cmp, recon, trend, excluded)
 
 
 @router.get("/sos/line/transactions", dependencies=[Depends(require_property_access)])
