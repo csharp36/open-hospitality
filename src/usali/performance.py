@@ -187,6 +187,78 @@ def labor_productivity(
     )
 
 
+@dataclass(frozen=True)
+class ReconLine:
+    """One cross-check row: the COMPUTED value (authoritative), the PMS's own
+    INGESTED value (the check), and whether they agree within tolerance. `agrees`
+    is None when either side is absent — there is nothing to reconcile."""
+
+    computed: Decimal | None
+    ingested: Decimal | None
+    agrees: bool | None
+
+
+def _mean(values: list[Decimal]) -> Decimal | None:
+    if not values:
+        return None
+    return sum(values, Decimal("0")) / Decimal(len(values))
+
+
+def _recon_line(
+    computed: Decimal | None, ingested: Decimal | None, tol: Decimal
+) -> ReconLine:
+    if computed is None or ingested is None:
+        return ReconLine(computed=computed, ingested=ingested, agrees=None)
+    agrees = abs(computed - ingested) <= tol
+    return ReconLine(computed=computed, ingested=ingested, agrees=agrees)
+
+
+_OCC_TOL = Decimal("0.005")  # occupancy is a fraction
+_CURRENCY_TOL = Decimal("0.5")  # ADR/RevPAR are currency amounts
+
+
+def reconciliation(
+    session: Session,
+    property_id: str,
+    start: date,
+    end: date,
+    metrics: CoreMetrics,
+) -> dict[str, ReconLine]:
+    """FAIL-SOFT cross-check of the COMPUTED occupancy/ADR/RevPAR (authoritative,
+    from `core_metrics`) against the PMS's own INGESTED DAY statistics
+    (OCCUPANCY_PCT/ADR/REVPAR). REPORTS a divergence beyond a rounding tolerance;
+    NEVER raises — the ingested figures are only a check on our arithmetic.
+
+    Units: ingested OCCUPANCY_PCT is a PERCENTAGE (label "% Rooms Occupied", stored
+    verbatim by the adaptor), so it is divided by 100 to match the fraction
+    `metrics.occupancy` carries. ADR and REVPAR are currency in both — no scaling.
+
+    Window aggregation: for a multi-day window the ingested side is the MEAN of the
+    ingested DAY values over the days where each stat is present (None if none
+    present); a single-day window degenerates to that day's stat. This mirrors the
+    "statistics are as-of KPIs, never summed" convention and keeps the ingested
+    ADR/RevPAR/occupancy on the same per-available-room scale as the computed side.
+
+    Tolerance: occupancy within 0.005 (fraction), ADR/RevPAR within 0.5 (currency).
+    `agrees` is None whenever either side is absent — nothing to reconcile.
+    """
+    occ_pct = _mean(
+        list(_stat_by_day(session, property_id, start, end, "OCCUPANCY_PCT").values())
+    )
+    ingested_occ = None if occ_pct is None else occ_pct / Decimal("100")
+    ingested_adr = _mean(
+        list(_stat_by_day(session, property_id, start, end, "ADR").values())
+    )
+    ingested_revpar = _mean(
+        list(_stat_by_day(session, property_id, start, end, "REVPAR").values())
+    )
+    return {
+        "occupancy": _recon_line(metrics.occupancy, ingested_occ, _OCC_TOL),
+        "adr": _recon_line(metrics.adr, ingested_adr, _CURRENCY_TOL),
+        "revpar": _recon_line(metrics.revpar, ingested_revpar, _CURRENCY_TOL),
+    }
+
+
 def core_metrics(
     session: Session, property_id: str, start: date, end: date, *, basis: str
 ) -> CoreMetrics:

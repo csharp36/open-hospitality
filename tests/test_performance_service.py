@@ -22,6 +22,7 @@ from usali.performance import (
     adr_rooms_sold,
     core_metrics,
     labor_productivity,
+    reconciliation,
 )
 
 
@@ -144,6 +145,56 @@ def test_labor_hours_per_occupied_room(db_session):
     p = labor_productivity(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1))
     assert p.labor_hours == Decimal("160")
     assert p.hours_per_occupied_room == Decimal("2.0000")  # 160/80
+
+
+def test_reconciliation_flags_divergence(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ADR", 150),      # agrees with computed 150
+        _stat(db_session, "HISJ", date(2026, 1, 1), "REVPAR", 999),   # diverges from computed 120
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["adr"].agrees is True
+    assert recon["revpar"].agrees is False
+
+
+def test_reconciliation_normalizes_ingested_occupancy_percent(db_session):
+    # Ingested OCCUPANCY_PCT is a PERCENTAGE (80.0), computed occupancy a FRACTION
+    # (0.8000): the cross-check must normalize before comparing.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "OCCUPANCY_PCT", 80),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["occupancy"].computed == Decimal("0.8000")
+    assert recon["occupancy"].ingested == Decimal("0.8")
+    assert recon["occupancy"].agrees is True
+
+
+def test_reconciliation_missing_ingested_stat_yields_none(db_session):
+    # A MISSING ingested stat must not crash: `agrees` is None (nothing to check).
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["adr"].ingested is None
+    assert recon["adr"].agrees is None
+    assert recon["revpar"].agrees is None
+    assert recon["occupancy"].agrees is None
 
 
 @pytest.mark.skip(reason="InventoryInconsistent lands with the PR #25 rebase")
