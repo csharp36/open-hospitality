@@ -315,3 +315,120 @@ def core_metrics(
         revpar=_ratio(room_rev, avail), trevpar=_ratio(total_rev, avail),
         adr_room_basis=basis,
     )
+
+
+_COMPARISON_METRICS: tuple[str, ...] = ("occupancy", "adr", "revpar", "trevpar")
+_Q_PCT = Decimal("0.1")
+
+
+@dataclass(frozen=True)
+class Comparison:
+    current: CoreMetrics
+    prior_period: CoreMetrics | None
+    prior_year: CoreMetrics | None
+    prior_period_delta_pct: dict[str, Decimal | None]
+    prior_year_delta_pct: dict[str, Decimal | None]
+
+
+def _delta_pct(cur: Decimal | None, prior: Decimal | None) -> Decimal | None:
+    """Percentage variance of `cur` over `prior`. None (never a ZeroDivisionError)
+    when either operand is absent or the prior base is zero — there is no defined
+    variance from nothing or from zero."""
+    if cur is None or prior is None or prior == 0:
+        return None
+    return ((cur - prior) / prior * 100).quantize(_Q_PCT)
+
+
+def _delta_map(
+    current: CoreMetrics, prior: CoreMetrics | None
+) -> dict[str, Decimal | None]:
+    """Per-metric variance of `current` vs `prior` over the core KPI names. When
+    the prior window did not resolve (None) every delta is None."""
+    return {
+        name: _delta_pct(
+            getattr(current, name), None if prior is None else getattr(prior, name)
+        )
+        for name in _COMPARISON_METRICS
+    }
+
+
+def _shift_year(d: date, years: int) -> date:
+    """`d` shifted by whole `years`. A Feb-29 date has no counterpart in a
+    non-leap target year (`date.replace` raises ValueError); fall back to a plain
+    365-day shift there so a leap-day window degrades gracefully instead of
+    blowing up the whole comparison."""
+    try:
+        return d.replace(year=d.year + years)
+    except ValueError:
+        return d + timedelta(days=365 * years)
+
+
+def _window_has_history(
+    session: Session, property_id: str, start: date, end: date
+) -> bool:
+    """Whether ANY promoted DAY statistic landed in [start, end]. A prior window
+    with no facts is 'less than a year of history' (or no prior period) — there is
+    nothing to compare against, so the comparison is None rather than a spurious
+    zero-occupancy row invented from an in-force room count alone."""
+    return session.execute(
+        select(UsaliStatisticFact.property_id)
+        .where(
+            UsaliStatisticFact.property_id == property_id,
+            UsaliStatisticFact.business_date >= start,
+            UsaliStatisticFact.business_date <= end,
+            UsaliStatisticFact.period == "DAY",
+            UsaliStatisticFact.is_prior_year.is_(False),
+        )
+        .limit(1)
+    ).first() is not None
+
+
+def _prior_core_metrics(
+    session: Session, property_id: str, start: date, end: date, *, basis: str
+) -> CoreMetrics | None:
+    """`core_metrics` for a PRIOR window, degraded to None when the window cannot
+    resolve: no landed history (`_window_has_history`), no inventory in force
+    (InventoryNotConfigured), or an ADR basis lacking its segment data
+    (AdrBasisUnavailable). A prior window that cannot be computed simply yields no
+    comparison — never a failed request and never a divide-by-zero downstream."""
+    if not _window_has_history(session, property_id, start, end):
+        return None
+    try:
+        return core_metrics(session, property_id, start, end, basis=basis)
+    except (InventoryNotConfigured, AdrBasisUnavailable):
+        return None
+
+
+def compare(
+    session: Session, property_id: str, start: date, end: date, *, basis: str
+) -> Comparison:
+    """Current-window `core_metrics` plus a prior-PERIOD comparison (the
+    same-length window immediately before [start, end]) and a prior-YEAR
+    comparison (the same window one calendar year earlier), each with per-metric
+    percentage variance over occupancy/ADR/RevPAR/TRevPAR.
+
+    Prior-period window: the `n = (end - start).days + 1` days ending the day
+    before `start`. Prior-year window: `start`/`end` shifted back one year, with
+    Feb-29 handled by `_shift_year` (falls back to a 365-day shift in a non-leap
+    year rather than raising). Either prior window is None when it cannot resolve
+    (no inventory/history, or an unavailable ADR basis) — see `_prior_core_metrics`
+    — and its delta map is then all-None. `_delta_pct` never divides by zero: a
+    zero prior base yields None, so a property with less than a year of history has
+    prior_year None and every prior_year delta None.
+    """
+    current = core_metrics(session, property_id, start, end, basis=basis)
+    n = (end - start).days + 1
+
+    pp_start, pp_end = start - timedelta(days=n), end - timedelta(days=n)
+    prior_period = _prior_core_metrics(session, property_id, pp_start, pp_end, basis=basis)
+
+    py_start, py_end = _shift_year(start, -1), _shift_year(end, -1)
+    prior_year = _prior_core_metrics(session, property_id, py_start, py_end, basis=basis)
+
+    return Comparison(
+        current=current,
+        prior_period=prior_period,
+        prior_year=prior_year,
+        prior_period_delta_pct=_delta_map(current, prior_period),
+        prior_year_delta_pct=_delta_map(current, prior_year),
+    )

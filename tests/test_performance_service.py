@@ -22,6 +22,7 @@ from usali.performance import (
     CoreMetrics,
     _stat_by_day,
     adr_rooms_sold,
+    compare,
     complete_days,
     core_metrics,
     labor_productivity,
@@ -212,6 +213,89 @@ def test_core_metrics_refuses_negative_denominator(db_session):
     db_session.commit()
     with pytest.raises(InventoryInconsistent):
         core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+
+
+def test_prior_period_and_prior_year(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2025, 1, 1), total_rooms=100))
+    # current day 2026-01-08 (occ 0.80); prior-period day 2026-01-07 (occ 0.60).
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOM_REVENUE", 12000),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "TOTAL_REVENUE", 18000),
+        _stat(db_session, "HISJ", date(2026, 1, 7), "ROOMS_OCCUPIED", 60),
+        _stat(db_session, "HISJ", date(2026, 1, 7), "ROOM_REVENUE", 9000),
+        _stat(db_session, "HISJ", date(2026, 1, 7), "TOTAL_REVENUE", 15000),
+    ])
+    db_session.commit()
+    cmp = compare(db_session, "HISJ", date(2026, 1, 8), date(2026, 1, 8), basis="as_reported")
+    assert cmp.current.occupancy == Decimal("0.8000")
+    assert cmp.prior_period.occupancy == Decimal("0.6000")
+    assert cmp.prior_period_delta_pct["occupancy"] is not None    # +33.3%
+    # no 2025 history for this window -> prior-year None, delta None (no zero-div)
+    assert cmp.prior_year is None or cmp.prior_year.occupancy is None
+    assert cmp.prior_year_delta_pct["occupancy"] is None
+
+
+def test_prior_period_delta_is_signed_percentage(db_session):
+    # 0.80 vs 0.60 == +33.3%; the delta must be the signed rounded variance.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 7), "ROOMS_OCCUPIED", 60),
+    ])
+    db_session.commit()
+    cmp = compare(db_session, "HISJ", date(2026, 1, 8), date(2026, 1, 8), basis="as_reported")
+    assert cmp.prior_period_delta_pct["occupancy"] == Decimal("33.3")
+
+
+def test_prior_year_works_when_history_exists(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2025, 1, 1), total_rooms=100))
+    # current 2026-01-08 (occ 0.80); same window one year earlier 2025-01-08 (occ 0.50).
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOM_REVENUE", 12000),
+        _stat(db_session, "HISJ", date(2025, 1, 8), "ROOMS_OCCUPIED", 50),
+        _stat(db_session, "HISJ", date(2025, 1, 8), "ROOM_REVENUE", 6000),
+    ])
+    db_session.commit()
+    cmp = compare(db_session, "HISJ", date(2026, 1, 8), date(2026, 1, 8), basis="as_reported")
+    assert cmp.prior_year is not None
+    assert cmp.prior_year.occupancy == Decimal("0.5000")
+    # 0.80 vs 0.50 == +60.0%
+    assert cmp.prior_year_delta_pct["occupancy"] == Decimal("60.0")
+
+
+def test_zero_prior_value_yields_none_delta_no_zero_div(db_session):
+    # A prior window WITH landed history but a zero metric (occ 0/100) must give a
+    # None delta, never a ZeroDivisionError.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 7), "ROOMS_OCCUPIED", 0),  # landed fact, zero value
+    ])
+    db_session.commit()
+    cmp = compare(db_session, "HISJ", date(2026, 1, 8), date(2026, 1, 8), basis="as_reported")
+    assert cmp.prior_period is not None
+    assert cmp.prior_period.occupancy == Decimal("0.0000")
+    assert cmp.prior_period_delta_pct["occupancy"] is None
+
+
+def test_prior_year_leap_day_window_falls_back_safely(db_session):
+    # A Feb-29 window shifted to a non-leap prior year has no .replace counterpart;
+    # the comparison must degrade to None (365-day fallback), never raise ValueError.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2024, 1, 1), total_rooms=100))
+    db_session.add(_stat(db_session, "HISJ", date(2024, 2, 29), "ROOMS_OCCUPIED", 80))
+    db_session.commit()
+    # 2023 (non-leap) has no history in the shifted window -> prior_year None, no raise.
+    cmp = compare(db_session, "HISJ", date(2024, 2, 29), date(2024, 2, 29), basis="as_reported")
+    assert cmp.current.occupancy == Decimal("0.8000")
+    assert cmp.prior_year is None
+    assert cmp.prior_year_delta_pct["occupancy"] is None
 
 
 def test_complete_days_requires_coverage_and_availability(db_session):
