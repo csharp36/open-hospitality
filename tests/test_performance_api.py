@@ -148,6 +148,30 @@ def test_performance_exclude_comp_house_segmentless_requested_day_still_409(
     assert r.status_code == 409
 
 
+def test_performance_exclude_comp_house_inconsistent_segments_is_409(
+    db_engine, db_session, tmp_path
+):
+    # F1: an exclude_comp_house property whose REQUESTED window has comp+house rooms
+    # meeting/exceeding occupied rooms would net a zero/negative ADR basis. That is
+    # SegmentInconsistent (an AdrBasisUnavailable subclass), so the endpoint 409s
+    # rather than publishing a negative ADR.
+    _org_and_property(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add(PropertyStatConfig(property_id="HISJ", adr_room_basis="exclude_comp_house"))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 100),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOM_REVENUE", 12000),
+        _seg(db_session, "HISJ", date(2026, 1, 8), "COMPLIMENTARY", 60),
+        _seg(db_session, "HISJ", date(2026, 1, 8), "HOUSE_USE", 50),  # 110 >= 100 occupied
+    ])
+    db_session.commit()
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.get("/api/performance?property=HISJ&from=2026-01-08&to=2026-01-08",
+              headers=_admin_headers(mint, db_session))
+    assert r.status_code == 409
+
+
 def test_get_performance_by_fiscal_period(db_engine, db_session, tmp_path):
     _org_and_property(db_session)
     db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))

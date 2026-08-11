@@ -87,6 +87,16 @@ class AdrBasisUnavailable(Exception):
     (adr-010)."""
 
 
+class SegmentInconsistent(AdrBasisUnavailable):
+    """Comp/house-use segment rooms meet or exceed occupied rooms on a day, so
+    the ADR rooms-sold basis would be zero/negative — refuse rather than publish
+    a nonsensical ADR (adr-010; the negative-denominator class).
+
+    Subclasses AdrBasisUnavailable so the endpoint's existing
+    `except (InventoryNotConfigured, AdrBasisUnavailable)` -> 409 and
+    `_daily_series`'s `except AdrBasisUnavailable` both handle it unchanged."""
+
+
 def _comp_house_rooms_by_day(
     session: Session, property_id: str, start: date, end: date
 ) -> dict[date, Decimal]:
@@ -138,14 +148,25 @@ def adr_rooms_sold(
                 "net them from — ingest the segment statistics or switch the ADR basis"
             )
     comp_house = _comp_house_rooms_by_day(session, property_id, start, end)
-    return total - sum(comp_house.values(), Decimal("0"))
+    net = total - sum(comp_house.values(), Decimal("0"))
+    if net <= 0:
+        raise SegmentInconsistent(
+            f"{property_id} is set to exclude comp/house-use from ADR, but over "
+            f"{start.isoformat()}..{end.isoformat()} the comp+house-use rooms meet or "
+            "exceed occupied rooms — the rooms-sold basis would be zero or negative; "
+            "refusing to publish a nonsensical ADR (check the segment statistics)"
+        )
+    return net
 
 
 _Q4 = Decimal("0.0001")
 
 
 def _ratio(num: Decimal, den: Decimal) -> Decimal | None:
-    if den == 0:
+    # A zero OR negative denominator never yields a published metric: a negative
+    # denominator (e.g. a bad comp/house net that slipped a guard) must fail soft to
+    # None here rather than produce a negative ADR/occupancy/RevPAR (adr-010).
+    if den <= 0:
         return None
     return (num / den).quantize(_Q4)
 
@@ -233,10 +254,25 @@ class ReconLine:
     agrees: bool | None
 
 
-def _mean(values: list[Decimal]) -> Decimal | None:
-    if not values:
+def _weighted_mean(
+    values: dict[date, Decimal], weights: dict[date, Decimal]
+) -> Decimal | None:
+    """Volume-weighted mean of the ingested DAY `values` using per-day `weights`,
+    over the days where BOTH are present: Σ(value_d × weight_d) / Σ(weight_d). None
+    when no such day exists or the total weight is zero — so it stays comparable to
+    the computed window ratio (Σnum/Σden) instead of an unweighted daily average
+    that diverges the moment inventory or occupancy varies within the window."""
+    num = Decimal("0")
+    den = Decimal("0")
+    for d, v in values.items():
+        w = weights.get(d)
+        if w is None:
+            continue
+        num += v * w
+        den += w
+    if den == 0:
         return None
-    return sum(values, Decimal("0")) / Decimal(len(values))
+    return num / den
 
 
 def _recon_line(
@@ -268,11 +304,17 @@ def reconciliation(
     verbatim by the adaptor), so it is divided by 100 to match the fraction
     `metrics.occupancy` carries. ADR and REVPAR are currency in both — no scaling.
 
-    Window aggregation: for a multi-day window the ingested side is the MEAN of the
-    ingested DAY values over the days where each stat is present (None if none
-    present); a single-day window degenerates to that day's stat. This mirrors the
-    "statistics are as-of KPIs, never summed" convention and keeps the ingested
-    ADR/RevPAR/occupancy on the same per-available-room scale as the computed side.
+    Window aggregation: the ingested side is VOLUME-WEIGHTED so it is comparable to
+    the computed window ratio (Σnum/Σden), which is itself volume/availability
+    weighted — an unweighted daily mean diverges the moment inventory or occupancy
+    varies within the window (a spurious `agrees` False). Per day, over the days
+    where both the KPI and its weight are present:
+      ingested occupancy = Σ((OCCUPANCY_PCT_d/100) × avail_d) / Σ(avail_d)
+      ingested ADR       = Σ(ADR_d × sold_d)               / Σ(sold_d)
+      ingested RevPAR    = Σ(REVPAR_d × avail_d)            / Σ(avail_d)
+    where sold_d is the ingested ROOMS_OCCUPIED DAY stat and avail_d the ingested
+    ROOMS_AVAILABLE DAY stat. A single-day window degenerates to that day's stat.
+    Ingested None (agrees None) when no weighted day exists or the total weight is 0.
 
     Two further FAIL-SOFT lines cross the computed figures against a DIFFERENT
     source than the KPI statistics: `room_revenue` reconciles the ROOM_REVENUE
@@ -284,15 +326,20 @@ def reconciliation(
     Tolerance: occupancy within 0.005 (fraction), ADR/RevPAR within 0.5 (currency).
     `agrees` is None whenever either side is absent — nothing to reconcile.
     """
-    occ_pct = _mean(
-        list(_stat_by_day(session, property_id, start, end, "OCCUPANCY_PCT").values())
+    # Weights: sold_d (ROOMS_OCCUPIED) weights ADR; avail_d (ROOMS_AVAILABLE)
+    # weights occupancy and RevPAR. Both are ingested DAY stats.
+    sold_by_day = _stat_by_day(session, property_id, start, end, "ROOMS_OCCUPIED")
+    avail_by_day = _stat_by_day(session, property_id, start, end, "ROOMS_AVAILABLE")
+    occ_pct_frac = {
+        d: v / Decimal("100")
+        for d, v in _stat_by_day(session, property_id, start, end, "OCCUPANCY_PCT").items()
+    }
+    ingested_occ = _weighted_mean(occ_pct_frac, avail_by_day)
+    ingested_adr = _weighted_mean(
+        _stat_by_day(session, property_id, start, end, "ADR"), sold_by_day
     )
-    ingested_occ = None if occ_pct is None else occ_pct / Decimal("100")
-    ingested_adr = _mean(
-        list(_stat_by_day(session, property_id, start, end, "ADR").values())
-    )
-    ingested_revpar = _mean(
-        list(_stat_by_day(session, property_id, start, end, "REVPAR").values())
+    ingested_revpar = _weighted_mean(
+        _stat_by_day(session, property_id, start, end, "REVPAR"), avail_by_day
     )
     # room_revenue: the ROOM_REVENUE statistic (computed side) reconciled to the
     # SUM of the Rooms financial-fact line over the window — the same
@@ -442,9 +489,10 @@ def compare(
     percentage variance over occupancy/ADR/RevPAR/TRevPAR.
 
     Prior-period window: the `n = (end - start).days + 1` days ending the day
-    before `start`. Prior-year window: `start`/`end` shifted back one year, with
-    Feb-29 handled by `_shift_year` (falls back to a 365-day shift in a non-leap
-    year rather than raising). Either prior window is None when it cannot resolve
+    before `start`. Prior-year window: a single shifted anchor `_shift_year(start,
+    -1)` plus the SAME length n, so it is always exactly n days even across a
+    Feb-29 endpoint (`_shift_year` falls back to a 365-day shift in a non-leap year
+    rather than raising). Either prior window is None when it cannot resolve
     (no inventory/history, or an unavailable ADR basis) — see `_prior_core_metrics`
     — and its delta map is then all-None. `_delta_pct` never divides by zero: a
     zero prior base yields None, so a property with less than a year of history has
@@ -456,7 +504,12 @@ def compare(
     pp_start, pp_end = start - timedelta(days=n), end - timedelta(days=n)
     prior_period = _prior_core_metrics(session, property_id, pp_start, pp_end, basis=basis)
 
-    py_start, py_end = _shift_year(start, -1), _shift_year(end, -1)
+    # Prior-YEAR window: derive from a SINGLE shifted anchor + the current length so
+    # it is ALWAYS exactly n days. Shifting `start` and `end` independently would let
+    # a Feb-29 endpoint fall back to a 365-day shift while the other uses `.replace`,
+    # yielding a prior-year window a day shorter/longer than the current one.
+    py_start = _shift_year(start, -1)
+    py_end = py_start + timedelta(days=n - 1)
     prior_year = _prior_core_metrics(session, property_id, py_start, py_end, basis=basis)
 
     return Comparison(

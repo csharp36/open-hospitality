@@ -22,6 +22,8 @@ from usali.performance import (
     REQUIRED_STATISTICS_REPORTS,
     AdrBasisUnavailable,
     CoreMetrics,
+    SegmentInconsistent,
+    _ratio,
     _stat_by_day,
     adr_rooms_sold,
     compare,
@@ -126,6 +128,58 @@ def test_adr_rooms_sold_excludes_comp_and_house(db_session):
     assert sold == Decimal("95")  # 100 - 3 - 2
 
 
+def test_adr_rooms_sold_refuses_when_comp_house_exceed_occupied(db_session):
+    # Bad data: comp+house rooms (110) exceed occupied (100). Netting would yield a
+    # NEGATIVE rooms-sold basis and a negative ADR — refuse (adr-010) rather than
+    # publish nonsense.
+    _prop(db_session)
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "COMPLIMENTARY", 60),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "HOUSE_USE", 50),
+    ])
+    db_session.commit()
+    with pytest.raises(SegmentInconsistent):
+        adr_rooms_sold(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), "exclude_comp_house")
+
+
+def test_adr_rooms_sold_refuses_when_comp_house_equal_occupied(db_session):
+    # net == 0 (comp+house == occupied) is just as nonsensical a basis as negative:
+    # refuse rather than silently publish a None ADR.
+    _prop(db_session)
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "COMPLIMENTARY", 60),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "HOUSE_USE", 40),
+    ])
+    db_session.commit()
+    with pytest.raises(SegmentInconsistent):
+        adr_rooms_sold(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), "exclude_comp_house")
+
+
+def test_core_metrics_exclude_comp_house_segment_inconsistent_propagates(db_session):
+    # The refusal must propagate through core_metrics on the exclude_comp_house basis.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "COMPLIMENTARY", 60),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "HOUSE_USE", 50),
+    ])
+    db_session.commit()
+    with pytest.raises(SegmentInconsistent):
+        core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="exclude_comp_house")
+
+
+def test_ratio_negative_denominator_returns_none():
+    # Defense-in-depth: a negative denominator must NEVER produce a published
+    # metric (mutation-proof: guards the den < 0 path directly).
+    assert _ratio(Decimal("-5"), Decimal("-10")) is None
+    assert _ratio(Decimal("5"), Decimal("0")) is None
+    assert _ratio(Decimal("5"), Decimal("10")) == Decimal("0.5000")
+
+
 def test_adr_rooms_sold_refuses_exclude_without_segments(db_session):
     _prop(db_session)
     db_session.add(_stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100))
@@ -180,7 +234,8 @@ def test_reconciliation_flags_divergence(db_session):
     _prop(db_session)
     db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
     db_session.add_all([
-        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),  # ADR weight
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_AVAILABLE", 100),  # RevPAR weight
         _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
         _stat(db_session, "HISJ", date(2026, 1, 1), "ADR", 150),      # agrees with computed 150
         _stat(db_session, "HISJ", date(2026, 1, 1), "REVPAR", 999),   # diverges from computed 120
@@ -199,6 +254,7 @@ def test_reconciliation_normalizes_ingested_occupancy_percent(db_session):
     db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
     db_session.add_all([
         _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_AVAILABLE", 100),  # occupancy weight
         _stat(db_session, "HISJ", date(2026, 1, 1), "OCCUPANCY_PCT", 80),
     ])
     db_session.commit()
@@ -374,6 +430,85 @@ def test_prior_year_leap_day_window_falls_back_safely(db_session):
     assert cmp.current.occupancy == Decimal("0.8000")
     assert cmp.prior_year is None
     assert cmp.prior_year_delta_pct["occupancy"] is None
+
+
+def test_reconciliation_volume_weights_multiday_ingested(db_session):
+    # ANTI-FALSE-ALARM: a multi-day window with an intra-window inventory change.
+    # Day1: avail 100, occ 100, ADR 100. Day2: avail 10, occ 0, ADR 200.
+    # Computed occupancy = (100+0)/(100+10) = 0.9091 (volume/availability weighted).
+    # An UNWEIGHTED mean of ingested OCCUPANCY_PCT (100%, 0%) is 0.50 and would
+    # spuriously disagree; the WEIGHTED ingested occupancy is 0.9091 and agrees.
+    _prop(db_session)
+    db_session.add_all([
+        RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100),
+        RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 2), total_rooms=10),
+    ])
+    db_session.add_all([
+        # Day 1
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 10000),  # ADR 100
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_AVAILABLE", 100),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "OCCUPANCY_PCT", 100),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ADR", 100),
+        # Day 2 (zero occupancy on 10 available rooms)
+        _stat(db_session, "HISJ", date(2026, 1, 2), "ROOMS_OCCUPIED", 0),
+        _stat(db_session, "HISJ", date(2026, 1, 2), "ROOM_REVENUE", 0),
+        _stat(db_session, "HISJ", date(2026, 1, 2), "ROOMS_AVAILABLE", 10),
+        _stat(db_session, "HISJ", date(2026, 1, 2), "OCCUPANCY_PCT", 0),
+        _stat(db_session, "HISJ", date(2026, 1, 2), "ADR", 200),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 2), basis="as_reported")
+    assert m.occupancy == Decimal("0.9091")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 2), m)
+    assert recon["occupancy"].agrees is True   # weighted ingested matches (was False unweighted)
+    assert recon["adr"].agrees is True         # ADR weighted by rooms sold = 100
+
+
+def test_reconciliation_fractional_dollar_adr(db_session):
+    # A cents-level fixture so a quantization bug in the weighted aggregation can't
+    # hide behind whole-dollar values: computed ADR 149.99 must reconcile to the
+    # ingested 149.99.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 14999),  # 14999/100 = 149.99
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ADR", Decimal("149.99")),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    assert m.adr == Decimal("149.9900")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["adr"].ingested == Decimal("149.99")
+    assert recon["adr"].agrees is True
+
+
+def test_prior_year_window_is_same_length_as_current_over_leap_boundary(db_session):
+    # F3: current window 2024-02-29..2024-03-01 (n=2). The prior-year window must be
+    # EXACTLY 2 days (2023-03-01..2023-03-02), derived from a single shifted anchor +
+    # the current length — not two independently shifted endpoints (which would give
+    # a 1-day 2023-03-01..2023-03-01 window and drop 2023-03-02's history).
+    _prop(db_session)
+    db_session.add_all([
+        RoomInventory(property_id="HISJ", effective_date=date(2023, 1, 1), total_rooms=100),
+        RoomInventory(property_id="HISJ", effective_date=date(2024, 1, 1), total_rooms=100),
+    ])
+    db_session.add_all([
+        # current window
+        _stat(db_session, "HISJ", date(2024, 2, 29), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2024, 3, 1), "ROOMS_OCCUPIED", 80),
+        # prior-year window: BOTH 2023 days must be included (sold 50 + 70 over
+        # avail 100 + 100 = 0.6000; a truncated 1-day window would give 0.5000).
+        _stat(db_session, "HISJ", date(2023, 3, 1), "ROOMS_OCCUPIED", 50),
+        _stat(db_session, "HISJ", date(2023, 3, 2), "ROOMS_OCCUPIED", 70),
+    ])
+    db_session.commit()
+    cmp = compare(db_session, "HISJ", date(2024, 2, 29), date(2024, 3, 1), basis="as_reported")
+    assert cmp.prior_year is not None
+    assert cmp.prior_year.start == date(2023, 3, 1)
+    assert cmp.prior_year.end == date(2023, 3, 2)   # exactly n=2 days, not truncated
+    assert cmp.prior_year.occupancy == Decimal("0.6000")  # both 2023 days fed it
 
 
 def test_complete_days_requires_coverage_and_availability(db_session):
