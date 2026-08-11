@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from usali.inventory import rooms_available
 from usali.models import UsaliSegmentFact, UsaliStatisticFact
+from usali.reporting import _labor_sections
 
 
 def _stat_by_day(
@@ -128,6 +129,62 @@ class CoreMetrics:
     revpar: Decimal | None
     trevpar: Decimal | None
     adr_room_basis: str
+
+
+@dataclass(frozen=True)
+class LaborProductivity:
+    labor_hours: Decimal
+    rooms_sold: Decimal
+    hours_per_occupied_room: Decimal | None
+    labor_cost: Decimal | None
+    cost_per_occupied_room: Decimal | None
+    cost_suppressed: bool
+
+
+def labor_productivity(
+    session: Session, property_id: str, start: date, end: date
+) -> LaborProductivity:
+    """Labor HOURS and labor COST per occupied room over [start, end].
+
+    Hours per occupied room is PURELY operational — never disclosure-gated, so
+    Schedule-15 detail (hours) is always complete. Cost per occupied room is
+    per-employee MONEY, so it composes with the SAME per-day `_discloses` guard
+    the SOS uses: `_labor_sections` is called PER DAY (never one SUM over the
+    caller-controlled window, which would be a differencing oracle — see
+    reporting._discloses), and if ANY contributing day's cost is not disclosable
+    the whole cost figure is withheld (`labor_cost`/`cost_per_occupied_room` None,
+    `cost_suppressed` True). Days are the finest grain a caller can select, so a
+    window that withholds nothing is a sum of >= 2-priced-employee days.
+    """
+    sold = sum(
+        _stat_by_day(session, property_id, start, end, "ROOMS_OCCUPIED").values(),
+        Decimal("0"),
+    )
+    hours_total = Decimal("0")
+    cost_total = Decimal("0")
+    suppressed = False
+    for d in _days(start, end):
+        # PER DAY: `_labor_sections` returns
+        # (lines, cost_total, hours_total, ot_total, fte, suppressed_units,
+        #  unpriced_hours). `cost` already EXCLUDES any unit withheld on the day,
+        # and `day_suppressed` is the COUNT (>0 == truthy) of units withheld.
+        _lines, cost, hours, _ot, _fte, day_suppressed, _unpriced = _labor_sections(
+            session, property_id, d, d
+        )
+        hours_total += hours
+        if day_suppressed:
+            suppressed = True
+        else:
+            cost_total += cost
+    labor_cost = None if suppressed else cost_total
+    return LaborProductivity(
+        labor_hours=hours_total,
+        rooms_sold=sold,
+        hours_per_occupied_room=_ratio(hours_total, sold),
+        labor_cost=labor_cost,
+        cost_per_occupied_room=None if labor_cost is None else _ratio(labor_cost, sold),
+        cost_suppressed=suppressed,
+    )
 
 
 def core_metrics(

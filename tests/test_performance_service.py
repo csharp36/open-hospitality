@@ -3,12 +3,15 @@ from decimal import Decimal
 
 import pytest
 
+from tests.employees import make_employee
 from usali.models import (
     IngestBatch,
     Organization,
     PmsDailyStatisticStage,
     Property,
     RoomInventory,
+    Timecard,
+    UsaliLaborFact,
     UsaliSegmentFact,
     UsaliStatisticFact,
 )
@@ -18,6 +21,7 @@ from usali.performance import (
     _stat_by_day,
     adr_rooms_sold,
     core_metrics,
+    labor_productivity,
 )
 
 
@@ -118,6 +122,28 @@ def test_core_metrics_and_revpar_crosscheck(db_session):
     assert m.revpar == Decimal("120.0000")
     assert m.trevpar == Decimal("180.0000")
     assert abs(m.adr * m.occupancy - m.revpar) <= Decimal("0.01")
+
+
+def test_labor_hours_per_occupied_room(db_session):
+    # HOURS are pure operational detail — NEVER disclosure-gated — so a bare
+    # promoted labor fact (even one with no priced cost) still yields the ratio.
+    _prop(db_session)
+    db_session.add(_stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80))
+    # UsaliLaborFact.timecard_id is NOT NULL with a composite FK onto timecard,
+    # so seed a real employee + approved card for the fact to hang off.
+    emp = make_employee(db_session, property_id="HISJ", full_name="Hank H", pay_type="hourly")
+    db_session.flush()
+    card = Timecard(employee_id=emp.employee_id, period_start=date(2025, 12, 29),
+                    period_end=date(2026, 1, 11), status="approved")
+    db_session.add(card)
+    db_session.flush()
+    db_session.add(UsaliLaborFact(property_id="HISJ", business_date=date(2026, 1, 1),
+                                  department_id=None, hours=Decimal("160"), ot_hours=Decimal("0"),
+                                  est_cost=Decimal("0"), timecard_id=card.timecard_id))
+    db_session.commit()
+    p = labor_productivity(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1))
+    assert p.labor_hours == Decimal("160")
+    assert p.hours_per_occupied_room == Decimal("2.0000")  # 160/80
 
 
 @pytest.mark.skip(reason="InventoryInconsistent lands with the PR #25 rebase")
