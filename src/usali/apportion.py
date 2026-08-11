@@ -36,6 +36,8 @@ from collections.abc import Mapping
 from decimal import ROUND_DOWN, Decimal
 from typing import TypeVar
 
+from usali.invariants import require
+
 K = TypeVar("K")
 
 _ZERO = Decimal("0")
@@ -96,7 +98,9 @@ def apportion(
             shares[key] += quantum
 
     result = {k: v * sign for k, v in shares.items()}
-    assert sum(result.values()) == total, (
-        f"apportion lost money: {sum(result.values())} != {total}"
+    result_total = sum(result.values())
+    require(
+        result_total == total,
+        f"apportion lost money: {result_total} != {total}",
     )
     return result

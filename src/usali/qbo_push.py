@@ -41,6 +41,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from usali.models import QboPushLedger, UsaliFinancialFact
+from usali.invariants import require_not_none
 from usali.qbo_client import QboClient, QboError
 # month_bounds lives in usali.reporting (the CPA pack shares it); re-exported here
 # so existing `qbo_push.month_bounds` callers keep working.
@@ -111,8 +112,11 @@ def _group_by_gl(facts: list[UsaliFinancialFact]) -> dict[str, Decimal]:
     """NET amount per GL account code (facts already validated as GL-mapped)."""
     sums: dict[str, Decimal] = {}
     for f in facts:
-        assert f.gl_account_code is not None  # guarded by the UnmappedGlError check
-        sums[f.gl_account_code] = sums.get(f.gl_account_code, Decimal("0")) + Decimal(
+        code = require_not_none(
+            f.gl_account_code,
+            "journal-entry grouping received a fact without a GL account code",
+        )
+        sums[code] = sums.get(code, Decimal("0")) + Decimal(
             str(f.amount)
         )
     return sums
