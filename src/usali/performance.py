@@ -16,9 +16,13 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from usali.inventory import rooms_available
-from usali.models import UsaliSegmentFact, UsaliStatisticFact
+from usali.inventory import InventoryNotConfigured, rooms_available, total_rooms_on
+from usali.models import IngestionCoverage, UsaliSegmentFact, UsaliStatisticFact
 from usali.reporting import _labor_sections
+
+# A day needs its statistics report; OPERA emits manager_flash, AUTOCLERK
+# manager_report — a property uses one PMS, so either satisfies the requirement.
+REQUIRED_STATISTICS_REPORTS: frozenset[str] = frozenset({"manager_flash", "manager_report"})
 
 
 def _stat_by_day(
@@ -41,6 +45,31 @@ def _stat_by_day(
 
 def _days(start: date, end: date) -> list[date]:
     return [start + timedelta(days=i) for i in range((end - start).days + 1)]
+
+
+def complete_days(session: Session, property_id: str, start: date, end: date) -> set[date]:
+    """The business dates in [start, end] with a statistics report landed (see
+    REQUIRED_STATISTICS_REPORTS) and an in-force room count (so rooms_available
+    resolves). Trend bases and comparisons consume only these days."""
+    have: dict[date, set[str]] = {}
+    for d, rt in session.execute(
+        select(IngestionCoverage.business_date, IngestionCoverage.report_type).where(
+            IngestionCoverage.property_id == property_id,
+            IngestionCoverage.business_date >= start,
+            IngestionCoverage.business_date <= end,
+        )
+    ).all():
+        have.setdefault(d, set()).add(rt)
+    out: set[date] = set()
+    for d in _days(start, end):
+        if not (have.get(d, set()) & REQUIRED_STATISTICS_REPORTS):
+            continue
+        try:
+            total_rooms_on(session, property_id, d)
+        except InventoryNotConfigured:
+            continue
+        out.add(d)
+    return out
 
 
 _COMP_HOUSE_SEGMENTS = ("COMPLIMENTARY", "HOUSE_USE")  # promote stores canonical kinds

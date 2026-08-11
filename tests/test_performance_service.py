@@ -6,6 +6,7 @@ import pytest
 from tests.employees import make_employee
 from usali.models import (
     IngestBatch,
+    IngestionCoverage,
     Organization,
     PmsDailyStatisticStage,
     Property,
@@ -16,10 +17,12 @@ from usali.models import (
     UsaliStatisticFact,
 )
 from usali.performance import (
+    REQUIRED_STATISTICS_REPORTS,
     AdrBasisUnavailable,
     CoreMetrics,
     _stat_by_day,
     adr_rooms_sold,
+    complete_days,
     core_metrics,
     labor_productivity,
     reconciliation,
@@ -209,3 +212,38 @@ def test_core_metrics_refuses_negative_denominator(db_session):
     db_session.commit()
     with pytest.raises(InventoryInconsistent):
         core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+
+
+def test_complete_days_requires_coverage_and_availability(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    # Day 1 has a statistics report landed; day 2 does not.
+    db_session.add(IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 1),
+                                     report_type="manager_flash"))
+    db_session.commit()
+    got = complete_days(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 2))
+    assert got == {date(2026, 1, 1)}
+
+
+def test_complete_days_excludes_day_without_inventory(db_session):
+    _prop(db_session)
+    # inventory starts 2026-01-02, so 2026-01-01 has coverage but no in-force count.
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 2), total_rooms=100))
+    db_session.add_all([
+        IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 1), report_type="manager_flash"),
+        IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 2), report_type="manager_flash"),
+    ])
+    db_session.commit()
+    assert complete_days(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 2)) == {date(2026, 1, 2)}
+
+
+def test_complete_days_accepts_autoclerk_manager_report(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add(IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 1),
+                                     report_type="manager_report"))
+    db_session.commit()
+    # any-of equivalence: AUTOCLERK's manager_report satisfies the requirement
+    # just as OPERA's manager_flash does.
+    assert {"manager_flash", "manager_report"} <= REQUIRED_STATISTICS_REPORTS
+    assert complete_days(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1)) == {date(2026, 1, 1)}
