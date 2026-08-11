@@ -1,14 +1,17 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+
 from usali.models import (
     IngestBatch,
     Organization,
     PmsDailyStatisticStage,
     Property,
+    UsaliSegmentFact,
     UsaliStatisticFact,
 )
-from usali.performance import _stat_by_day
+from usali.performance import AdrBasisUnavailable, _stat_by_day, adr_rooms_sold
 
 
 def _prop(session, pid="HISJ"):
@@ -40,6 +43,16 @@ def _stat(session, pid, d, code, value):
                               stat_stage_id=stage.stat_stage_id)
 
 
+def _seg(session, pid, d, seg, rooms):
+    batch = IngestBatch(pms_source="OPERA", report_type="market_stats", source_file="t",
+                        file_hash="hseg", status="staged", row_count=1, error_count=0)
+    session.add(batch)
+    session.flush()
+    return UsaliSegmentFact(property_id=pid, pms_source="OPERA", business_date=d,
+                            usali_segment=seg, period="DAY", rooms=rooms, room_revenue=0,
+                            ingest_batch_id=batch.batch_id)
+
+
 def test_stat_by_day_returns_daily_values(db_session):
     _prop(db_session)
     db_session.add_all([
@@ -49,3 +62,32 @@ def test_stat_by_day_returns_daily_values(db_session):
     db_session.commit()
     got = _stat_by_day(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 2), "ROOM_REVENUE")
     assert got == {date(2026, 1, 1): Decimal("10000"), date(2026, 1, 2): Decimal("12000")}
+
+
+def test_adr_rooms_sold_as_reported_ignores_segments(db_session):
+    _prop(db_session)
+    db_session.add(_stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100))
+    db_session.commit()
+    sold = adr_rooms_sold(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), "as_reported")
+    assert sold == Decimal("100")
+
+
+def test_adr_rooms_sold_excludes_comp_and_house(db_session):
+    _prop(db_session)
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "COMPLIMENTARY", 3),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "HOUSE_USE", 2),
+        _seg(db_session, "HISJ", date(2026, 1, 1), "TRANSIENT", 95),
+    ])
+    db_session.commit()
+    sold = adr_rooms_sold(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), "exclude_comp_house")
+    assert sold == Decimal("95")  # 100 - 3 - 2
+
+
+def test_adr_rooms_sold_refuses_exclude_without_segments(db_session):
+    _prop(db_session)
+    db_session.add(_stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 100))
+    db_session.commit()  # no segment rows for the day
+    with pytest.raises(AdrBasisUnavailable):
+        adr_rooms_sold(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), "exclude_comp_house")
