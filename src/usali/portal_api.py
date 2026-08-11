@@ -52,6 +52,11 @@ from sqlalchemy.orm import Session
 
 from usali import qbo_push, reporting
 from usali.auth import Principal, request_session_factory, require_operator
+from usali.fiscal import (
+    FiscalCalendarNotConfigured,
+    require_config,
+    resolve_period,
+)
 from usali.inventory import InventoryNotConfigured
 from usali.models import Property, QboPushLedger
 from usali.performance import (
@@ -67,7 +72,7 @@ from usali.performance import (
     reconciliation,
     trends,
 )
-from usali.property_config_api import _adr_room_basis
+from usali.property_config_api import _adr_room_basis, _fiscal_config
 from usali.qbo_client import QboClient
 from usali.workforce import require_property_access, resolve_scope
 
@@ -874,6 +879,7 @@ class TrendsModel(BaseModel):
 class PerformanceResponse(BaseModel):
     property_id: str
     adr_room_basis: str
+    period: str | None
     start: str
     end: str
     current: CoreMetricsModel
@@ -937,6 +943,7 @@ def _trends_model(t: Trends) -> TrendsModel:
 def _performance_response(
     property_id: str,
     basis: str,
+    period: str | None,
     start: date,
     end: date,
     cmp: Comparison,
@@ -947,6 +954,7 @@ def _performance_response(
     return PerformanceResponse(
         property_id=property_id,
         adr_room_basis=basis,
+        period=period,
         start=start.isoformat(),
         end=end.isoformat(),
         current=_core_metrics_model(cmp.current),
@@ -964,31 +972,61 @@ def _performance_response(
 def get_performance(
     session: SessionDep,
     property: Annotated[str, Query(alias="property")],
-    from_: Annotated[date, Query(alias="from")],
-    to: Annotated[date, Query(alias="to")],
+    from_: Annotated[date | None, Query(alias="from")] = None,
+    to: Annotated[date | None, Query(alias="to")] = None,
+    period: Annotated[str | None, Query()] = None,
 ) -> PerformanceResponse:
-    """Core performance statistics for [from, to]: current-window occupancy/ADR/
+    """Core performance statistics for a window: current-window occupancy/ADR/
     RevPAR/TRevPAR with prior-period + prior-year comparisons, a PMS-KPI
-    reconciliation, and operator trend bases anchored on `to`. `days_excluded`
-    is the window length minus its data-complete days.
+    reconciliation, and operator trend bases anchored on the window end.
+    `days_excluded` is the window length minus its data-complete days.
+
+    The window is given EITHER by `from`+`to` (an explicit range) OR by
+    `period=YYYY-Pnn` (resolved via the property's fiscal calendar) — exactly
+    one form, never both nor neither. The response echoes `period` when the
+    fiscal form was used, `null` for an explicit range.
 
     Fail-loud service exceptions (inventory not configured, ADR basis missing its
     segment data) map to 409 — a request the data cannot yet answer, distinct from
-    a malformed request (422).
+    a malformed request (422). A `period` on a property with no fiscal calendar is
+    likewise 409; a malformed/out-of-range period key is 422.
     """
-    if to < from_:
-        raise HTTPException(status_code=422, detail="'to' must not precede 'from'")
+    ranged = from_ is not None and to is not None
+    if ranged == (period is not None):
+        # Both forms, or neither, or a half-given range (only from_ or only to).
+        raise HTTPException(
+            status_code=422,
+            detail="pass exactly one of period, or both from and to",
+        )
+    resolved_period: str | None
+    if period is not None:
+        try:
+            cfg = require_config(_fiscal_config(session, property))
+        except FiscalCalendarNotConfigured as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        try:
+            start, end = resolve_period(cfg, period)
+        except ValueError as exc:  # malformed / out-of-range period key
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        resolved_period = period
+    else:
+        assert from_ is not None and to is not None  # narrowed by `ranged`
+        if to < from_:
+            raise HTTPException(status_code=422, detail="'to' must not precede 'from'")
+        start, end, resolved_period = from_, to, None
     basis = _adr_room_basis(session, property)
     try:
-        cmp = compare(session, property, from_, to, basis=basis)
-        recon = reconciliation(session, property, from_, to, cmp.current)
-        trend = trends(session, property, to, basis=basis)
+        cmp = compare(session, property, start, end, basis=basis)
+        recon = reconciliation(session, property, start, end, cmp.current)
+        trend = trends(session, property, end, basis=basis)
         # TODO(#25 rebase): add InventoryInconsistent to this except tuple once
         # PR #25 lands it on this branch (it does not exist here yet).
-        excluded = (to - from_).days + 1 - len(complete_days(session, property, from_, to))
+        excluded = (end - start).days + 1 - len(complete_days(session, property, start, end))
     except (InventoryNotConfigured, AdrBasisUnavailable) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
-    return _performance_response(property, basis, from_, to, cmp, recon, trend, excluded)
+    return _performance_response(
+        property, basis, resolved_period, start, end, cmp, recon, trend, excluded
+    )
 
 
 @router.get("/sos/line/transactions", dependencies=[Depends(require_property_access)])

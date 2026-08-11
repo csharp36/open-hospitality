@@ -8,7 +8,7 @@ from tests.test_property_config_api import (
     _client,
     _org_and_property,
 )
-from usali.models import RoomInventory
+from usali.models import FiscalCalendar, RoomInventory
 
 
 def test_get_performance_range(db_engine, db_session, tmp_path):
@@ -49,3 +49,39 @@ def test_performance_refuses_unconfigured_inventory(db_engine, db_session, tmp_p
     c = _client(db_engine, tmp_path, verifier)
     assert c.get("/api/performance?property=HISJ&from=2026-01-01&to=2026-01-01",
                  headers=_admin_headers(mint, db_session)).status_code == 409
+
+
+def test_get_performance_by_fiscal_period(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add(FiscalCalendar(property_id="HISJ", calendar_type="calendar_month",
+                                  fiscal_year_start_month=1, week_start_weekday=None))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 15), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 15), "ROOM_REVENUE", 12000),
+    ])
+    db_session.commit()
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.get("/api/performance?property=HISJ&period=2026-P01", headers=_admin_headers(mint, db_session))
+    assert r.status_code == 200 and r.json()["period"] == "2026-P01"
+
+
+def test_performance_period_without_calendar_is_409(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.commit()  # no FiscalCalendar
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    assert c.get("/api/performance?property=HISJ&period=2026-P01",
+                 headers=_admin_headers(mint, db_session)).status_code == 409
+
+
+def test_performance_requires_exactly_one_of_range_or_period(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    assert c.get("/api/performance?property=HISJ", headers=h).status_code == 422  # neither
+    assert c.get("/api/performance?property=HISJ&from=2026-01-01&to=2026-01-31&period=2026-P01",
+                 headers=h).status_code == 422  # both
