@@ -55,11 +55,13 @@ from usali.inventory import (
     rooms_available,
 )
 from usali.models import (
+    ADR_ROOM_BASES,
     CALENDAR_TYPES,
     OOO_REASON_CODES,
     AuditEvent,
     FiscalCalendar,
     OutOfOrderRoom,
+    PropertyStatConfig,
     RoomInventory,
 )
 from usali.workforce import (
@@ -86,6 +88,11 @@ def _fiscal_config(session: Session, property_id: str) -> FiscalConfig | None:
         fiscal_year_start_month=row.fiscal_year_start_month,
         week_start_weekday=row.week_start_weekday,
     )
+
+
+def _adr_room_basis(session: Session, property_id: str) -> str:
+    row = session.get(PropertyStatConfig, property_id)
+    return row.adr_room_basis if row is not None else "as_reported"
 
 
 # ---- read models -----------------------------------------------------------
@@ -116,6 +123,7 @@ class ConfigResponse(BaseModel):
     inventory: list[InventoryRow]
     out_of_order: list[OooRow]
     fiscal_calendar: FiscalConfigModel | None
+    adr_room_basis: str
 
 
 @router.get("/{property_id}/config")
@@ -145,6 +153,7 @@ def get_config(
                 calendar_type=cfg.calendar_type,
                 fiscal_year_start_month=cfg.fiscal_year_start_month,
                 week_start_weekday=cfg.week_start_weekday),
+            adr_room_basis=_adr_room_basis(session, property_id),
         )
 
 
@@ -341,3 +350,28 @@ def set_fiscal_calendar(
         return FiscalConfigModel(calendar_type=body.calendar_type,
                                  fiscal_year_start_month=body.fiscal_year_start_month,
                                  week_start_weekday=body.week_start_weekday)
+
+
+class StatConfigBody(BaseModel):
+    adr_room_basis: str
+
+
+@router.put("/{property_id}/stat-config")
+def set_stat_config(
+    property_id: str, body: StatConfigBody, request: Request,
+    principal: Principal = Depends(require_config_writer),
+) -> dict[str, str]:
+    if body.adr_room_basis not in ADR_ROOM_BASES:
+        raise HTTPException(status_code=422,
+                            detail=f"adr_room_basis must be one of {sorted(ADR_ROOM_BASES)}")
+    with _session(request) as session:
+        _require_onboardable_property(session, principal, property_id)
+        row = session.get(PropertyStatConfig, property_id)
+        if row is None:
+            row = PropertyStatConfig(property_id=property_id, adr_room_basis=body.adr_room_basis)
+            session.add(row)
+        else:
+            row.adr_room_basis = body.adr_room_basis
+        _audit(session, principal, "stat_config_set", property_id)
+        session.commit()
+        return {"adr_room_basis": body.adr_room_basis}

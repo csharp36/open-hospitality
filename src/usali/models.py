@@ -564,6 +564,7 @@ OOO_REASON_CODES = frozenset({
     "do_not_rent", "owner_occupied",
 })
 CALENDAR_TYPES = frozenset({"calendar_month", "445"})
+ADR_ROOM_BASES = frozenset({"as_reported", "exclude_comp_house"})
 
 
 class Employee(OrgScoped, Base):
@@ -1330,6 +1331,33 @@ class FiscalCalendar(OrgScoped, Base):
     calendar_type: Mapped[str] = mapped_column(String(20))
     fiscal_year_start_month: Mapped[int] = mapped_column(Integer)
     week_start_weekday: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PropertyStatConfig(OrgScoped, Base):
+    """Per-property performance-metric settings (issue #9). One row per property
+    (the FiscalCalendar precedent). `adr_room_basis` decides whether comp and
+    house-use rooms are netted out of ADR's rooms-sold denominator:
+    `as_reported` uses ROOMS_OCCUPIED as the PMS reports it; `exclude_comp_house`
+    subtracts segment COMPLIMENTARY/HOUSE_USE rooms (refusing loudly if the
+    segment data is absent)."""
+
+    __tablename__ = "property_stat_config"
+    __table_args__ = (
+        CheckConstraint(
+            "adr_room_basis IN ('as_reported', 'exclude_comp_house')",
+            name="ck_stat_config_adr_basis",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_property_stat_config_property_org",
+        ),
+    )
+
+    property_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    adr_room_basis: Mapped[str] = mapped_column(String(20))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
