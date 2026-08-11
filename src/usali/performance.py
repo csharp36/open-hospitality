@@ -9,6 +9,7 @@ window cannot be a differencing oracle. Denominators come from
 inventory.rooms_available (fail-loud). #26 adds the expense side (GOPPAR/CPOR).
 """
 
+import statistics
 from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
@@ -432,3 +433,149 @@ def compare(
         prior_period_delta_pct=_delta_map(current, prior_period),
         prior_year_delta_pct=_delta_map(current, prior_year),
     )
+
+
+_METRIC_NAMES: tuple[str, ...] = ("occupancy", "adr", "revpar", "trevpar")
+
+
+@dataclass(frozen=True)
+class TrendPair:
+    """A current value against a comparison base (WoW average, or the same weekday
+    a week prior), with signed percentage variance. Any field is None when its
+    base has no complete-day data — a data-incomplete day never fabricates a leg."""
+
+    current: Decimal | None
+    prior: Decimal | None
+    delta_pct: Decimal | None
+
+
+@dataclass(frozen=True)
+class RollingStat:
+    """30-day rolling summary of one metric over the COMPLETE days in the window:
+    the average, the population standard deviation (None with fewer than two
+    complete values — dispersion is undefined from one point), and `n`, the count
+    of complete days that fed it."""
+
+    avg: Decimal | None
+    stdev: Decimal | None
+    n: int
+
+
+@dataclass(frozen=True)
+class Trends:
+    anchor: date
+    wow: dict[str, TrendPair]
+    mtd: dict[str, Decimal | None]
+    rolling_30: dict[str, RollingStat]
+    dow: dict[str, TrendPair]
+
+
+def _daily_series(
+    session: Session, property_id: str, start: date, end: date, basis: str
+) -> dict[date, dict[str, Decimal | None]]:
+    """Per-day core metrics for the COMPLETE days in [start, end] — the days with a
+    landed statistics report AND in-force inventory (`complete_days`). A day
+    without a landed report is absent from the series entirely, so no trend base
+    computed off this series can be moved by it."""
+    keep = complete_days(session, property_id, start, end)
+    series: dict[date, dict[str, Decimal | None]] = {}
+    for d in sorted(keep):
+        m = core_metrics(session, property_id, d, d, basis=basis)
+        series[d] = {
+            "occupancy": m.occupancy,
+            "adr": m.adr,
+            "revpar": m.revpar,
+            "trevpar": m.trevpar,
+        }
+    return series
+
+
+def _values_over(
+    series: dict[date, dict[str, Decimal | None]], days: list[date], name: str
+) -> list[Decimal]:
+    """The non-None `name` values for the `days` present in `series`. Absent days
+    (data-incomplete, so never seeded into the series) simply do not contribute."""
+    out: list[Decimal] = []
+    for d in days:
+        day = series.get(d)
+        if day is None:
+            continue
+        v = day.get(name)
+        if v is not None:
+            out.append(v)
+    return out
+
+
+def _mean_over(
+    series: dict[date, dict[str, Decimal | None]], days: list[date], name: str
+) -> Decimal | None:
+    """Mean of the complete-day `name` values over `days`, quantized to 4dp; None
+    when no complete day in the range carries the metric."""
+    vals = _values_over(series, days, name)
+    if not vals:
+        return None
+    return (sum(vals, Decimal("0")) / Decimal(len(vals))).quantize(_Q4)
+
+
+def _rolling_stat(
+    series: dict[date, dict[str, Decimal | None]], days: list[date], name: str
+) -> RollingStat:
+    vals = _values_over(series, days, name)
+    if not vals:
+        return RollingStat(avg=None, stdev=None, n=0)
+    avg = (sum(vals, Decimal("0")) / Decimal(len(vals))).quantize(_Q4)
+    stdev = None
+    if len(vals) >= 2:
+        stdev = Decimal(str(statistics.pstdev(float(v) for v in vals))).quantize(_Q4)
+    return RollingStat(avg=avg, stdev=stdev, n=len(vals))
+
+
+def trends(
+    session: Session, property_id: str, anchor: date, *, basis: str
+) -> Trends:
+    """Operator trend bases anchored on `anchor`, EACH computed only over
+    data-complete days (`complete_days`): a business date without a landed
+    statistics report is excluded from the series and therefore cannot move any
+    average.
+
+    - WoW: current == mean of the 7 days ending on `anchor` (anchor-6..anchor);
+      prior == mean of the preceding 7 (anchor-13..anchor-7).
+    - MTD: mean from the first of `anchor`'s month through `anchor`.
+    - rolling_30: average + population stdev + complete-day count over
+      anchor-29..anchor.
+    - DoW: `anchor`'s value against the same weekday one week earlier (anchor-7).
+
+    All four maps are built from ONE `_daily_series` spanning the widest window
+    needed — `min(anchor-29, first-of-month)`..anchor — so the complete-day set is
+    resolved once. Percentage variances reuse `_delta_pct` (None on an absent or
+    zero base)."""
+    first_of_month = anchor.replace(day=1)
+    window_start = min(anchor - timedelta(days=29), first_of_month)
+    series = _daily_series(session, property_id, window_start, anchor, basis)
+
+    wow_current = [anchor - timedelta(days=i) for i in range(0, 7)]
+    wow_prior = [anchor - timedelta(days=i) for i in range(7, 14)]
+    mtd_days = _days(first_of_month, anchor)
+    rolling_days = _days(anchor - timedelta(days=29), anchor)
+    anchor_prior = anchor - timedelta(days=7)
+
+    wow: dict[str, TrendPair] = {}
+    mtd: dict[str, Decimal | None] = {}
+    rolling_30: dict[str, RollingStat] = {}
+    dow: dict[str, TrendPair] = {}
+    for name in _METRIC_NAMES:
+        cur = _mean_over(series, wow_current, name)
+        prior = _mean_over(series, wow_prior, name)
+        wow[name] = TrendPair(current=cur, prior=prior, delta_pct=_delta_pct(cur, prior))
+
+        mtd[name] = _mean_over(series, mtd_days, name)
+
+        rolling_30[name] = _rolling_stat(series, rolling_days, name)
+
+        d_cur = series.get(anchor, {}).get(name)
+        d_prior = series.get(anchor_prior, {}).get(name)
+        dow[name] = TrendPair(
+            current=d_cur, prior=d_prior, delta_pct=_delta_pct(d_cur, d_prior)
+        )
+
+    return Trends(anchor=anchor, wow=wow, mtd=mtd, rolling_30=rolling_30, dow=dow)
