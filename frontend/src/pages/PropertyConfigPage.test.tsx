@@ -54,10 +54,14 @@ describe('PropertyConfigPage', () => {
     expect(screen.getByLabelText(/week start/i)).toBeInTheDocument()
   })
 
-  it('offers exactly the five OOO reason codes', async () => {
+  it('offers all seven OOO reason codes including the DNR reasons', async () => {
     renderPage()
     const select = await screen.findByLabelText(/reason/i)
-    expect(select.querySelectorAll('option')).toHaveLength(5)
+    const options = select.querySelectorAll('option')
+    expect(options).toHaveLength(7)
+    const values = Array.from(options).map((o) => (o as HTMLOptionElement).value)
+    expect(values).toContain('do_not_rent')
+    expect(values).toContain('owner_occupied')
   })
 
   it('shows the count in force today, not a future-dated row, as "current"', async () => {

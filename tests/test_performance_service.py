@@ -8,10 +8,12 @@ from usali.models import (
     IngestBatch,
     IngestionCoverage,
     Organization,
+    PmsDailyFinancialStage,
     PmsDailyStatisticStage,
     Property,
     RoomInventory,
     Timecard,
+    UsaliFinancialFact,
     UsaliLaborFact,
     UsaliSegmentFact,
     UsaliStatisticFact,
@@ -67,6 +69,29 @@ def _seg(session, pid, d, seg, rooms):
     return UsaliSegmentFact(property_id=pid, pms_source="OPERA", business_date=d,
                             usali_segment=seg, period="DAY", rooms=rooms, room_revenue=0,
                             ingest_batch_id=batch.batch_id)
+
+
+def _fin_rooms(session, pid, d, amount, *, row_hash="rooms"):
+    """One Rooms financial fact (with its required batch + stage provenance) —
+    the drill-through target the room_revenue reconciliation cross-checks."""
+    batch = IngestBatch(pms_source="OPERA", report_type="trial_balance",
+                        source_file="t.pdf", file_hash="0" * 64, status="staged",
+                        row_count=1, error_count=0)
+    session.add(batch)
+    session.flush()
+    stage = PmsDailyFinancialStage(
+        property_id=pid, pms_source="OPERA", report_type="trial_balance",
+        business_date=d, pms_trx_code="1000", raw_amount=amount,
+        source_file="t.pdf", ingest_batch_id=batch.batch_id, row_hash=f"{row_hash}-{d}",
+    )
+    session.add(stage)
+    session.flush()
+    return UsaliFinancialFact(
+        property_id=pid, pms_source="OPERA", business_date=d, usali_edition=12,
+        usali_schedule_id=1, usali_major_category="Operating Revenue",
+        usali_sub_category="Rooms", usali_line_item="Transient", amount=amount,
+        ingest_batch_id=batch.batch_id, stage_id=stage.stage_id,
+    )
 
 
 def test_stat_by_day_returns_daily_values(db_session):
@@ -199,6 +224,59 @@ def test_reconciliation_missing_ingested_stat_yields_none(db_session):
     assert recon["adr"].agrees is None
     assert recon["revpar"].agrees is None
     assert recon["occupancy"].agrees is None
+
+
+def test_reconciliation_room_revenue_and_rooms_available_agree(db_session):
+    # room_revenue: ROOM_REVENUE statistic (12000) reconciles to the SUM of the
+    # Rooms financial-fact line (12000). rooms_available: inventory availability
+    # (100) reconciles to the ingested ROOMS_AVAILABLE DAY statistic (100).
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_AVAILABLE", 100),
+        _fin_rooms(db_session, "HISJ", date(2026, 1, 1), Decimal("12000")),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["room_revenue"].agrees is True
+    assert recon["rooms_available"].agrees is True
+
+
+def test_reconciliation_room_revenue_and_rooms_available_diverge(db_session):
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_AVAILABLE", 90),   # != computed 100
+        _fin_rooms(db_session, "HISJ", date(2026, 1, 1), Decimal("11000")),   # != computed 12000
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["room_revenue"].agrees is False
+    assert recon["rooms_available"].agrees is False
+
+
+def test_reconciliation_room_revenue_and_rooms_available_absent_yield_none(db_session):
+    # No Rooms financial fact and no ROOMS_AVAILABLE statistic: each cross-check has
+    # nothing to reconcile against, so `agrees` is None and nothing raises.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 1), "ROOM_REVENUE", 12000),
+    ])
+    db_session.commit()
+    m = core_metrics(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), basis="as_reported")
+    recon = reconciliation(db_session, "HISJ", date(2026, 1, 1), date(2026, 1, 1), m)
+    assert recon["room_revenue"].ingested is None
+    assert recon["room_revenue"].agrees is None
+    assert recon["rooms_available"].ingested is None
+    assert recon["rooms_available"].agrees is None
 
 
 @pytest.mark.skip(reason="InventoryInconsistent lands with the PR #25 rebase")

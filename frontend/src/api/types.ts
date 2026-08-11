@@ -978,7 +978,15 @@ export interface FiscalPeriod {
   end: string
 }
 
-export const OOO_REASONS = ['maintenance', 'renovation', 'damage', 'deep_clean', 'other'] as const
+export const OOO_REASONS = [
+  'maintenance',
+  'renovation',
+  'damage',
+  'deep_clean',
+  'other',
+  'do_not_rent',
+  'owner_occupied',
+] as const
 
 // --- Core performance statistics (issue #9) ---------------------------------
 // Mirrors CoreMetricsModel/ReconLineModel/TrendPairModel/RollingStatModel/

@@ -8,6 +8,7 @@ from usali.models import (
     PmsDailyStatisticStage,
     Property,
     RoomInventory,
+    UsaliSegmentFact,
     UsaliStatisticFact,
 )
 from usali.performance import RollingStat, TrendPair, Trends, trends
@@ -40,6 +41,16 @@ def _stat(session, pid, d, code, value):
                               metric_code=code, period="DAY", is_prior_year=False,
                               value=value, ingest_batch_id=batch.batch_id,
                               stat_stage_id=stage.stat_stage_id)
+
+
+def _seg(session, pid, d, seg, rooms):
+    batch = IngestBatch(pms_source="OPERA", report_type="market_stats", source_file="t",
+                        file_hash="hseg", status="staged", row_count=1, error_count=0)
+    session.add(batch)
+    session.flush()
+    return UsaliSegmentFact(property_id=pid, pms_source="OPERA", business_date=d,
+                            usali_segment=seg, period="DAY", rooms=rooms, room_revenue=0,
+                            ingest_batch_id=batch.batch_id)
 
 
 def _seed_day(session, pid, d, *, rooms, room_rev, total_rev, complete=True):
@@ -165,6 +176,36 @@ def test_dow_prior_none_when_prior_week_incomplete(db_session):
     assert t.dow["occupancy"].current == Decimal("0.8000")
     assert t.dow["occupancy"].prior is None
     assert t.dow["occupancy"].delta_pct is None
+
+
+def test_trends_degrade_adr_on_segmentless_trailing_day_under_exclude_comp_house(db_session):
+    # exclude_comp_house property. The REQUESTED day (anchor Jan 14) is fully
+    # segment-covered, but an earlier COMPLETE day in the 30-day trend window
+    # (Jan 8: stats + coverage + inventory, occupied rooms, NO segments) cannot
+    # net comp/house-use from ADR. trends() must NOT raise: occupancy/revpar/
+    # trevpar still include Jan 8, only its ADR is dropped from the ADR trend.
+    _prop(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    # Jan 14 (anchor): segment-covered so exclude_comp_house resolves.
+    _seed_day(db_session, "HISJ", date(2026, 1, 14), rooms=80, room_rev=8000, total_rev=12000)
+    db_session.add_all([
+        _seg(db_session, "HISJ", date(2026, 1, 14), "COMPLIMENTARY", 3),
+        _seg(db_session, "HISJ", date(2026, 1, 14), "HOUSE_USE", 2),
+        _seg(db_session, "HISJ", date(2026, 1, 14), "TRANSIENT", 75),
+    ])
+    # Jan 8: complete + occupied, but NO segment data -> AdrBasisUnavailable per-day.
+    _seed_day(db_session, "HISJ", date(2026, 1, 8), rooms=70, room_rev=7000, total_rev=10000)
+    db_session.commit()
+
+    t = trends(db_session, "HISJ", date(2026, 1, 14), basis="exclude_comp_house")
+    # No raise, and the segmentless day contributes to the basis-independent
+    # trends (both days) but not to ADR (only the segment-covered anchor).
+    assert t.rolling_30["occupancy"].n == 2
+    assert t.rolling_30["revpar"].n == 2
+    assert t.rolling_30["trevpar"].n == 2
+    assert t.rolling_30["adr"].n == 1
+    # The ADR mean is the anchor's alone: 8000 / (80 - 3 - 2) == 106.6667.
+    assert t.rolling_30["adr"].avg == Decimal("106.6667")
 
 
 def test_anchor_is_recorded(db_session):

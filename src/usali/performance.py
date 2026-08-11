@@ -14,11 +14,16 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from usali.inventory import InventoryNotConfigured, rooms_available, total_rooms_on
-from usali.models import IngestionCoverage, UsaliSegmentFact, UsaliStatisticFact
+from usali.models import (
+    IngestionCoverage,
+    UsaliFinancialFact,
+    UsaliSegmentFact,
+    UsaliStatisticFact,
+)
 from usali.reporting import _labor_sections
 
 # A day needs its statistics report; OPERA emits manager_flash, AUTOCLERK
@@ -269,6 +274,13 @@ def reconciliation(
     "statistics are as-of KPIs, never summed" convention and keeps the ingested
     ADR/RevPAR/occupancy on the same per-available-room scale as the computed side.
 
+    Two further FAIL-SOFT lines cross the computed figures against a DIFFERENT
+    source than the KPI statistics: `room_revenue` reconciles the ROOM_REVENUE
+    statistic to the SUM of the Rooms financial-fact line (the drill-through
+    target), and `rooms_available` reconciles inventory-derived availability to the
+    SUM of the ingested ROOMS_AVAILABLE DAY statistic — each within 0.5, `agrees`
+    None when the ingested side is absent.
+
     Tolerance: occupancy within 0.005 (fraction), ADR/RevPAR within 0.5 (currency).
     `agrees` is None whenever either side is absent — nothing to reconcile.
     """
@@ -282,10 +294,31 @@ def reconciliation(
     ingested_revpar = _mean(
         list(_stat_by_day(session, property_id, start, end, "REVPAR").values())
     )
+    # room_revenue: the ROOM_REVENUE statistic (computed side) reconciled to the
+    # SUM of the Rooms financial-fact line over the window — the same
+    # `usali_sub_category == "Rooms"` predicate the room-revenue drill-through
+    # targets. None when no Rooms financial fact landed.
+    rooms_rev_total = session.execute(
+        select(func.sum(UsaliFinancialFact.amount)).where(
+            UsaliFinancialFact.property_id == property_id,
+            UsaliFinancialFact.business_date >= start,
+            UsaliFinancialFact.business_date <= end,
+            UsaliFinancialFact.usali_sub_category == "Rooms",
+        )
+    ).scalar()
+    ingested_room_rev = None if rooms_rev_total is None else Decimal(str(rooms_rev_total))
+    # rooms_available: inventory-derived availability (computed side) reconciled to
+    # the SUM of the ingested ROOMS_AVAILABLE DAY statistic. None when none landed.
+    avail_stats = _stat_by_day(session, property_id, start, end, "ROOMS_AVAILABLE")
+    ingested_avail = sum(avail_stats.values(), Decimal("0")) if avail_stats else None
     return {
         "occupancy": _recon_line(metrics.occupancy, ingested_occ, _OCC_TOL),
         "adr": _recon_line(metrics.adr, ingested_adr, _CURRENCY_TOL),
         "revpar": _recon_line(metrics.revpar, ingested_revpar, _CURRENCY_TOL),
+        "room_revenue": _recon_line(metrics.room_revenue, ingested_room_rev, _CURRENCY_TOL),
+        "rooms_available": _recon_line(
+            metrics.rooms_available, ingested_avail, _CURRENCY_TOL
+        ),
     }
 
 
@@ -480,10 +513,22 @@ def _daily_series(
     keep = complete_days(session, property_id, start, end)
     series: dict[date, dict[str, Decimal | None]] = {}
     for d in sorted(keep):
-        m = core_metrics(session, property_id, d, d, basis=basis)
+        try:
+            m = core_metrics(session, property_id, d, d, basis=basis)
+            adr = m.adr
+        except AdrBasisUnavailable:
+            # The design's fail-loud is scoped to the caller's REQUESTED window
+            # (still enforced by compare()/core_metrics on the current window).
+            # This trailing TREND window must degrade gracefully instead: a day
+            # with occupied rooms but no segment data cannot net comp/house-use
+            # from ADR on the exclude_comp_house basis, but occupancy/revpar/
+            # trevpar are basis-independent, so recompute them as_reported and
+            # drop only this day's ADR from the ADR trend.
+            m = core_metrics(session, property_id, d, d, basis="as_reported")
+            adr = None
         series[d] = {
             "occupancy": m.occupancy,
-            "adr": m.adr,
+            "adr": adr,
             "revpar": m.revpar,
             "trevpar": m.trevpar,
         }

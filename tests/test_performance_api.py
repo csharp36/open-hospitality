@@ -4,13 +4,20 @@ from decimal import Decimal
 from tests.authkit import make_authkit
 from tests.employees import make_employee
 from tests.grants import grant_role
-from tests.test_performance_service import _stat
+from tests.test_performance_service import _seg, _stat
 from tests.test_property_config_api import (
     _admin_headers,
     _client,
     _org_and_property,
 )
-from usali.models import FiscalCalendar, RoomInventory, Timecard, UsaliLaborFact
+from usali.models import (
+    FiscalCalendar,
+    IngestionCoverage,
+    PropertyStatConfig,
+    RoomInventory,
+    Timecard,
+    UsaliLaborFact,
+)
 from usali.performance import core_metrics
 
 
@@ -81,6 +88,64 @@ def test_performance_refuses_unconfigured_inventory(db_engine, db_session, tmp_p
     c = _client(db_engine, tmp_path, verifier)
     assert c.get("/api/performance?property=HISJ&from=2026-01-01&to=2026-01-01",
                  headers=_admin_headers(mint, db_session)).status_code == 409
+
+
+def test_performance_exclude_comp_house_segmentless_trailing_day_is_200(
+    db_engine, db_session, tmp_path
+):
+    # exclude_comp_house property. The REQUESTED window (Jan 14) is fully
+    # segment-covered, but an earlier COMPLETE day in the trailing trend window
+    # (Jan 8: coverage + inventory + occupied rooms, NO segments) cannot net
+    # comp/house-use from ADR. The trend must degrade gracefully — the whole
+    # /api/performance response stays 200, not 409.
+    _org_and_property(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add(PropertyStatConfig(property_id="HISJ", adr_room_basis="exclude_comp_house"))
+    # Jan 14 (requested): segment-covered.
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 14), "ROOMS_OCCUPIED", 80),
+        _stat(db_session, "HISJ", date(2026, 1, 14), "ROOM_REVENUE", 8000),
+        _stat(db_session, "HISJ", date(2026, 1, 14), "TOTAL_REVENUE", 12000),
+        IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 14), report_type="manager_flash"),
+        _seg(db_session, "HISJ", date(2026, 1, 14), "COMPLIMENTARY", 3),
+        _seg(db_session, "HISJ", date(2026, 1, 14), "HOUSE_USE", 2),
+        _seg(db_session, "HISJ", date(2026, 1, 14), "TRANSIENT", 75),
+    ])
+    # Jan 8: complete + occupied, but NO segments -> segmentless trailing day.
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 70),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOM_REVENUE", 7000),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "TOTAL_REVENUE", 10000),
+        IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 8), report_type="manager_flash"),
+    ])
+    db_session.commit()
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.get("/api/performance?property=HISJ&from=2026-01-14&to=2026-01-14",
+              headers=_admin_headers(mint, db_session))
+    assert r.status_code == 200
+    assert r.json()["adr_room_basis"] == "exclude_comp_house"
+
+
+def test_performance_exclude_comp_house_segmentless_requested_day_still_409(
+    db_engine, db_session, tmp_path
+):
+    # The REQUESTED-window fail-loud MUST still hold: a request whose OWN from..to
+    # window has a segmentless occupied day under exclude_comp_house refuses (409).
+    _org_and_property(db_session)
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.add(PropertyStatConfig(property_id="HISJ", adr_room_basis="exclude_comp_house"))
+    db_session.add_all([
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOMS_OCCUPIED", 70),
+        _stat(db_session, "HISJ", date(2026, 1, 8), "ROOM_REVENUE", 7000),
+        IngestionCoverage(property_id="HISJ", business_date=date(2026, 1, 8), report_type="manager_flash"),
+    ])  # no segments for the requested day
+    db_session.commit()
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.get("/api/performance?property=HISJ&from=2026-01-08&to=2026-01-08",
+              headers=_admin_headers(mint, db_session))
+    assert r.status_code == 409
 
 
 def test_get_performance_by_fiscal_period(db_engine, db_session, tmp_path):
