@@ -72,7 +72,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from usali.config import get_settings  # noqa: E402
 from usali.db import make_engine, make_session_factory  # noqa: E402
 from usali.deposit_accounts import account_slot, routing_slot  # noqa: E402
-from usali.ingestion import process_file  # noqa: E402
+from usali.ingestion import process_file, record_coverage  # noqa: E402
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError  # noqa: E402
 from usali.kiosk import mint_device_token  # noqa: E402
 from usali.labor import promote_timecard  # noqa: E402
@@ -93,6 +93,7 @@ from usali.models import (  # noqa: E402
     OutOfOrderRoom,
     PaySchedule,
     Property,
+    PropertyStatConfig,
     Punch,
     RoleAssignment,
     RoomInventory,
@@ -472,6 +473,11 @@ def _seed_world(
         OutOfOrderRoom(property_id="HISJ", start_date=date(2026, 2, 2),
                        end_date=date(2026, 2, 8), room_count=3, reason_code="renovation",
                        note="Wing 2 soft-goods refresh"),
+        # Performance-metric ADR basis (issue #9). HISJ nets comp/house-use
+        # rooms out of ADR's rooms-sold denominator (exercising the segment
+        # path); SSSJ takes ROOMS_OCCUPIED as reported.
+        PropertyStatConfig(property_id="HISJ", adr_room_basis="exclude_comp_house"),
+        PropertyStatConfig(property_id="SSSJ", adr_room_basis="as_reported"),
     ])
 
     hourly = sorted((w for w in workers if w.pay_type == "hourly"),
@@ -1049,6 +1055,12 @@ def _seed_synthetic_year(session: Session) -> None:
                                             source_file=name, file_hash=marker))
             promote_statistics(session, stats_yaml, source=source,
                                business_date=day_date)
+            # Coverage row for the day's statistics report (issue #9). The
+            # synthetic path stages/promotes directly, so unlike process_file
+            # it must record coverage itself — without it complete_days (and
+            # therefore every trend/comparison) would ignore the seeded days.
+            record_coverage(session, pid, day_date,
+                            "manager_flash" if source == "OPERA" else "manager_report")
             batches.append(stage_segments(session, day.segments,
                                           source_file=name, file_hash=marker))
             promote_segments(session, segments_yaml, source=source,
