@@ -1,10 +1,21 @@
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_DEFAULT_FIELD_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
+
+_CREDENTIAL_URL_FIELDS = (
+    "qbo_base_url",
+    "gusto_base_url",
+    "adp_base_url",
+    "delphi_base_url",
+    "tripleseat_base_url",
+    "kc_admin_base_url",
+)
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 class Settings(BaseSettings):
@@ -150,6 +161,17 @@ class Settings(BaseSettings):
                 "field_encryption_key is the dev default but env=prod; set "
                 "USALI_FIELD_ENCRYPTION_KEY to a real 32-byte key (Secrets Manager)"
             )
+        # These clients transmit API credentials and, for payroll, opened PII.
+        # Match the JWKS client's fail-closed transport posture: cleartext is
+        # acceptable only for a loopback development mock, never a remote host.
+        if self.is_production:
+            for field_name in _CREDENTIAL_URL_FIELDS:
+                value = str(getattr(self, field_name))
+                parts = urlsplit(value)
+                if parts.scheme.lower() != "https" and parts.hostname not in _LOOPBACK_HOSTS:
+                    raise ValueError(
+                        f"{field_name} must use HTTPS for a non-loopback host in production"
+                    )
         # Production may not compute face templates without a versioned
         # notice-at-collection in force (Civ. Code §1798.100; plan decision
         # 7). Fail at construction so the gap surfaces at deploy, not at the
