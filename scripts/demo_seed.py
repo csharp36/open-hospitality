@@ -87,12 +87,15 @@ from usali.models import (  # noqa: E402
     Employee,
     EmployeeAssignment,
     EmployeePayrollProfile,
+    FiscalCalendar,
     IngestBatch,
     KioskDevice,
+    OutOfOrderRoom,
     PaySchedule,
     Property,
     Punch,
     RoleAssignment,
+    RoomInventory,
     Schedule,
     Shift,
     SickLeaveLedger,
@@ -454,6 +457,22 @@ def _seed_world(
     (REPO_ROOT / ".demo-kiosk-token").write_text(
         "".join(f"{p} {t}\n" for p, t in sorted(kiosk_tokens.items()))
     )
+
+    # Property config: room inventory, fiscal calendar, OOO (issue #8).
+    # HISJ: calendar-month fiscal year, plus a mid-history inventory change
+    # so the effective-dated path is exercised in the live demo. SSSJ: 4-4-5.
+    session.add_all([
+        RoomInventory(property_id="HISJ", effective_date=date(2025, 1, 1), total_rooms=140),
+        RoomInventory(property_id="HISJ", effective_date=date(2026, 3, 1), total_rooms=138),
+        RoomInventory(property_id="SSSJ", effective_date=date(2025, 1, 1), total_rooms=90),
+        FiscalCalendar(property_id="HISJ", calendar_type="calendar_month",
+                       fiscal_year_start_month=1, week_start_weekday=None),
+        FiscalCalendar(property_id="SSSJ", calendar_type="445",
+                       fiscal_year_start_month=1, week_start_weekday=6),
+        OutOfOrderRoom(property_id="HISJ", start_date=date(2026, 2, 2),
+                       end_date=date(2026, 2, 8), room_count=3, reason_code="renovation",
+                       note="Wing 2 soft-goods refresh"),
+    ])
 
     hourly = sorted((w for w in workers if w.pay_type == "hourly"),
                     key=lambda w: w.ref)

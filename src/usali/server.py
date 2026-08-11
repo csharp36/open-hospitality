@@ -35,6 +35,7 @@ from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
+from usali.property_config_api import router as property_config_router
 from usali.qbo_client import QboClient
 from usali.schedule_api import router as schedule_router
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory, SessionFactory
@@ -293,6 +294,7 @@ def create_app(
     operator_gates = [Depends(require_operator), Depends(require_active_org)]
     app.include_router(portal_router, dependencies=operator_gates)
     app.include_router(workforce_router, dependencies=operator_gates)
+    app.include_router(property_config_router, dependencies=operator_gates)
     # Face-template enrollment (F3). Route-level require_onboarder narrows to
     # org_admin/property_gm — require_operator is only the outer gate.
     app.include_router(face_enrollment_router, dependencies=operator_gates)

@@ -396,10 +396,15 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     property + organization): the migration's own tuple is the source
     for NAMES only, never for the count. L5 adds one more org-scoped
     table (org_settings) with its OWN RLS in the l5a0orgsettings
-    migration — enumerated here so the inventory stays exact, not sampled."""
+    migration — enumerated here so the inventory stays exact, not sampled.
+    m1a0propcfg adds three more (room_inventory, out_of_order_room,
+    fiscal_calendar), each with its own RLS, for the same reason."""
     assert len(_l2.RLS_TABLES) == 44
-    # The full org-scoped inventory at head = L2's 44 + L5's org_settings.
-    expected = set(_l2.RLS_TABLES) | {"org_settings"}
+    # The full org-scoped inventory at head = L2's 44 + L5's org_settings +
+    # m1a0propcfg's three property-config tables.
+    expected = set(_l2.RLS_TABLES) | {
+        "org_settings", "room_inventory", "out_of_order_room", "fiscal_calendar",
+    }
     with db_engine.connect() as conn:
         policied = {
             r[0] for r in conn.execute(text(

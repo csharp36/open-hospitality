@@ -59,6 +59,9 @@ def test_tables_registered():
         "shift",
         "labor_standard",
         "occupancy_forecast",
+        "room_inventory",
+        "out_of_order_room",
+        "fiscal_calendar",
     }
 
 
