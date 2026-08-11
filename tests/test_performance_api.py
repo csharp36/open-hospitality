@@ -1,4 +1,5 @@
 from datetime import date
+from decimal import Decimal
 
 from tests.authkit import make_authkit
 from tests.grants import grant_role
@@ -9,6 +10,7 @@ from tests.test_property_config_api import (
     _org_and_property,
 )
 from usali.models import FiscalCalendar, RoomInventory
+from usali.performance import core_metrics
 
 
 def test_get_performance_range(db_engine, db_session, tmp_path):
@@ -85,3 +87,24 @@ def test_performance_requires_exactly_one_of_range_or_period(db_engine, db_sessi
     assert c.get("/api/performance?property=HISJ", headers=h).status_code == 422  # neither
     assert c.get("/api/performance?property=HISJ&from=2026-01-01&to=2026-01-31&period=2026-P01",
                  headers=h).status_code == 422  # both
+
+
+def test_performance_room_revenue_drills_through(db_engine, db_session, tmp_path, seed_six_pdfs):
+    # seed_six_pdfs ingests the real sample set (2026-07-07), producing financial
+    # facts + their stage rows for the Rooms line. HISJ is the OPERA property; only
+    # OPERA carries the ROOM_REVENUE statistic core_metrics reads.
+    db_session.add(RoomInventory(property_id="HISJ", effective_date=date(2026, 1, 1),
+                                 total_rooms=100))
+    db_session.commit()
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    PID = "HISJ"
+    r = c.get(f"/api/performance/room-revenue/transactions?property={PID}"
+              "&from=2026-07-07&to=2026-07-07", headers=h)
+    assert r.status_code == 200
+    txns = r.json()["transactions"]
+    assert txns  # non-empty
+    total = sum(Decimal(t["amount"]) for t in txns)
+    m = core_metrics(db_session, PID, date(2026, 7, 7), date(2026, 7, 7), basis="as_reported")
+    assert abs(total - m.room_revenue) <= Decimal("0.01")

@@ -892,6 +892,23 @@ class PerformanceResponse(BaseModel):
     days_excluded: int
 
 
+class RoomRevenueTxnsModel(BaseModel):
+    """Drill-through payload for the room-revenue metric: the staged PMS
+    transactions behind the operating statement's Rooms revenue line."""
+
+    property_id: str
+    date_from: date
+    date_to: date
+    transactions: list[StagedTxnModel]
+
+
+# The room-revenue metric drills through to the operating statement's Rooms
+# revenue financial line (Schedule 1 accommodation revenue). Its (major,
+# sub_category, line_item) triple is stable across PMS sources — every mapping
+# routes accommodation revenue here (see mapping/opera.yaml, mapping/autoclerk.yaml).
+_ROOM_REVENUE_LINE = ("Operated Departments", "Rooms", "Room Revenue")
+
+
 def _dec(value: Decimal | None) -> str | None:
     """Optional money/ratio -> exact string, mirroring `_opt` for the perf models."""
     return None if value is None else str(value)
@@ -1052,6 +1069,46 @@ def sos_line_transactions(
         )
     )
     return [_txn_model(t) for t in txns]
+
+
+@router.get(
+    "/performance/room-revenue/transactions",
+    dependencies=[Depends(require_property_access)],
+)
+def performance_room_revenue_transactions(
+    session: SessionDep,
+    property_id: Annotated[str, Query(alias="property")],
+    date_from: Annotated[date, Query(alias="from")],
+    date_to: Annotated[date, Query(alias="to")],
+) -> RoomRevenueTxnsModel:
+    """Drill-through for the room-revenue performance metric.
+
+    Reuses the SOS financial-fact -> stage machinery (`line_transactions`) for the
+    Rooms revenue line, so every dollar of the metric's `room_revenue` traces to a
+    staged PMS transaction, consistent with the operating statement. Other metrics
+    drill to their own source stage: occupancy/ADR -> statistic facts; labor ->
+    timecards. This endpoint implements the revenue (room-revenue) drill-through.
+    """
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="from must not be after to")
+    major, sub_category, line_item = _ROOM_REVENUE_LINE
+    txns = _run(
+        lambda: reporting.line_transactions(
+            session,
+            property_id=property_id,
+            major=major,
+            sub_category=sub_category,
+            line_item=line_item,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
+    return RoomRevenueTxnsModel(
+        property_id=property_id,
+        date_from=date_from,
+        date_to=date_to,
+        transactions=[_txn_model(t) for t in txns],
+    )
 
 
 @router.get("/coverage")
