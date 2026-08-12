@@ -1,0 +1,81 @@
+name: Deploy demo
+
+# One-click promotion of a public-repo commit to the live demo
+# (demo.mandati.ai). This is a THIN wrapper around the existing, known-good
+# scripts/cloud/deploy_app.sh — it does not reimplement the deploy. The script
+# already enforces ADR-008's ordering invariant: build+push the image, EXECUTE
+# the migrate-seed job (alembic upgrade -> idempotent synthetic-year seed),
+# THEN ship the scale-to-zero serving revision.
+#
+# Trigger: workflow_dispatch only. That is deliberate:
+#   * it is a manual, maintainer-gated action — fork pull requests cannot run
+#     workflow_dispatch on this repo, so no outside contributor can reach the
+#     deploy credential;
+#   * the ref you launch it from (the branch/tag picker in the Actions UI) is
+#     the commit that gets promoted — deploy_app.sh tags the image with that
+#     commit's SHA. Default to main for the current tip.
+#
+# Auth is Workload Identity Federation: no static JSON key lives in this repo.
+# The federated identity may impersonate ONLY the deploy service account, and
+# the WIF provider is bound to this repository. See
+# docs/deploy/demo-continuous-deploy.md for the one-time GCP + repo setup and
+# the exact IAM roles the deploy service account needs.
+
+on:
+  workflow_dispatch:
+
+# Never let two promotions race onto the same demo instance. A newer run waits
+# for the in-flight one rather than interleaving job execution and the serving
+# revision swap.
+concurrency:
+  group: deploy-demo
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # required for WIF; nothing else is granted
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    # The 'demo' environment is where you attach protection rules (required
+    # reviewers, wait timer) in GitHub → Settings → Environments. The workflow
+    # works without them; add them when you want a second pair of eyes before
+    # the live demo moves.
+    environment:
+      name: demo
+      url: https://demo.mandati.ai
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # Federated auth. Impersonates vars.GCP_DEPLOY_SA via the WIF provider in
+      # vars.GCP_WIF_PROVIDER; exports Application Default Credentials for the
+      # gcloud + docker steps that follow. No key material touches the runner.
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      # deploy_app.sh reads the environment-specific knobs from env with
+      # defaults (REGION=us-west1, SQL_INSTANCE=usali-demo, AR_REPO=usali,
+      # AUTH_HOST=auth.mandati.ai). Only PROJECT is required; the rest are
+      # overridable via repo Variables if the demo ever moves.
+      - name: Deploy to the demo (build → migrate-seed job → serving revision)
+        env:
+          REGION: ${{ vars.GCP_REGION }}
+          SQL_INSTANCE: ${{ vars.GCP_SQL_INSTANCE }}
+          AR_REPO: ${{ vars.GCP_AR_REPO }}
+          AUTH_HOST: ${{ vars.DEMO_AUTH_HOST }}
+        run: |
+          set -euo pipefail
+          project="${{ vars.GCP_PROJECT }}"
+          if [[ -z "${project}" ]]; then
+            echo "::error::repo variable GCP_PROJECT is unset — see docs/deploy/demo-continuous-deploy.md" >&2
+            exit 2
+          fi
+          scripts/cloud/deploy_app.sh "${project}"

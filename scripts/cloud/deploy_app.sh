@@ -25,7 +25,15 @@ APP_SA="usali-app@${PROJECT}.iam.gserviceaccount.com"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/usali-app:$(git rev-parse --short HEAD)"
 
 echo "== [1/4] image build + push"
-docker build --platform linux/amd64 -t "${IMAGE}" .
+# The SPA's OIDC authority is baked at build time (frontend/src/auth/oidc.ts
+# reads import.meta.env.VITE_OIDC_AUTHORITY; the Dockerfile ARG only carries a
+# placeholder default). Feed it the SAME ${AUTH_HOST} the backend issuer uses
+# below (step 4) so the frontend and API agree on the Keycloak realm — without
+# this the deployed SPA points at the Dockerfile's placeholder host and login
+# breaks.
+docker build --platform linux/amd64 \
+  --build-arg "VITE_OIDC_AUTHORITY=https://${AUTH_HOST}/realms/usali" \
+  -t "${IMAGE}" .
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 docker push "${IMAGE}"
 
