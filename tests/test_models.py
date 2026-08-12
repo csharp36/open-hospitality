@@ -62,6 +62,8 @@ def test_tables_registered():
         "room_inventory",
         "out_of_order_room",
         "fiscal_calendar",
+        "property_stat_config",
+        "ingestion_coverage",
     }
 
 

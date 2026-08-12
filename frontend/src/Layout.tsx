@@ -101,6 +101,7 @@ const SECTIONS: NavSection[] = [
       { to: '/sos', label: 'SOS', icon: StatementIcon, exact: true },
       { to: '/upload', label: 'Upload', icon: UploadIcon },
       { to: '/reports', label: 'Reports', icon: ReportsIcon },
+      { to: '/performance', label: 'Performance', icon: GaugeIcon },
       { to: '/qbo', label: 'QBO', icon: SyncIcon },
       { to: '/coverage', label: 'Coverage', icon: CoverageIcon },
       { label: 'Daily Reports', icon: FileIcon, soon: true },

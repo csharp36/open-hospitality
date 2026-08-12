@@ -312,3 +312,20 @@ def test_write_refuses_out_of_scope_and_audits_nothing_extra(db_engine, db_sessi
         _select(AuditEvent).where(AuditEvent.resource_id == "HISJ")
     ).scalars().all()
     assert len(audits) == 0
+
+
+def test_put_stat_config_upserts_and_audits(db_engine, db_session, tmp_path):
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    assert c.put("/api/properties/HISJ/stat-config", json={"adr_room_basis": "bogus"},
+                 headers=h).status_code == 422
+    r = c.put("/api/properties/HISJ/stat-config",
+              json={"adr_room_basis": "exclude_comp_house"}, headers=h)
+    assert r.status_code == 200 and r.json()["adr_room_basis"] == "exclude_comp_house"
+    assert c.get("/api/properties/HISJ/config", headers=h).json()["adr_room_basis"] == "exclude_comp_house"
+    audits = db_session.execute(
+        _select(AuditEvent).where(AuditEvent.action == "stat_config_set")
+    ).scalars().all()
+    assert len(audits) == 1
