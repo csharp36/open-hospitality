@@ -335,7 +335,6 @@ def test_reconciliation_room_revenue_and_rooms_available_absent_yield_none(db_se
     assert recon["rooms_available"].agrees is None
 
 
-@pytest.mark.skip(reason="InventoryInconsistent lands with the PR #25 rebase")
 def test_core_metrics_refuses_negative_denominator(db_session):
     from usali.inventory import InventoryInconsistent
     from usali.models import OutOfOrderRoom

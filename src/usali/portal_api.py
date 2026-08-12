@@ -57,7 +57,7 @@ from usali.fiscal import (
     require_config,
     resolve_period,
 )
-from usali.inventory import InventoryNotConfigured
+from usali.inventory import InventoryInconsistent, InventoryNotConfigured
 from usali.models import Property, QboPushLedger
 from usali.performance import (
     AdrBasisUnavailable,
@@ -1068,10 +1068,8 @@ def get_performance(
         # try — it never calls rooms_available, but keeping it here holds the one
         # response-shaping block together.
         labor = labor_productivity(session, property, start, end)
-        # TODO(#25 rebase): add InventoryInconsistent to this except tuple once
-        # PR #25 lands it on this branch (it does not exist here yet).
         excluded = (end - start).days + 1 - len(complete_days(session, property, start, end))
-    except (InventoryNotConfigured, AdrBasisUnavailable) as exc:
+    except (InventoryNotConfigured, InventoryInconsistent, AdrBasisUnavailable) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
     return _performance_response(
         property, basis, resolved_period, start, end, cmp, recon, trend, labor, excluded
