@@ -2,10 +2,12 @@
 
 Two seams, one per demo path:
 
-* `_seed_world` writes the per-property `PropertyStatConfig` beside the #8
-  property config — HISJ nets comp/house-use out of ADR's denominator
-  (`exclude_comp_house`), SSSJ takes rooms as reported (`as_reported`) —
-  so `_adr_room_basis` (and every ADR surface that reads it) has a basis.
+* `_seed_property_config` writes the per-property `PropertyStatConfig`
+  beside the #8 property config — HISJ nets comp/house-use out of ADR's
+  denominator (`exclude_comp_house`), SSSJ takes rooms as reported
+  (`as_reported`) — so `_adr_room_basis` (and every ADR surface that reads
+  it) has a basis. It runs on every seed (outside the `_seed_world`
+  sentinel) and is idempotent, so a re-deploy backfills it.
 
 * `_seed_synthetic_year` stages/promotes statistics DIRECTLY, bypassing
   `process_file`'s automatic `record_coverage`; without the coverage row
@@ -19,17 +21,17 @@ import importlib.util
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
-from usali.delphi_adapter import DelphiAdapter
-from usali.delphi_mock import create_mock_delphi
-from usali.gusto_adapter import GustoAdapter
-from usali.gusto_mock import create_mock_gusto
-from usali.models import IngestionCoverage, PropertyStatConfig, RoomInventory
-from usali.opener import SoftwareOpener
+from usali.models import (
+    FiscalCalendar,
+    IngestionCoverage,
+    OutOfOrderRoom,
+    PropertyStatConfig,
+    RoomInventory,
+)
 from usali.performance import complete_days, core_metrics
 from usali.property_config_api import _adr_room_basis
-from usali.qbo_client import SyncASGITransport
 
 _SCRIPT = Path(__file__).parent.parent / "scripts" / "demo_seed.py"
 _spec = importlib.util.spec_from_file_location("demo_seed_perf", _SCRIPT)
@@ -38,56 +40,37 @@ demo_seed = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(demo_seed)
 
 
-def _worker(ref, placements):
-    return demo_seed.DemoWorker(
-        ref=ref, full_name=f"Demo Person {ref}", pay_type="hourly",
-        placements=placements,
-    )
-
-
-_ROSTER = [
-    _worker(10, (("HISJ", "Housekeeping"),)),
-    _worker(11, (("HISJ", "Housekeeping"),)),
-    _worker(12, (("HISJ", "Housekeeping"),)),
-    _worker(13, (("HISJ", "Front Desk"),)),
-    _worker(20, (("SSSJ", "Front Desk"),)),
-    _worker(21, (("SSSJ", "Breakfast"),)),
-    _worker(22, (("SSSJ", "Laundry"),)),
-]
-
-
-def _gusto():
-    return GustoAdapter(base_url="http://mock-gusto", api_token="mock",
-                        company_id="mock",
-                        transport=SyncASGITransport(create_mock_gusto()))
-
-
-def _delphi():
-    return DelphiAdapter(base_url="http://mock-delphi", subscription_key="mock",
-                         transport=SyncASGITransport(create_mock_delphi()))
-
-
-def test_seed_world_writes_the_per_property_adr_basis(
-    db_session, monkeypatch, tmp_path
-):
-    """The full enrichment lands one stat-config row per property, and the
-    reader every ADR surface consults returns each property's basis."""
-    opener = SoftwareOpener.generate(key_id="demo-perf-test")
-    monkeypatch.setattr(demo_seed.SoftwareOpener, "from_settings",
-                        classmethod(lambda cls, settings: opener))
-    monkeypatch.setattr(demo_seed, "_payroll_provider", _gusto)
-    monkeypatch.setattr(demo_seed, "_crm_feed", _delphi)
-    monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")
-    demo_seed._seed_base(db_session)
-    demo_seed._seed_people(db_session, _ROSTER)
-    monkeypatch.setattr(demo_seed, "REPO_ROOT", tmp_path)
-    demo_seed._seed_world(db_session, _ROSTER)
+def test_seed_property_config_writes_per_property_adr_basis(db_session):
+    """`_seed_property_config` lands one stat-config row per property, and the
+    reader every ADR surface consults returns each property's basis. This
+    config lives on the always-run path (NOT the sentinel-sealed
+    `_seed_world`), so a re-deploy can backfill it onto an already-seeded
+    world — the live demo lost room inventory when it was still sealed."""
+    demo_seed._seed_base(db_session)  # properties (the config's FK target)
+    demo_seed._seed_property_config(db_session)
 
     rows = {r.property_id: r.adr_room_basis for r in db_session.execute(
         select(PropertyStatConfig)).scalars()}
     assert rows == {"HISJ": "exclude_comp_house", "SSSJ": "as_reported"}
     assert _adr_room_basis(db_session, "HISJ") == "exclude_comp_house"
     assert _adr_room_basis(db_session, "SSSJ") == "as_reported"
+
+
+def test_seed_property_config_is_idempotent(db_session):
+    """Running the config seed twice is a no-op — the always-run path must not
+    stack duplicate inventory / OOO rows on every deploy. Room inventory and
+    OOO have no upsert on insert, so a second run must find-or-create them."""
+    demo_seed._seed_base(db_session)
+    demo_seed._seed_property_config(db_session)
+    demo_seed._seed_property_config(db_session)
+
+    def _count(model):
+        return db_session.scalar(select(func.count()).select_from(model))
+
+    assert _count(RoomInventory) == 3  # HISJ x2, SSSJ x1
+    assert _count(FiscalCalendar) == 2
+    assert _count(PropertyStatConfig) == 2
+    assert _count(OutOfOrderRoom) == 1
 
 
 def test_synthetic_year_records_coverage_for_complete_days(
