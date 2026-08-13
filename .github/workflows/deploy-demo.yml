@@ -47,7 +47,11 @@ jobs:
       url: https://demo.mandati.ai
     timeout-minutes: 40
     steps:
+      # Full history (not the default shallow clone): scripts/gen-release-notes.mjs
+      # walks first-parent merges to rebuild the baked release notes for this build.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       # Federated auth. Impersonates vars.GCP_DEPLOY_SA via the WIF provider in
       # vars.GCP_WIF_PROVIDER; exports Application Default Credentials for the
