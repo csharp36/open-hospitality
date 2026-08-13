@@ -13,7 +13,7 @@ vi.mock('../api/client', async (importOriginal) => ({
   getProperties: vi.fn(),
   getMe: vi.fn(),
 }))
-import { getMe, getPerformance, getProperties } from '../api/client'
+import { ApiError, getMe, getPerformance, getProperties } from '../api/client'
 
 function metrics(over: Partial<CoreMetrics> = {}): CoreMetrics {
   return {
@@ -165,5 +165,37 @@ describe('PerformancePage', () => {
     expect(await screen.findByText(/cost withheld/i)).toBeInTheDocument()
     // hours are never withheld
     expect(screen.getByText('2.00')).toBeInTheDocument()
+  })
+
+  it('clamps the date pickers to the property data range', async () => {
+    vi.mocked(getProperties).mockResolvedValue([
+      { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2025-08-01', last_date: '2026-07-31', name: null },
+    ])
+    renderPage()
+    await waitFor(() =>
+      expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-31'),
+    )
+    for (const label of ['From', 'To']) {
+      const input = screen.getByLabelText(label) as HTMLInputElement
+      expect(input).toHaveAttribute('min', '2025-08-01')
+      expect(input).toHaveAttribute('max', '2026-07-31')
+    }
+  })
+
+  it('shows a calm "no data for this window" note on a 409, not a red failure', async () => {
+    vi.mocked(getPerformance).mockRejectedValue(
+      new ApiError(409, 'HISJ is set to exclude comp/house-use from ADR, but over … refusing'),
+    )
+    renderPage()
+    expect(await screen.findByText(/no performance data for this window/i)).toBeInTheDocument()
+    expect(screen.getByText(/refusing/i)).toBeInTheDocument()
+    expect(screen.queryByText(/failed to load/i)).not.toBeInTheDocument()
+  })
+
+  it('still shows a red failure for a real error (non-409)', async () => {
+    vi.mocked(getPerformance).mockRejectedValue(new ApiError(500, 'boom'))
+    renderPage()
+    expect(await screen.findByText(/failed to load/i)).toBeInTheDocument()
+    expect(screen.queryByText(/no performance data for this window/i)).not.toBeInTheDocument()
   })
 })

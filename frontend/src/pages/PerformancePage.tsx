@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { Badge, Card, PageHeader, controlClass } from '../components/ui'
-import { getPerformance } from '../api/client'
+import { ApiError, getPerformance } from '../api/client'
 import type { CoreMetrics, PerformanceResponse } from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
@@ -89,12 +89,17 @@ export default function PerformancePage() {
 
       <Card role="region" aria-label="performance window">
         <form className="flex flex-wrap items-end gap-3" onSubmit={(e) => e.preventDefault()}>
+          {/* min/max clamp the native picker to the property's data range, so
+              an empty out-of-range window (e.g. a month past the data) can't be
+              picked and answered with a refusal. */}
           <label className="flex flex-col gap-1 text-sm">
             <span className="text-xs font-medium text-ink-muted">From</span>
             <input
               type="date"
               className={controlClass}
               value={from}
+              min={selected?.first_date}
+              max={selected?.last_date}
               aria-label="From"
               onChange={(e) => setFrom(e.target.value)}
             />
@@ -105,6 +110,8 @@ export default function PerformancePage() {
               type="date"
               className={controlClass}
               value={to}
+              min={selected?.first_date}
+              max={selected?.last_date}
               aria-label="To"
               onChange={(e) => setTo(e.target.value)}
             />
@@ -123,11 +130,7 @@ export default function PerformancePage() {
         </Card>
       )}
 
-      {perf.isError && (
-        <Card>
-          <p className="text-sm text-danger-red">Failed to load: {errorMessage(perf.error)}</p>
-        </Card>
-      )}
+      {perf.isError && <PerformanceError error={perf.error} />}
 
       {property !== undefined && perf.isPending && (
         <Card>
@@ -137,6 +140,26 @@ export default function PerformancePage() {
 
       {property !== undefined && perf.data && <PerformanceBody data={perf.data} />}
     </div>
+  )
+}
+
+function PerformanceError({ error }: { error: unknown }) {
+  // 409 = "the data cannot answer this window" (out of range, no room inventory
+  // in force, an ADR basis that can't net comp/house): an expected, informational
+  // state, not a failure — render it calmly. A malformed request (422), a server
+  // error, or a network drop is a real problem and stays red.
+  if (error instanceof ApiError && error.status === 409) {
+    return (
+      <Card>
+        <p className="text-sm font-medium text-ink">No performance data for this window</p>
+        <p className="mt-1 text-sm text-ink-muted">{error.detail}</p>
+      </Card>
+    )
+  }
+  return (
+    <Card>
+      <p className="text-sm text-danger-red">Failed to load: {errorMessage(error)}</p>
+    </Card>
   )
 }
 
