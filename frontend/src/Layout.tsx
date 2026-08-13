@@ -19,6 +19,7 @@ import { hasRole } from './lib/roles'
 import { useAuth } from './auth/authContext'
 import { getMe } from './api/client'
 import type { Me } from './api/types'
+import BuildStamp from './components/BuildStamp'
 import OrgPicker from './components/OrgPicker'
 import {
   BankIcon,
@@ -303,6 +304,7 @@ function SidebarContent({
           <LogoutIcon className="shrink-0" />
           <span className={collapsed ? 'sr-only' : ''}>Sign out</span>
         </button>
+        <BuildStamp collapsed={collapsed} />
       </div>
     </div>
   )

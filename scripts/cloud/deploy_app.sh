@@ -22,7 +22,8 @@ AUTH_HOST="${AUTH_HOST:-auth.example.com}"
 CLOUDSQL="${PROJECT}:${REGION}:${SQL_INSTANCE}"
 BUCKET="${PROJECT}-usali-demo-photos"
 APP_SA="usali-app@${PROJECT}.iam.gserviceaccount.com"
-IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/usali-app:$(git rev-parse --short HEAD)"
+SHA="$(git rev-parse --short HEAD)"
+IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/usali-app:${SHA}"
 
 echo "== [1/4] image build + push"
 # The SPA's OIDC authority is baked at build time (frontend/src/auth/oidc.ts
@@ -33,6 +34,7 @@ echo "== [1/4] image build + push"
 # breaks.
 docker build --platform linux/amd64 \
   --build-arg "VITE_OIDC_AUTHORITY=https://${AUTH_HOST}/realms/usali" \
+  --build-arg "VITE_BUILD_SHA=${SHA}" \
   -t "${IMAGE}" .
 gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 docker push "${IMAGE}"
