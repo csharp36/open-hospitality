@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import BuildStamp from './BuildStamp'
@@ -14,13 +14,22 @@ describe('BuildStamp', () => {
   it('shows the baked-in short commit sha so a screenshot names its build', () => {
     vi.stubEnv('VITE_BUILD_SHA', 'a1b2c3d')
     render(<BuildStamp />)
-    expect(screen.getByText('build a1b2c3d')).toBeInTheDocument()
-    expect(screen.getByText('build a1b2c3d')).toHaveAttribute('title', 'Build a1b2c3d')
+    expect(screen.getByText('build a1b2c3d')).toHaveAttribute(
+      'title',
+      'Build a1b2c3d — view release notes',
+    )
   })
 
   it('stays screen-reader accessible when the sidebar is collapsed', () => {
     vi.stubEnv('VITE_BUILD_SHA', 'a1b2c3d')
     render(<BuildStamp collapsed />)
     expect(screen.getByText('build a1b2c3d')).toHaveClass('sr-only')
+  })
+
+  it('opens the release notes when clicked', () => {
+    render(<BuildStamp />)
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('build dev'))
+    expect(screen.getByRole('dialog', { name: /release notes/i })).toBeInTheDocument()
   })
 })

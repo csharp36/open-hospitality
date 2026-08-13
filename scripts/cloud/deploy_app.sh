@@ -26,6 +26,16 @@ SHA="$(git rev-parse --short HEAD)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/usali-app:${SHA}"
 
 echo "== [1/4] image build + push"
+# Refresh the baked release notes from the FULL history of the ref being
+# deployed (the deploy workflow checks out with fetch-depth 0). A snapshot is
+# committed for local/CI builds without git; this keeps the deployed bundle's
+# notes current with what actually shipped. The frontend build stage copies
+# frontend/, so the regenerated file rides into the image.
+if command -v node >/dev/null 2>&1; then
+  node scripts/gen-release-notes.mjs
+else
+  echo "WARNING: node not found — shipping the committed release-notes snapshot"
+fi
 # The SPA's OIDC authority is baked at build time (frontend/src/auth/oidc.ts
 # reads import.meta.env.VITE_OIDC_AUTHORITY; the Dockerfile ARG only carries a
 # placeholder default). Feed it the SAME ${AUTH_HOST} the backend issuer uses
