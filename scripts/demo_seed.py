@@ -1081,6 +1081,25 @@ def _seed_synthetic_year(session: Session) -> None:
     stats_yaml = str(REPO_ROOT / "mapping" / "statistics.yaml")
     segments_yaml = str(REPO_ROOT / "mapping" / "segments.yaml")
     for pid, source in sorted(PROPERTY_SOURCE.items()):
+        report_type = "manager_flash" if source == "OPERA" else "manager_report"
+        # Coverage BACKFILL (idempotent): a world first seeded before issue #9
+        # added coverage recording has transformed facts but NO coverage rows,
+        # so every day reads 'incomplete' and complete_days — and thus every
+        # trend/comparison — excludes it. The per-day seed loop below only
+        # records coverage for NEWLY-seeded days, so it can never repair an
+        # already-seeded world. Ensure coverage here for days whose facts are
+        # already present; this runs on every deploy and no-ops once the rows
+        # exist. Guarded on `marker in done` so a coverage row never precedes
+        # the facts it attests to (complete_days must not count a factless day).
+        backfilled = 0
+        for day_date in synthetic_dates():
+            marker = hashlib.sha256(
+                f"synthetic-v1:{pid}:{day_date}".encode()).hexdigest()
+            if marker in done:
+                record_coverage(session, pid, day_date, report_type)
+                backfilled += 1
+        session.commit()
+
         seeded = skipped = 0
         for day_date in synthetic_dates():
             marker = hashlib.sha256(
@@ -1111,8 +1130,7 @@ def _seed_synthetic_year(session: Session) -> None:
             # synthetic path stages/promotes directly, so unlike process_file
             # it must record coverage itself — without it complete_days (and
             # therefore every trend/comparison) would ignore the seeded days.
-            record_coverage(session, pid, day_date,
-                            "manager_flash" if source == "OPERA" else "manager_report")
+            record_coverage(session, pid, day_date, report_type)
             batches.append(stage_segments(session, day.segments,
                                           source_file=name, file_hash=marker))
             promote_segments(session, segments_yaml, source=source,
@@ -1122,7 +1140,7 @@ def _seed_synthetic_year(session: Session) -> None:
             session.commit()
             seeded += 1
         print(f"  {pid}: {seeded} synthetic days seeded, {skipped} already "
-              "present")
+              f"present ({backfilled} coverage backfilled)")
 
 
 # The dev personas' ORG-WIDE grants (Pillar L decision 4): role authority

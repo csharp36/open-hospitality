@@ -21,7 +21,7 @@ import importlib.util
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 
 from usali.models import (
     FiscalCalendar,
@@ -113,3 +113,44 @@ def test_synthetic_year_records_coverage_for_complete_days(
     assert metrics.rooms_available > 0
     assert metrics.rooms_sold > 0
     assert metrics.adr is not None
+
+
+def test_synthetic_year_backfills_coverage_for_pre_existing_days(
+    db_session, monkeypatch
+):
+    """A world first seeded before coverage recording existed has transformed
+    facts but no coverage rows — every day reads 'incomplete'. Re-running the
+    synthetic seed must BACKFILL coverage for those already-present days (the
+    per-day loop only covers newly-seeded days), restoring complete_days."""
+    import usali.synthetic_year as sy
+
+    days = [date(2026, 6, 1), date(2026, 6, 2)]
+    monkeypatch.setattr(sy, "synthetic_dates", lambda: days)
+    demo_seed._seed_base(db_session)
+    db_session.add_all([
+        RoomInventory(property_id="HISJ", effective_date=date(2025, 1, 1),
+                      total_rooms=140),
+        RoomInventory(property_id="SSSJ", effective_date=date(2025, 1, 1),
+                      total_rooms=90),
+    ])
+    db_session.commit()
+    demo_seed._seed_synthetic_year(db_session)  # facts + coverage
+
+    # Simulate the pre-#9 world: facts stay transformed, coverage rows gone.
+    db_session.execute(delete(IngestionCoverage))
+    db_session.commit()
+    assert db_session.scalar(
+        select(func.count()).select_from(IngestionCoverage)) == 0
+    assert complete_days(db_session, "SSSJ", days[0], days[1]) == set()  # excluded
+
+    # Re-run: the days are already transformed, so ONLY the backfill can repair.
+    demo_seed._seed_synthetic_year(db_session)
+
+    landed = {(c.property_id, c.business_date, c.report_type) for c in
+              db_session.execute(select(IngestionCoverage)).scalars()}
+    assert landed == (
+        {("HISJ", d, "manager_flash") for d in days}
+        | {("SSSJ", d, "manager_report") for d in days}
+    )
+    assert complete_days(db_session, "HISJ", days[0], days[1]) == set(days)
+    assert complete_days(db_session, "SSSJ", days[0], days[1]) == set(days)
