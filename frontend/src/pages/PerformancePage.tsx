@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { Badge, Card, PageHeader, controlClass } from '../components/ui'
@@ -53,24 +53,31 @@ function formatDelta(value: string | null | undefined): { text: string; positive
   return { text: `${sign}${n.toFixed(1)}%`, positive: n === 0 ? null : n > 0 }
 }
 
-function isoToday(): string {
-  return new Date().toISOString().slice(0, 10)
-}
-
-function firstOfMonth(): string {
-  return `${isoToday().slice(0, 7)}-01`
-}
-
 export default function PerformancePage() {
-  const { property } = useGlobalProperty()
-  // Default to a month-to-date window; the user can narrow either bound.
-  const [from, setFrom] = useState(firstOfMonth)
-  const [to, setTo] = useState(isoToday)
+  const { property, selected } = useGlobalProperty()
+  // The window is seeded from the property's OWN data range rather than a
+  // today-relative month-to-date: the demo (and any property whose feed has
+  // lapsed) has no data in the current month, so a today-anchored default
+  // lands on an empty window. Default to the last month of available data —
+  // `to` = last_date, `from` = the first of that month clamped to first_date.
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  // Re-default only when the property changes, so a user's manual date edits
+  // survive re-renders (react-query may hand back a fresh `selected` object
+  // with the same id on refetch).
+  const defaultedFor = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    if (selected === undefined || defaultedFor.current === selected.property_id) return
+    defaultedFor.current = selected.property_id
+    const monthStart = `${selected.last_date.slice(0, 7)}-01`
+    setTo(selected.last_date)
+    setFrom(selected.first_date > monthStart ? selected.first_date : monthStart)
+  }, [selected])
 
   const perf = useQuery({
     queryKey: ['performance', property, from, to],
     queryFn: () => getPerformance(property!, { from, to }),
-    enabled: property !== undefined,
+    enabled: property !== undefined && from !== '' && to !== '',
   })
 
   return (
@@ -102,6 +109,11 @@ export default function PerformancePage() {
               onChange={(e) => setTo(e.target.value)}
             />
           </label>
+          {selected !== undefined && (
+            <p className="pb-1.5 text-xs text-ink-muted">
+              Data available {selected.first_date} – {selected.last_date}
+            </p>
+          )}
         </form>
       </Card>
 
