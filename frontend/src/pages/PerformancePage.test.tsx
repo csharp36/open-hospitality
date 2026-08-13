@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT } from '../test/fixtures'
@@ -114,6 +114,39 @@ describe('PerformancePage', () => {
     expect(screen.getByText(/labor hours per occupied room/i)).toBeInTheDocument()
     expect(screen.getByText('2.00')).toBeInTheDocument() // hours per occupied room
     expect(screen.getByText('$50.00')).toBeInTheDocument() // cost per occupied room
+  })
+
+  it('shows the seeded data window so an empty range is not picked blind', async () => {
+    vi.mocked(getProperties).mockResolvedValue([
+      { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2025-08-01', last_date: '2026-07-31', name: null },
+    ])
+    renderPage()
+    expect(await screen.findByText(/data available 2025-08-01 – 2026-07-31/i)).toBeInTheDocument()
+  })
+
+  it('defaults the window to the last month of available data, not month-to-date', async () => {
+    // last_date is 2026-07-31; the default window is that month (from clamped
+    // to first_date when first_date falls inside the month). A today-anchored
+    // default would land on an empty current month.
+    vi.mocked(getProperties).mockResolvedValue([
+      { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2025-08-01', last_date: '2026-07-31', name: null },
+    ])
+    renderPage()
+    await waitFor(() =>
+      expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-31'),
+    )
+    expect((screen.getByLabelText('From') as HTMLInputElement).value).toBe('2026-07-01')
+  })
+
+  it('clamps the default From up to first_date when the data starts mid-month', async () => {
+    vi.mocked(getProperties).mockResolvedValue([
+      { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2026-07-07', last_date: '2026-07-20', name: null },
+    ])
+    renderPage()
+    await waitFor(() =>
+      expect((screen.getByLabelText('From') as HTMLInputElement).value).toBe('2026-07-07'),
+    )
+    expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-20')
   })
 
   it('shows a cost-withheld note when labor cost is suppressed', async () => {
