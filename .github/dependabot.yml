@@ -14,6 +14,19 @@ updates:
         patterns:
           - "*"
 
+  # The triage workflow installs its own hash-pinned Python deps from
+  # .github/triage-requirements.txt (see the workflow-pinning work). Without
+  # this block those security-sensitive deps (anthropic, pyyaml, transitive)
+  # would receive no updates once that manifest lands.
+  - package-ecosystem: pip
+    directory: /.github
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:05"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
+
   - package-ecosystem: npm
     directory: /frontend
     schedule:
