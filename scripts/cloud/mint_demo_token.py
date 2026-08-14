@@ -27,8 +27,12 @@ import secrets
 import subprocess
 import sys
 import urllib.parse
+from typing import NoReturn
 
 import httpx
+
+_REDIRECTS = (301, 302, 303, 307, 308)
+_PASSWORD_FIELD = re.compile(r'type="password"', re.I)
 
 
 def _secret(project: str, name: str) -> str:
@@ -39,9 +43,61 @@ def _secret(project: str, name: str) -> str:
     ).stdout
 
 
-def _fail(step: str, resp: httpx.Response) -> None:
+def _fail(step: str, resp: httpx.Response) -> NoReturn:
     # Status only — response bodies stay off the terminal.
     raise SystemExit(f"ERROR: {step} -> HTTP {resp.status_code}")
+
+
+def _form_action(page_html: str) -> str:
+    """The (unescaped) action URL of the first form on a login page."""
+    m = re.search(r'action="([^"]+)"', page_html)
+    if m is None:
+        raise SystemExit("ERROR: no login form on the auth page")
+    return html.unescape(m.group(1))
+
+
+def _redirect_code(resp: httpx.Response) -> str | None:
+    """The `code` param from a 3xx Location, or None (not a redirect / no code)."""
+    if resp.status_code not in _REDIRECTS:
+        return None
+    location = resp.headers.get("location", "")
+    return urllib.parse.parse_qs(
+        urllib.parse.urlsplit(location).query
+    ).get("code", [None])[0]
+
+
+def _obtain_code(
+    client: httpx.Client, login_page: httpx.Response, username: str,
+    password: str, public: str, base: str,
+) -> str:
+    """Drive the login form to an authorization code.
+
+    Handles BOTH login shapes: the classic COMBINED username+password form,
+    and the USERNAME-FIRST flow Keycloak switches to once the realm has the
+    Organizations feature enabled (a username/email page, THEN a password
+    page — so KC can route to a per-org identity provider by username). The
+    old single-POST assumption silently broke when organizations were turned
+    on for the demo: the username page ignores the password field and just
+    renders the password page (HTTP 200), never the redirect the caller
+    expected.
+    """
+    def submit(page_html: str, fields: dict[str, str]) -> httpx.Response:
+        return client.post(_rebase(_form_action(page_html), public, base), data=fields)
+
+    if _PASSWORD_FIELD.search(login_page.text):  # combined form
+        resp = submit(login_page.text, {"username": username, "password": password})
+    else:  # username-first: username page, then password page
+        resp = submit(login_page.text, {"username": username})
+        # A redirect without a code is the hop TO the password page — follow it.
+        if resp.status_code in _REDIRECTS and _redirect_code(resp) is None:
+            resp = client.get(_rebase(html.unescape(resp.headers["location"]), public, base))
+        if resp.status_code == 200 and _PASSWORD_FIELD.search(resp.text):
+            resp = submit(resp.text, {"password": password})
+
+    code = _redirect_code(resp)
+    if code is None:
+        _fail("login (wrong persona password, or unexpected login flow)", resp)
+    return code
 
 
 def _rebase(url: str, public_base: str, reachable_base: str) -> str:
@@ -93,22 +149,10 @@ def main() -> None:
         )
         if login_page.status_code != 200:
             _fail("auth endpoint", login_page)
-        match = re.search(r'action="([^"]+)"', login_page.text)
-        if match is None:
-            raise SystemExit("ERROR: no login form on the auth page")
 
-        submitted = client.post(
-            _rebase(html.unescape(match.group(1)), public, base),
-            data={"username": args.username, "password": password},
+        code = _obtain_code(
+            client, login_page, args.username, password, public, base
         )
-        if submitted.status_code != 302:
-            _fail("login form (wrong persona password?)", submitted)
-        location = submitted.headers["location"]
-        code = urllib.parse.parse_qs(
-            urllib.parse.urlsplit(location).query
-        ).get("code", [None])[0]
-        if code is None:
-            raise SystemExit("ERROR: login redirect carried no code")
 
         token = client.post(
             f"{base}/realms/usali/protocol/openid-connect/token",

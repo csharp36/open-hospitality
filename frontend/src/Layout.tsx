@@ -14,11 +14,13 @@ import { Link, Outlet } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
 
 import { currentTheme, toggleTheme, type Theme } from './lib/theme'
-import { GlobalPropertyProvider, useGlobalProperty } from './lib/propertyContext'
+import { GlobalPropertyProvider } from './lib/GlobalPropertyProvider'
+import { useGlobalProperty } from './lib/propertyContext'
 import { hasRole } from './lib/roles'
 import { useAuth } from './auth/authContext'
 import { getMe } from './api/client'
 import type { Me } from './api/types'
+import BuildStamp from './components/BuildStamp'
 import OrgPicker from './components/OrgPicker'
 import {
   BankIcon,
@@ -101,6 +103,7 @@ const SECTIONS: NavSection[] = [
       { to: '/sos', label: 'SOS', icon: StatementIcon, exact: true },
       { to: '/upload', label: 'Upload', icon: UploadIcon },
       { to: '/reports', label: 'Reports', icon: ReportsIcon },
+      { to: '/performance', label: 'Performance', icon: GaugeIcon },
       { to: '/qbo', label: 'QBO', icon: SyncIcon },
       { to: '/coverage', label: 'Coverage', icon: CoverageIcon },
       { label: 'Daily Reports', icon: FileIcon, soon: true },
@@ -302,6 +305,7 @@ function SidebarContent({
           <LogoutIcon className="shrink-0" />
           <span className={collapsed ? 'sr-only' : ''}>Sign out</span>
         </button>
+        <BuildStamp collapsed={collapsed} />
       </div>
     </div>
   )
