@@ -48,14 +48,13 @@ for svc in usali-app usali-auth; do
     gone "service ${svc}"
   fi
 done
-for job in usali-migrate-seed; do
-  if gcloud run jobs describe "${job}" --region="${REGION}" \
+job="usali-migrate-seed"
+if gcloud run jobs describe "${job}" --region="${REGION}" \
     --project "${PROJECT}" >/dev/null 2>&1; then
-    gcloud run jobs delete "${job}" --region="${REGION}" \
-      --project "${PROJECT}" --quiet
-    gone "job ${job}"
-  fi
-done
+  gcloud run jobs delete "${job}" --region="${REGION}" \
+    --project "${PROJECT}" --quiet
+  gone "job ${job}"
+fi
 
 echo "== Cloud SQL"
 if gcloud sql instances describe "${SQL_INSTANCE}" \
@@ -76,7 +75,9 @@ if [[ -n "${OTHER_SQL}" ]]; then
   echo "   WARNING: other usali SQL instance(s) still BILLING — not this"
   echo "   teardown's target (\$SQL_INSTANCE=${SQL_INSTANCE}). Re-run with"
   echo "   SQL_INSTANCE set to each, or delete by hand:"
-  printf '     %s\n' ${OTHER_SQL}
+  while IFS= read -r other_instance; do
+    printf '     %s\n' "${other_instance}"
+  done <<<"${OTHER_SQL}"
 fi
 
 echo "== Bucket"

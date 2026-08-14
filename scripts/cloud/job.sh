@@ -7,6 +7,7 @@
 # The ONLY roster is the fictitious cloud one; there is no flag to point
 # this at anything else.
 set -euo pipefail
+# shellcheck disable=SC1091 # Runtime-relative path; env.sh is checked separately.
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 usali gusto-mock --port 9300 &
