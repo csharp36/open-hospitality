@@ -53,13 +53,18 @@ def generate_draft(xml_path: str | Path, out_path: str | Path, *, edition: int =
 
     Returns the number of unique rows written.
     """
-    xml_bytes = Path(xml_path).read_bytes()
+    path = Path(xml_path)
+    # Bound the size BEFORE reading: stat first so a multi-gigabyte export is
+    # refused without slurping it into memory (read_bytes would OOM first).
+    if path.stat().st_size > _MAX_XML_BYTES:
+        raise ValueError(f"Opera catalog XML exceeds {_MAX_XML_BYTES} bytes")
+    xml_bytes = path.read_bytes()
+    # Belt-and-suspenders against a TOCTOU grow between stat and read.
     if len(xml_bytes) > _MAX_XML_BYTES:
         raise ValueError(f"Opera catalog XML exceeds {_MAX_XML_BYTES} bytes")
-    # defusedxml rejects DTD/entity constructs before they can expand or read
-    # external resources. Parsing the already-bounded bytes also prevents the
-    # parser from consuming an arbitrarily large local export.
-    root = defused_et.fromstring(xml_bytes)
+    # defusedxml rejects DTD and entity constructs before they can expand or
+    # read external resources. forbid_dtd rejects a bare <!DOCTYPE> outright.
+    root = defused_et.fromstring(xml_bytes, forbid_dtd=True)
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     for g in root.iter("G_TRX_CODE"):
