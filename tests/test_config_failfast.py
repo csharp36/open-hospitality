@@ -73,6 +73,15 @@ def test_production_accepts_https_integration_urls(field_name):
     assert getattr(settings, field_name) == "https://api.example.com"
 
 
+@pytest.mark.parametrize("field_name", _CREDENTIAL_URL_FIELDS)
+def test_non_production_allows_cleartext_remote_integration_urls(field_name):
+    # The HTTPS requirement is gated on is_production. Outside production a
+    # cleartext remote URL must pass untouched -- this is the direction that
+    # kills the "drop the is_production gate" mutant (guard always on).
+    settings = Settings(env="dev", **{field_name: "http://api.example.com"})
+    assert getattr(settings, field_name) == "http://api.example.com"
+
+
 @pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
 def test_production_allows_cleartext_loopback_mocks(host):
     settings = Settings(
