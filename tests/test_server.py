@@ -85,6 +85,27 @@ def test_ingest_rejects_oversized_pdf_without_touching_filesystem(
     assert not (tmp_path / "inbox").exists()
 
 
+def test_ingest_accepts_a_pdf_at_exactly_the_size_limit(db_url, founding_org, tmp_path):
+    # A payload of exactly _MAX_PDF_BYTES is within bounds and must clear the
+    # size gate (it fails downstream as unparseable, but never with 413). This
+    # is the boundary that distinguishes `> _MAX` from the `>= _MAX` mutant,
+    # which the oversized (_MAX + prefix) test cannot see.
+    client = TestClient(create_app(inbox_dir=tmp_path / "inbox",
+                                   processed_dir=tmp_path / "processed",
+                                   failed_dir=tmp_path / "failed",
+                                   token_verifier=_VERIFIER))
+    client.headers["Authorization"] = f"Bearer {_MINT(roles=['accountant'])}"
+    at_limit = b"%PDF-" + b"x" * (_MAX_PDF_BYTES - len(b"%PDF-"))
+    assert len(at_limit) == _MAX_PDF_BYTES
+
+    resp = client.post(
+        "/ingest", files={"file": ("at-limit.pdf", at_limit, "application/pdf")}
+    )
+
+    assert resp.status_code != 413
+    assert resp.json()["detail"] != "PDF too large"
+
+
 def test_ingest_rejects_non_pdf_without_touching_filesystem(db_url, founding_org, tmp_path):
     client = TestClient(create_app(inbox_dir=tmp_path / "inbox",
                                    processed_dir=tmp_path / "processed",
