@@ -1,3 +1,15 @@
+"""Parse the SkyTouch "Hotel Statistics" report into per-period StatisticRecords.
+
+CALIBRATED TO THE SYNTHETIC MOCK FIXTURE. The column anchors are located by
+matching five CLEAN single-word tokens (``PTD PTD1 LYPTD YTD LYYTD``) sitting at the
+five value-column x0 positions. A REAL SkyTouch "Hotel Statistics" header instead
+wraps MULTI-WORD labels ("Last Year PTD", "Last YTD"), which will not equal these
+single tokens. Consequently ``_column_anchors`` will raise ``ValueError`` on a real
+sample until it is re-calibrated against a real (de-identified) file. That failure is
+deliberate and loud so a future real-sample failure is understood rather than
+mysterious: the fix is to re-derive the anchor tokens from an actual header.
+"""
+
 import re
 from datetime import date
 from decimal import Decimal
@@ -31,6 +43,14 @@ def _column_anchors(rows: list[list[Word]]) -> list[float]:
     )
 
 
+def _nearest_column(x0: float, anchors: list[float]) -> int:
+    # NEAREST anchor by x0 (like opera_manager_flash): sparse rows populate only some
+    # value columns with no placeholder tokens, so pairing values to periods by ordinal
+    # position would misalign; the ~80pt anchor gaps absorb the left/right drift of
+    # wide values comfortably.
+    return min(range(len(anchors)), key=lambda i: abs(anchors[i] - x0))
+
+
 def parse_hotel_statistics(
     words: list[Word], *, property_id: str, business_date: date, y_tol: float = 3.0
 ) -> list[StatisticRecord]:
@@ -45,8 +65,7 @@ def parse_hotel_statistics(
         if not label or not values:
             continue
         for w in values:
-            idx = min(range(5), key=lambda i: abs(anchors[i] - w.x0))
-            period = _PERIODS[idx]
+            period = _PERIODS[_nearest_column(w.x0, anchors)]
             out.append(
                 StatisticRecord(
                     property_id=property_id,
