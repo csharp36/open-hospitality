@@ -34,8 +34,8 @@ def test_parse_autoclerk_date():
 def test_parse_paren_amount():
     from usali.normalize import parse_paren_amount
 
-    assert parse_paren_amount("(918.29)") == Decimal("-918.29")
-    assert parse_paren_amount("4,003.21") == Decimal("4003.21")
+    assert parse_paren_amount("(1234.56)") == Decimal("-1234.56")
+    assert parse_paren_amount("7,890.12") == Decimal("7890.12")
     assert parse_paren_amount("0.00") == Decimal("0.00")
 
 
