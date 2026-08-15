@@ -8,26 +8,29 @@ def test_seed_properties_loads_rows(db_session):
     n = seed_properties(db_session, "mapping/properties.yaml")
     db_session.commit()
 
-    assert n == 2
+    assert n == 3
     props = {
         p.property_id: p
         for p in db_session.execute(select(Property)).scalars().all()
     }
-    assert set(props) == {"HISJ", "SSSJ"}
+    assert set(props) == {"HISJ", "SSSJ", "STDEMO"}
     assert props["HISJ"].pms_source == "OPERA"
     assert props["SSSJ"].pms_source == "AUTOCLERK"
+    assert props["STDEMO"].pms_source == "SKYTOUCH"
 
     aliases = db_session.execute(select(PropertyDetectionAlias)).scalars().all()
     assert {(a.property_id, a.pms_source, a.match_phrase) for a in aliases} == {
         ("HISJ", "OPERA", "HOLIDAY INN & SUITES SAN JOSE"),
         ("SSSJ", "AUTOCLERK", "SURESTAY PLUS BY BW"),
+        ("STDEMO", "SKYTOUCH", "REDSTONE TEST INN"),
     }
-    # A single default organization is created and shared by both properties.
+    # A single default organization is created and shared by all properties.
     org_count = db_session.execute(
         select(func.count()).select_from(Organization)
     ).scalar_one()
     assert org_count == 1
     assert props["HISJ"].org_id == props["SSSJ"].org_id
+    assert props["STDEMO"].org_id == props["HISJ"].org_id
 
 
 def test_seed_properties_is_idempotent(db_session):
@@ -37,10 +40,10 @@ def test_seed_properties_is_idempotent(db_session):
 
     assert db_session.execute(
         select(func.count()).select_from(Property)
-    ).scalar_one() == 2
+    ).scalar_one() == 3
     assert db_session.execute(
         select(func.count()).select_from(PropertyDetectionAlias)
-    ).scalar_one() == 2
+    ).scalar_one() == 3
     assert db_session.execute(
         select(func.count()).select_from(Organization)
     ).scalar_one() == 1
