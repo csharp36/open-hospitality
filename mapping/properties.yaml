@@ -2,3 +2,4 @@
 # `match` is an UPPERCASED substring of the report's own text; pms_source is a cross-check.
 - {match: "HOLIDAY INN & SUITES SAN JOSE", property_id: HISJ, pms_source: OPERA, wage_jurisdiction: US-CA, crm_ref: DELPHI-HISJ}
 - {match: "SURESTAY PLUS BY BW", property_id: SSSJ, pms_source: AUTOCLERK, wage_jurisdiction: US-CA}
+- {match: "REDSTONE TEST INN", property_id: STDEMO, pms_source: SKYTOUCH, wage_jurisdiction: US-TX}
