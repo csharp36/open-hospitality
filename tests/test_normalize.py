@@ -29,3 +29,17 @@ def test_parse_autoclerk_date():
     from usali.normalize import parse_autoclerk_date
 
     assert parse_autoclerk_date("07/07/2026") == date(2026, 7, 7)
+
+
+def test_parse_paren_amount():
+    from usali.normalize import parse_paren_amount
+
+    assert parse_paren_amount("(918.29)") == Decimal("-918.29")
+    assert parse_paren_amount("4,003.21") == Decimal("4003.21")
+    assert parse_paren_amount("0.00") == Decimal("0.00")
+
+
+def test_parse_skytouch_date():
+    from usali.normalize import parse_skytouch_date
+
+    assert parse_skytouch_date("6/21/2026") == date(2026, 6, 21)
