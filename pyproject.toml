@@ -67,3 +67,8 @@ src = ["src", "tests"]
 python_version = "3.12"
 packages = ["usali"]
 strict = true
+
+[dependency-groups]
+dev = [
+    "reportlab>=5.0.0",
+]
