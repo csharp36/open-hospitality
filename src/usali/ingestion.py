@@ -9,7 +9,11 @@ IngestBatch (with the error message), quarantines the source file to `failed_dir
 re-raises as ProcessingError. Success commits, then moves the source file to
 `processed_dir` as a separate phase — a filing failure after the commit leaves the file
 in place (retry is an idempotent no-op) and never fabricates a `failed` batch. Exactly
-one IngestBatch row is produced per call, regardless of outcome.
+one IngestBatch row is produced per `process_file` call, regardless of outcome.
+
+`process_pack` splits a bundled night-audit pack and ingests each recognized section
+under a shared transaction, producing one IngestBatch per recognized section on success
+(still exactly one `failed` batch on failure, with the whole transaction rolled back).
 """
 
 import dataclasses
