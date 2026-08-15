@@ -1,3 +1,13 @@
+"""Regroup a night-audit "pack" PDF into its constituent reports.
+
+SkyTouch (and similar PMS) night-audit exports concatenate several distinct
+reports (A/R Aging, Guest Ledger, Hotel Statistics, ...) into a single PDF.
+Each report occupies a contiguous run of pages and repeats its title as the
+top-most row of every page. This module regroups the per-page words back into
+per-report sections so each report can be handed to its own parser
+independently.
+"""
+
 from dataclasses import dataclass, field
 
 from usali.adaptors.pdf import Word, cluster_rows
@@ -22,9 +32,16 @@ def _page_title(page: list[Word]) -> str:
 def split_pack(pages: list[list[Word]]) -> list[ReportSection]:
     sections: list[ReportSection] = []
     for page in pages:
+        # Grouping relies on stable, page-invariant title rows: a per-page token
+        # like "Page 1 of 3" in the top row would silently split one report into
+        # per-page sections.
         title = _page_title(page)
         if sections and sections[-1].title == title:
-            base = max(w.top for w in sections[-1].words) + _PAGE_GAP
+            # Invariant: each merged page is shifted below all prior rows by a
+            # constant offset. This preserves intra-page row spacing while keeping
+            # cluster_rows from bridging two pages into one visual row. `default`
+            # guards a section whose prior page had no words (e.g. two blank pages).
+            base = max((w.top for w in sections[-1].words), default=0.0) + _PAGE_GAP
             sections[-1].words.extend(
                 Word(text=w.text, x0=w.x0, top=w.top + base) for w in page
             )
