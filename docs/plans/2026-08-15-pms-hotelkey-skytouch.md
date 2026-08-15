@@ -640,16 +640,18 @@ Five value columns: `Business Date | PTD | Last Year PTD | YTD | Last YTD` → `
 
 **Files:** Modify `src/usali/detect.py`; Test `tests/test_detect.py`
 
-- [ ] **Step 1: Failing test** — a fabricated header word-list containing `HOTEL JOURNAL SUMMARY` detects `("SKYTOUCH","hotel_journal")`; one containing `Business Date … Hotel Statistics … Property Code` detects `("SKYTOUCH","hotel_statistics")` and does NOT collide with HotelKey's `REPORT RUN DATE` signature.
+**Design note (revised):** HotelKey is on HOLD, so there is no HotelKey signature to collide with. SkyTouch always arrives as a bundled pack, and the pack flow (Task S8) runs `detect()` on EACH section's words — a section's first words are its report title — so we simply add the two SkyTouch report titles as signature phrases and reuse the existing `detect()` mechanism per section. No separate title-map, no ordering caveat.
+
+- [ ] **Step 1: Failing test** — in `tests/test_detect.py`, build small inline word-lists whose header contains the report title AND a registry `match` phrase, with a SkyTouch registry row `{match: "REDSTONE TEST INN", property_id: "STDEMO", pms_source: "SKYTOUCH"}`. Assert `detect(words_with("Hotel Journal Summary … Redstone Test Inn"), reg)` → `("SKYTOUCH","hotel_journal")` and `detect(words_with("Hotel Statistics … Redstone Test Inn"), reg)` → `("SKYTOUCH","hotel_statistics")`. Also assert a header with neither title raises `ValueError` (the housekeeping-section skip path).
 - [ ] **Step 2: Run, verify fail.**
-- [ ] **Step 3: Implement** — add, ordered so specific phrases win:
+- [ ] **Step 3: Implement** — add two entries to `detect._REPORT_SIGNATURES`:
 
 ```python
     ("HOTEL JOURNAL SUMMARY", ("SKYTOUCH", "hotel_journal")),
-    ("PROPERTY CODE", ("SKYTOUCH", "hotel_statistics")),  # SkyTouch stats header; paired w/ split-pack context
+    ("HOTEL STATISTICS", ("SKYTOUCH", "hotel_statistics")),
 ```
 
-**CAVEAT** — `detect()` runs on a single report's words. Under the pack flow (Task S8) each section is detected independently, so `PROPERTY CODE` only ever sees a SkyTouch stats section. But `HOTEL JOURNAL SUMMARY` must be listed and both must sit AFTER HotelKey's `REPORT RUN DATE`. If a real collision surfaces, switch the stats signature to the pack-title (`"HOTEL STATISTICS"` matched against the section title from `split_pack`, not the raw header) — see Task S8 which already carries the section title.
+Both phrases are unambiguous today (no other source uses them). `detect()` already cross-checks the registry row's `pms_source` against the detected source, so a SkyTouch section resolves only against a SkyTouch-registered property.
 
 - [ ] **Step 4: Run, verify pass. Step 5: Commit** — `git commit -m "feat(skytouch): detection signatures"`
 
@@ -657,7 +659,7 @@ Five value columns: `Business Date | PTD | Last Year PTD | YTD | Last YTD` → `
 
 ### Task S8: teach the pipeline to ingest a pack
 
-`process_file` today = one report per file. A SkyTouch pack is many. Introduce section iteration: if the file splits into >1 titled section, process each section that maps to a known `(pms_source, report_type)` and skip the rest (housekeeping/vacant lists etc.); return a `list[ProcessResult]`. Single-report files keep working (one section → a one-element list). Use the section title from `split_pack` to disambiguate SkyTouch reports rather than re-detecting from raw header text.
+`process_file` today = one report per file. A SkyTouch pack is many. Introduce a `process_pack` that splits the file into sections and runs the EXISTING `detect()` on each section's words (reusing the S7 signatures); sections `detect()` can identify and that map to a `_PIPELINES` handler are processed, the rest (housekeeping/vacant lists — `detect()` raises `ValueError`) are skipped; returns a `list[ProcessResult]`. A single-report file (Opera/AutoClerk) splits into ONE section and flows through the same path unchanged.
 
 **Files:** Modify `src/usali/ingestion.py`; Test `tests/test_skytouch_end_to_end.py`
 
@@ -674,7 +676,7 @@ def test_skytouch_pack_end_to_end(db_session, tmp_path):
 ```
 
 - [ ] **Step 2: Run, verify fail** (no `process_pack`).
-- [ ] **Step 3: Implement** — a `SECTION_TITLES: dict[str, tuple[str,str]]` mapping split-pack titles (`"Hotel Journal Summary"`, `"Hotel Statistics"`, `"Final Transaction Closeout"`) to `(source, report_type)`; a new `process_pack(session, pdf_path, *, processed_dir, failed_dir, edition=12) -> list[ProcessResult]` that: `extract_pages` → `split_pack` → for each section whose title is in `SECTION_TITLES`, build a `Detection` (property from `load_registry` matched on the section words), run the existing `_PIPELINES` handler, `record_coverage`, and collect a `ProcessResult`; commit once at the end; on failure roll back + quarantine the whole file (one file = one batch-group). Register SkyTouch handlers `_run_skytouch_hotel_journal` (stage_records → transform, like `_run_opera_trial_balance` minus the ledger rider) and `_run_skytouch_hotel_statistics` (stage_statistics → promote_statistics) in `_PIPELINES`. Keep `process_file` delegating to `process_pack` and returning the single element for non-pack files, OR have the CLI/watcher call `process_pack`. Decide and document the entry point; update `cli.py`'s `process` command to use `process_pack`.
+- [ ] **Step 3: Implement** — a new `process_pack(session, pdf_path, *, processed_dir, failed_dir, edition=12) -> list[ProcessResult]` that: `words_pages = extract_pages(pdf_path)` → `sections = split_pack(words_pages)` → `registry = load_registry(session)` → for each section, `try: det = detect(section.words, registry)` (skip the section on `ValueError` — unknown report or unresolved property, i.e. housekeeping/vacant lists); if `(det.pms_source, det.report_type)` in `_PIPELINES`, run the handler, `record_coverage`, mark the batch `transformed`, and append a `ProcessResult`; commit ONCE at the end; on any handler failure roll back the whole transaction, record ONE `failed` batch, quarantine the file to `failed_dir`, and raise `ProcessingError`. Post-commit, move the file to `processed_dir` (same filing phase as `process_file`). If NO section produced a result, treat as failure (nothing recognized) and quarantine. Register SkyTouch handlers `_run_skytouch_hotel_journal` (`stage_records` → `transform`, exactly like `_run_opera_trial_balance` but WITHOUT the ledger rider) and `_run_skytouch_hotel_statistics` (`stage_statistics` → `promote_statistics`) in `_PIPELINES`. Refactor the shared detect→dispatch→stage body so `process_file` and `process_pack` don't duplicate it (extract a `_process_section(session, det, words, path, file_hash, edition)` helper; `process_file` = split into one section + `_process_section`; or have `process_file` call `process_pack` and return the single element). Update `cli.py`'s `process`/watch command to call `process_pack` (returns a list). Keep `process_file`'s existing single-result signature for backward compatibility with its current callers/tests, delegating internally.
 - [ ] **Step 4: Run, verify pass.**
 - [ ] **Step 5: Commit** — `git commit -m "feat(skytouch): ingest the night-audit pack section-by-section"`
 
