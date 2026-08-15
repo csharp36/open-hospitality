@@ -15,6 +15,8 @@ _REPORT_SIGNATURES: list[tuple[str, tuple[str, str]]] = [
     ("MANAGER'S REPORT", ("AUTOCLERK", "manager_report")),
     ("MARKET CODE STATISTICS", ("OPERA", "market_stats")),
     ("RATE PLAN", ("AUTOCLERK", "rate_plan")),
+    ("HOTEL JOURNAL SUMMARY", ("SKYTOUCH", "hotel_journal")),
+    ("HOTEL STATISTICS", ("SKYTOUCH", "hotel_statistics")),
 ]
 # Only the header area is needed; scanning a bounded prefix keeps false positives out
 # of table bodies further down the page.

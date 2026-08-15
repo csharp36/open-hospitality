@@ -67,3 +67,31 @@ def test_detects_autoclerk_rate_plan():
         _words("tests/fixtures/autoclerk_rate_plan_words.json"), _REGISTRY
     )
     assert det == Detection(pms_source="AUTOCLERK", report_type="rate_plan", property_id="SSSJ")
+
+
+_ST_REGISTRY = [{"match": "REDSTONE TEST INN", "property_id": "STDEMO", "pms_source": "SKYTOUCH"}]
+
+
+def _hdr(*tokens):
+    # lay tokens out left-to-right on one header row; detect() only reads text of first 120 words
+    return [Word(text=t, x0=10.0 + 12 * i, top=10.0) for i, t in enumerate(tokens)]
+
+
+def test_detects_skytouch_hotel_journal():
+    words = _hdr("Hotel", "Journal", "Summary", "Property", "Name:", "Redstone", "Test", "Inn")
+    det = detect(words, _ST_REGISTRY)
+    assert (det.pms_source, det.report_type) == ("SKYTOUCH", "hotel_journal")
+    assert det.property_id == "STDEMO"
+
+
+def test_detects_skytouch_hotel_statistics():
+    words = _hdr("Hotel", "Statistics", "Property", "Name:", "Redstone", "Test", "Inn")
+    det = detect(words, _ST_REGISTRY)
+    assert (det.pms_source, det.report_type) == ("SKYTOUCH", "hotel_statistics")
+
+
+def test_unknown_skytouch_section_raises():
+    # a housekeeping section title is not a known signature -> detect() raises (the pack-skip path)
+    words = _hdr("Vacant", "Room", "List", "Property", "Name:", "Redstone", "Test", "Inn")
+    with pytest.raises(ValueError):
+        detect(words, _ST_REGISTRY)
