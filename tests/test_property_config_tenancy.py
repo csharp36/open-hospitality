@@ -1,11 +1,12 @@
 from datetime import date
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from tests.authkit import make_authkit
 from tests.orgworld import ORG2_ALIAS, rls_client
 from usali.auth import ACTIVE_ORG_HEADER
 from usali.models import RoomInventory
+from usali.tenancy import RLS_ORG_VAR
 
 
 def test_tenant_cannot_read_or_write_another_orgs_inventory(
@@ -62,3 +63,26 @@ def test_org2_admin_writes_land_in_org2(db_url, db_session, two_tenant_world, tm
     ).scalar_one()
     assert row.org_id == world.org2_id == 2
     assert row.total_rooms == 77
+
+
+def test_empty_org_context_yields_zero_rows_on_the_new_tables(
+    db_session, two_tenant_world, app_role_engine
+):
+    """The #8 tables copy l2's org_wall predicate INCLUDING the NULLIF(...,'')
+    fold. Exercise it directly on the new tables: a pooled app-role connection
+    whose app.org_id has reverted to the EMPTY STRING must see zero rows, not
+    error on ''::int. test_l2's '' pin only covers property/organization, so
+    without this a dropped NULLIF on a #8 table's predicate would survive."""
+    db_session.add(RoomInventory(property_id="ONE1", org_id=1,
+                                 effective_date=date(2026, 1, 1), total_rooms=100))
+    db_session.commit()
+    with app_role_engine.connect() as conn:
+        try:
+            conn.execute(text("SELECT set_config(:v, '', false)"), {"v": RLS_ORG_VAR})
+            # These would raise 'invalid input syntax for integer: ""' if the
+            # predicate cast '' directly instead of folding it to NULL first.
+            assert conn.execute(text("SELECT count(*) FROM room_inventory")).scalar() == 0
+            assert conn.execute(text("SELECT count(*) FROM fiscal_calendar")).scalar() == 0
+            assert conn.execute(text("SELECT count(*) FROM out_of_order_room")).scalar() == 0
+        finally:
+            conn.execute(text(f"RESET {RLS_ORG_VAR}"))

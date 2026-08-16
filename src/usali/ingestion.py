@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from usali.adaptors import autoclerk_manager_report as mgr
@@ -30,7 +31,7 @@ from usali.adaptors.pdf import Word, extract_words
 from usali.detect import Detection, detect, load_registry
 from usali.ledger_promote import promote_ledgers
 from usali.ledger_stage import stage_ledgers
-from usali.models import IngestBatch
+from usali.models import IngestBatch, IngestionCoverage
 from usali.segment_promote import promote_segments
 from usali.segment_stage import stage_segments
 from usali.stage import stage_records
@@ -177,6 +178,23 @@ _PIPELINES: dict[tuple[str, str], _Handler] = {
 }
 
 
+def record_coverage(
+    session: Session, property_id: str, business_date: date, report_type: str
+) -> None:
+    """Idempotent: one coverage row per (property, business_date, report_type).
+    ORM get-or-create so the org_id before_flush stamp applies."""
+    exists = session.execute(
+        select(IngestionCoverage.coverage_id).where(
+            IngestionCoverage.property_id == property_id,
+            IngestionCoverage.business_date == business_date,
+            IngestionCoverage.report_type == report_type,
+        )
+    ).scalar_one_or_none()
+    if exists is None:
+        session.add(IngestionCoverage(property_id=property_id, business_date=business_date,
+                                      report_type=report_type))
+
+
 def _file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -217,6 +235,9 @@ def process_file(
         batch, business_date, counts = handler(
             session, words, det, path, _file_hash(path), edition
         )
+        # Record which report type landed for this property-day. A file that spans
+        # DAY/MONTH/YEAR periods records the DAY business_date the handler returns.
+        record_coverage(session, det.property_id, business_date, det.report_type)
         batch.status = "transformed"
         session.commit()
     except Exception as exc:

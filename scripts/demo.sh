@@ -75,7 +75,8 @@ PY
 else
   echo "[demo 3/5] reusing dev HPKE key (.dev/demo-hpke-key.b64)"
 fi
-export USALI_PII_HPKE_PRIVATE_KEY="$(tr -d '\n' <"$KEY_FILE")"
+USALI_PII_HPKE_PRIVATE_KEY="$(tr -d '\n' <"$KEY_FILE")"
+export USALI_PII_HPKE_PRIVATE_KEY
 export USALI_PII_HPKE_KEY_ID="demo-1"
 
 # Face matching (Pillar F): ON for the demo — synthetic people, dev

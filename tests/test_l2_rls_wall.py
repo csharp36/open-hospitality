@@ -52,6 +52,30 @@ assert _spec is not None and _spec.loader is not None
 _l2 = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_l2)
 
+_m1_spec = importlib.util.spec_from_file_location(
+    "m1a0propcfg", "migrations/versions/m1a0propcfg_property_config_tables.py"
+)
+assert _m1_spec is not None and _m1_spec.loader is not None
+_m1 = importlib.util.module_from_spec(_m1_spec)
+_m1_spec.loader.exec_module(_m1)
+
+
+def _load_migration(mod_name: str, path: str):
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The two OrgScoped-table migrations that STACK on L2 each define their own copy
+# of the RLS predicate string (they create RLS on the tables they add). Loaded
+# here so the cross-pin below proves all three copies stayed byte-identical.
+_m1 = _load_migration("m1a0propcfg", "migrations/versions/m1a0propcfg_property_config_tables.py")
+_m2 = _load_migration(
+    "m2a0perffoundations", "migrations/versions/m2a0perffoundations_performance_foundations.py"
+)
+
 
 # ---------------------------------------------------------------- fixtures
 
@@ -390,6 +414,15 @@ def test_the_wall_constants_are_pinned_as_literals():
     assert FOUNDING_ORG_ID == 1
 
 
+def test_the_property_config_rls_predicate_matches_l2_verbatim():
+    """m1a0propcfg (#8) transcribes l2a0rlswall's org_wall predicate into its
+    own `_PREDICATE` literal. The migration docstring claims it is "reused
+    verbatim so the policies cannot drift" — pin that claim: a future edit to
+    the l2 predicate that isn't mirrored into m1 (or vice versa) fails HERE
+    rather than silently leaving the #8 tables on a stale wall."""
+    assert _m1._PREDICATE == _l2._PREDICATE
+
+
 def test_the_rls_inventory_is_complete_and_forced(db_engine):
     """Every org-scoped table — no sampling — carries the org_wall
     policy, ENABLE and FORCE. The size is a literal (44 = L1's 42 +
@@ -398,12 +431,16 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     table (org_settings) with its OWN RLS in the l5a0orgsettings
     migration — enumerated here so the inventory stays exact, not sampled.
     m1a0propcfg adds three more (room_inventory, out_of_order_room,
-    fiscal_calendar), each with its own RLS, for the same reason."""
+    fiscal_calendar), each with its own RLS, for the same reason.
+    m2a0perffoundations adds two more (property_stat_config,
+    ingestion_coverage), each with its own RLS, for the same reason."""
     assert len(_l2.RLS_TABLES) == 44
     # The full org-scoped inventory at head = L2's 44 + L5's org_settings +
-    # m1a0propcfg's three property-config tables.
+    # m1a0propcfg's three property-config tables +
+    # m2a0perffoundations's two performance-foundation tables.
     expected = set(_l2.RLS_TABLES) | {
         "org_settings", "room_inventory", "out_of_order_room", "fiscal_calendar",
+        "property_stat_config", "ingestion_coverage",
     }
     with db_engine.connect() as conn:
         policied = {
@@ -470,3 +507,15 @@ def test_the_migration_refuses_without_the_app_role():
             os.environ.pop("USALI_DB_URL", None)
         else:
             os.environ["USALI_DB_URL"] = previous
+
+
+def test_the_stacked_migrations_share_the_l2_rls_predicate():
+    """Every migration that creates an org_wall policy — l2a0rlswall and the two
+    that stack on it (m1a0propcfg, m2a0perffoundations) — must use the SAME
+    predicate string. Each holds its own literal copy; a copy that drifted (a
+    stray NULLIF removed, a different GUC name) would leave one set of tables
+    fail-open or comparing against the wrong variable while the wall tests on
+    the OTHER tables still passed. Mirrors the predicate cross-pin #8's review
+    added when m1a0propcfg first stacked."""
+    assert _m2._PREDICATE == _l2._PREDICATE
+    assert _m1._PREDICATE == _l2._PREDICATE
