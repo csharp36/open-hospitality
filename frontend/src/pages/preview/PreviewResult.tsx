@@ -31,8 +31,8 @@ export default function PreviewResult({ payload }: { payload: PreviewPayload }) 
 
       <table className="w-full text-sm">
         <tbody>
-          {payload.pnl_lines.map((l) => (
-            <tr key={`${l.major}-${l.sub}-${l.line_item}`} className="border-b border-brand-line">
+          {payload.pnl_lines.map((l, i) => (
+            <tr key={`${l.major}-${l.sub}-${l.line_item}-${i}`} className="border-b border-brand-line">
               <td className="py-1.5 text-brand-ink">
                 {l.major} — {l.line_item}
               </td>
@@ -44,8 +44,8 @@ export default function PreviewResult({ payload }: { payload: PreviewPayload }) 
 
       {payload.kpis.length > 0 && (
         <div className="flex gap-6 font-mono">
-          {payload.kpis.map((k) => (
-            <div key={k.label}>
+          {payload.kpis.map((k, i) => (
+            <div key={`${k.label}-${i}`}>
               <div className="text-lg">{k.value}</div>
               <div className="text-xs text-brand-ink-muted">{k.label}</div>
             </div>
@@ -55,7 +55,7 @@ export default function PreviewResult({ payload }: { payload: PreviewPayload }) 
 
       <button
         type="button"
-        aria-disabled="true"
+        disabled
         title="Coming soon"
         className="rounded-control bg-brand-accent px-4 py-2 text-white opacity-70"
       >

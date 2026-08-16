@@ -9,7 +9,7 @@ export default function EdgeState({ res, onRetry }: {
       <section role="region" aria-label="Unsupported PMS" className="space-y-3">
         <p className="text-brand-ink">🔎 This looks like a <b>{res.vendor}</b> report.</p>
         <p className="text-sm text-brand-ink-muted">We don't fully support {res.vendor} yet.</p>
-        <button type="button" aria-disabled="true" title="Coming soon"
+        <button type="button" disabled title="Coming soon"
           className="rounded-control border border-brand-accent px-4 py-1.5 text-brand-accent opacity-70">
           Notify me when it's ready (coming soon)
         </button>

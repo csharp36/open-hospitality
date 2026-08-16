@@ -47,6 +47,6 @@ describe('PreviewResult', () => {
 
     const cta = within(region).getByRole('button', { name: /early access/i })
     expect(cta).toBeInTheDocument()
-    expect(cta).toHaveAttribute('aria-disabled', 'true')
+    expect(cta).toBeDisabled()
   })
 })
