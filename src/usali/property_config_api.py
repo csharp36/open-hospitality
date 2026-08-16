@@ -4,8 +4,10 @@ fiscal calendar (issue #8).
 Auth mirrors POST /api/departments: reads gate on `_require_readable_property`,
 writes on `require_grants(ORG_ADMIN, PROPERTY_GM)` + `_require_onboardable_property`
 (org_admin bypass; a GM confined to assigned properties). Every write emits one
-AuditEvent; a refusal that passed confinement audits with a rollback first, so
-the audit commit never sweeps in a partial write (the crm_api idiom).
+AuditEvent. Confinement refuses with an authz 403 raised BEFORE any `session.add`,
+so a refused write leaves nothing to roll back and — correctly — audits nothing;
+there is no post-confinement operational refusal path here (unlike crm_api's
+`crm_refresh_refused`).
 
 Fail-loud reads: an unconfigured fiscal calendar, or a rooms-available window
 reaching before the first inventory row, returns 409 with a named message
@@ -47,13 +49,19 @@ from usali.fiscal import (
     require_config,
     resolve_period,
 )
-from usali.inventory import InventoryNotConfigured, rooms_available
+from usali.inventory import (
+    InventoryInconsistent,
+    InventoryNotConfigured,
+    rooms_available,
+)
 from usali.models import (
+    ADR_ROOM_BASES,
     CALENDAR_TYPES,
     OOO_REASON_CODES,
     AuditEvent,
     FiscalCalendar,
     OutOfOrderRoom,
+    PropertyStatConfig,
     RoomInventory,
 )
 from usali.workforce import (
@@ -80,6 +88,11 @@ def _fiscal_config(session: Session, property_id: str) -> FiscalConfig | None:
         fiscal_year_start_month=row.fiscal_year_start_month,
         week_start_weekday=row.week_start_weekday,
     )
+
+
+def _adr_room_basis(session: Session, property_id: str) -> str:
+    row = session.get(PropertyStatConfig, property_id)
+    return row.adr_room_basis if row is not None else "as_reported"
 
 
 # ---- read models -----------------------------------------------------------
@@ -110,6 +123,7 @@ class ConfigResponse(BaseModel):
     inventory: list[InventoryRow]
     out_of_order: list[OooRow]
     fiscal_calendar: FiscalConfigModel | None
+    adr_room_basis: str
 
 
 @router.get("/{property_id}/config")
@@ -139,6 +153,7 @@ def get_config(
                 calendar_type=cfg.calendar_type,
                 fiscal_year_start_month=cfg.fiscal_year_start_month,
                 week_start_weekday=cfg.week_start_weekday),
+            adr_room_basis=_adr_room_basis(session, property_id),
         )
 
 
@@ -161,7 +176,7 @@ def get_rooms_available(
         _require_readable_property(session, resolve_scope(principal, session), property_id)
         try:
             nights = rooms_available(session, property_id, start, end)
-        except InventoryNotConfigured as exc:
+        except (InventoryNotConfigured, InventoryInconsistent) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from None
         return RoomsAvailableResponse(property_id=property_id, start=start, end=end,
                                       room_nights=nights)
@@ -215,7 +230,9 @@ class OooBody(BaseModel):
     end_date: date
     room_count: int = Field(gt=0)
     reason_code: str
-    note: str | None = None
+    # Bounded to the column width (String(200)); an over-long note is a clean
+    # 422 rather than an unhandled Postgres StringDataRightTruncation 500.
+    note: str | None = Field(default=None, max_length=200)
 
 
 class FiscalBody(BaseModel):
@@ -333,3 +350,28 @@ def set_fiscal_calendar(
         return FiscalConfigModel(calendar_type=body.calendar_type,
                                  fiscal_year_start_month=body.fiscal_year_start_month,
                                  week_start_weekday=body.week_start_weekday)
+
+
+class StatConfigBody(BaseModel):
+    adr_room_basis: str
+
+
+@router.put("/{property_id}/stat-config")
+def set_stat_config(
+    property_id: str, body: StatConfigBody, request: Request,
+    principal: Principal = Depends(require_config_writer),
+) -> dict[str, str]:
+    if body.adr_room_basis not in ADR_ROOM_BASES:
+        raise HTTPException(status_code=422,
+                            detail=f"adr_room_basis must be one of {sorted(ADR_ROOM_BASES)}")
+    with _session(request) as session:
+        _require_onboardable_property(session, principal, property_id)
+        row = session.get(PropertyStatConfig, property_id)
+        if row is None:
+            row = PropertyStatConfig(property_id=property_id, adr_room_basis=body.adr_room_basis)
+            session.add(row)
+        else:
+            row.adr_room_basis = body.adr_room_basis
+        _audit(session, principal, "stat_config_set", property_id)
+        session.commit()
+        return {"adr_room_basis": body.adr_room_basis}

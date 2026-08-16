@@ -94,8 +94,13 @@ function InventorySection({
   const [effectiveDate, setEffectiveDate] = useState('')
   const [totalRooms, setTotalRooms] = useState('')
 
-  // inventory arrives newest-first (server orders by effective_date desc).
-  const current = inventory[0]
+  // inventory arrives newest-first (server orders by effective_date desc). The
+  // count IN FORCE today is the newest row whose effective_date is on or before
+  // today — the same greatest-effective_date-<=-today rule the backend uses; a
+  // future-dated row (e.g. a renovation) is NOT the current count.
+  const todayIso = new Date().toLocaleDateString('en-CA') // YYYY-MM-DD, local
+  const current = inventory.find((row) => row.effective_date <= todayIso)
+  const earliest = inventory[inventory.length - 1]
 
   const add = useMutation({
     mutationFn: () =>
@@ -116,6 +121,12 @@ function InventorySection({
         <p className="mb-3 text-sm text-ink">
           Current count: <span className="font-semibold">{current.total_rooms}</span> rooms,
           effective {current.effective_date}
+        </p>
+      ) : earliest !== undefined ? (
+        <p className="mb-3 text-sm text-ink-muted">
+          No count in force yet — first count of{' '}
+          <span className="font-semibold">{earliest.total_rooms}</span> rooms takes effect{' '}
+          {earliest.effective_date}.
         </p>
       ) : (
         <p className="mb-3 text-sm text-ink-muted">No room count on file yet — add one below.</p>

@@ -3,6 +3,7 @@
 // HTTP status and the FastAPI `detail` message.
 
 import type {
+  AdrRoomBasis,
   Department,
   AvailabilityNote,
   CoverageReport,
@@ -45,6 +46,7 @@ import type {
   PayRunLines,
   PayRunSummary,
   PayRate,
+  PerformanceResponse,
   PropertyConfig,
   PropertyInfo,
   Punched,
@@ -774,6 +776,34 @@ export function getFiscalPeriods(
   return getJson(`/api/properties/${propertyId}/fiscal-periods`, {
     fiscal_year: String(fiscalYear),
   })
+}
+
+// --- Core performance statistics (issue #9) ---------------------------------
+// GET /api/performance is property-access gated server-side; the window is
+// given EITHER by `from`+`to` OR by `period=YYYY-Pnn` — the union type makes
+// mixing the two a compile-time error, mirroring the endpoint's exactly-one-form
+// 422. setStatConfig is the config-writer-gated ADR-basis setter from Task A2
+// (the same /api/properties router as the issue #8 config writes above).
+
+export function getPerformance(
+  property: string,
+  opts: { from: string; to: string } | { period: string },
+): Promise<PerformanceResponse> {
+  return getJson('/api/performance', { property, ...opts })
+}
+
+export async function setStatConfig(
+  property: string,
+  adr_room_basis: AdrRoomBasis,
+): Promise<{ adr_room_basis: AdrRoomBasis }> {
+  const res = await fetch(`/api/properties/${property}/stat-config`, {
+    method: 'PUT',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ adr_room_basis }),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<{ adr_room_basis: AdrRoomBasis }>
 }
 
 export async function postIngest(file: File): Promise<IngestResult> {

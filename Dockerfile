@@ -16,8 +16,13 @@ COPY frontend/ ./
 # defaults speak the K3/K5 public hostnames.
 ARG VITE_OIDC_AUTHORITY=https://auth.example.com/realms/usali
 ARG VITE_OIDC_CLIENT_ID=operator-portal
+# Build stamp: deploy_app.sh passes the short commit SHA it also tags the image
+# with. 'dev' when built without the arg, so the SPA footer always shows a value
+# a bug report can be correlated against.
+ARG VITE_BUILD_SHA=dev
 ENV VITE_OIDC_AUTHORITY=${VITE_OIDC_AUTHORITY} \
-    VITE_OIDC_CLIENT_ID=${VITE_OIDC_CLIENT_ID}
+    VITE_OIDC_CLIENT_ID=${VITE_OIDC_CLIENT_ID} \
+    VITE_BUILD_SHA=${VITE_BUILD_SHA}
 RUN npm run build
 
 ########## 2. python deps + face models ##########
