@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Shared container-env composition (K4) — sourced by entrypoint.sh AND
 # job.sh (one predicate, one function: the serving container and the
 # seed job must never each invent the DB URL).

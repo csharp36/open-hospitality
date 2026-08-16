@@ -26,6 +26,7 @@ from pathlib import Path
 import yaml
 
 from usali.mapping.loader import load_mappings
+from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
 from usali.segment_promote import promote_segments
 from usali.stage import stage_records
@@ -281,6 +282,11 @@ def test_seeding_the_year_twice_is_a_no_op(db_session, founding_org, monkeypatch
     seed_schedules(db_session, "mapping/usali_schedules.yaml")
     load_mappings(db_session, "mapping/opera.yaml")
     load_mappings(db_session, "mapping/autoclerk.yaml")
+    # The synthetic year now records ingestion_coverage, which carries a
+    # composite (org_id, property_id) FK to property — so the properties must
+    # exist first, exactly as _seed_world guarantees in the real cloud job
+    # before _seed_synthetic_year runs.
+    seed_properties(db_session, "mapping/properties.yaml")
     db_session.commit()
 
     demo_seed = _load_demo_seed()

@@ -10,7 +10,7 @@ from typing import Any
 
 import yaml
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -18,6 +18,7 @@ from sqlalchemy import update
 
 from usali.config import get_settings
 from usali.models import Organization, OrgSettings, Property, PropertyDetectionAlias
+from usali.tenancy import FOUNDING_ORG_ID
 
 # The founding hotel group (multi-org arrives via provisioning, Pillar L).
 _DEFAULT_ORG = "Pilot Hotel Group"
@@ -32,11 +33,23 @@ def ensure_default_org(session: Session) -> int:
     """Find-or-create THE default org, returning its id.
 
     One implementation on purpose (L1): the seed path and every test world
-    must agree on which row is the founding org — two creators with two
-    names would split a world across org ids, which is exactly the state
-    the L2 walls (ORM criteria + RLS) assume cannot exist. Keyed on the
-    unique name, autoincrement id: on any freshly-truncated or A2.1-seeded
-    database the org comes out id 1.
+    must agree on which row is the founding org — two creators would split a
+    world across org ids, exactly the state the L2 walls (ORM criteria + RLS)
+    assume cannot exist. The founding org is org 1 BY CONSTRUCTION
+    (FOUNDING_ORG_ID), so create it with an EXPLICIT id, keyed on the org_id
+    PK — NOT an autoincrement keyed on name.
+
+    Why explicit: the seed runs on a founding-BOUND session (job.sh keeps the
+    owner role, which FORCE ROW LEVEL SECURITY still filters at query time), so
+    the DB wall's WITH CHECK demands the new row's org_id EQUAL the bound org
+    (== FOUNDING_ORG_ID). A bare autoincrement can hand out a different id — a
+    prior failed insert already burned the sequence's 1, and nextval does not
+    roll back — which RLS then refuses (the cloud non-superuser owner does not
+    bypass FORCE RLS; only the test/dev superuser did, which is why this only
+    ever surfaced in Cloud SQL). An explicit id passes the check
+    deterministically and is idempotent on the PK. `Organization` is exempt
+    from the write-stamp (org-scoped by its own PK), so the explicit id is not
+    a cross-org write.
 
     L3: the founding org answers to the dev realm's Keycloak alias, so
     the seed stamps `kc_org_alias` — but only where it is NULL: a bare
@@ -45,19 +58,32 @@ def ensure_default_org(session: Session) -> int:
     """
     session.execute(
         insert(Organization)
-        .values(name=_DEFAULT_ORG, kc_org_alias=DEFAULT_ORG_ALIAS)
-        .on_conflict_do_nothing(index_elements=["name"])
+        .values(org_id=FOUNDING_ORG_ID, name=_DEFAULT_ORG, kc_org_alias=DEFAULT_ORG_ALIAS)
+        .on_conflict_do_nothing(index_elements=["org_id"])
+    )
+    # An EXPLICIT id does not advance the identity sequence (no nextval was
+    # called), so a later provisioned org's autoincrement would collide on the
+    # founding id. Advance it past the current max. Runs on the owner/superuser
+    # seed/provision session (which owns the sequence); GREATEST(..) keeps it
+    # monotonic — under RLS the visible max is the bound org's own rows, which
+    # for the single-founding-org seed is exactly FOUNDING_ORG_ID.
+    session.execute(
+        text(
+            "SELECT setval(pg_get_serial_sequence('organization', 'org_id'), "
+            "GREATEST((SELECT max(org_id) FROM organization), :founding))"
+        ),
+        {"founding": FOUNDING_ORG_ID},
     )
     session.execute(
         update(Organization)
         .where(
-            Organization.name == _DEFAULT_ORG,
+            Organization.org_id == FOUNDING_ORG_ID,
             Organization.kc_org_alias.is_(None),
         )
         .values(kc_org_alias=DEFAULT_ORG_ALIAS)
     )
     org_id = session.execute(
-        select(Organization.org_id).where(Organization.name == _DEFAULT_ORG)
+        select(Organization.org_id).where(Organization.org_id == FOUNDING_ORG_ID)
     ).scalar_one()
     # L5 decision 5: seed the founding org's per-org settings from the
     # process-wide env default, but ONLY on first insert — a bare re-seed
