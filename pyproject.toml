@@ -24,6 +24,7 @@ dependencies = [
     "cryptography>=50.0.0",
     "pyhpke>=0.6",
     "google-cloud-storage>=3.13.0",
+    "defusedxml>=0.7.1",
 ]
 
 [project.optional-dependencies]
@@ -40,6 +41,7 @@ dev = [
     "ruff>=0.4",
     "mypy>=1.10",
     "types-PyYAML",
+    "types-defusedxml",
 ]
 
 [project.scripts]

@@ -51,6 +51,7 @@ from usali.assignments import (
 from usali.attribution import property_hours_for_timecard
 from usali.deposit_accounts import account_slot, deposit_problems, routing_slot
 from usali.labor import department_at
+from usali.invariants import require, require_not_none
 from usali.opener import Opener
 from usali.overtime import compute_overtime
 from usali.overtime_rules import rules_for
@@ -399,8 +400,10 @@ def _late_sick_problems(
                     whole_derived, whole_paid,
                 )
                 continue
-            employee = session.get(Employee, employee_id)
-            assert employee is not None
+            employee = require_not_none(
+                session.get(Employee, employee_id),
+                f"sick reconciliation references missing employee {employee_id}",
+            )
             who = f"employee {employee_id} ({employee.full_name})"
             if derived_hours > paid:
                 days = ", ".join(t.day.isoformat() for t in taken)
@@ -479,8 +482,10 @@ def _late_worked_problems(
             days.add((punch.business_date, punch.employee_id))
     problems: list[str] = []
     for day, employee_id in sorted(days):
-        employee = session.get(Employee, employee_id)
-        assert employee is not None
+        employee = require_not_none(
+            session.get(Employee, employee_id),
+            f"orphan punch references missing employee {employee_id}",
+        )
         who = f"employee {employee_id} ({employee.full_name})"
         problems.append(
             f"{who}: worked time punched on {day.isoformat()} is linked "
@@ -545,8 +550,10 @@ def _paid_worked_problems(
                 # against derived 0.)
                 continue
             if state == "unapproved":
-                employee = session.get(Employee, line.employee_id)
-                assert employee is not None
+                employee = require_not_none(
+                    session.get(Employee, line.employee_id),
+                    f"pay-run line references missing employee {line.employee_id}",
+                )
                 problems.append(
                     f"employee {line.employee_id} ({employee.full_name}): "
                     f"the timecard for the {run.period_start.isoformat()} "
@@ -558,8 +565,10 @@ def _paid_worked_problems(
             paid = (stored_worked + settled).quantize(_CENTS)
             if derived == paid:
                 continue
-            employee = session.get(Employee, line.employee_id)
-            assert employee is not None
+            employee = require_not_none(
+                session.get(Employee, line.employee_id),
+                f"pay-run line references missing employee {line.employee_id}",
+            )
             who = f"employee {line.employee_id} ({employee.full_name})"
             if derived > paid:
                 settled_clause = (
@@ -784,8 +793,10 @@ def assemble_pay_run_entries(
                 .distinct()
             ).scalars())
             for emp_id in sorted(flipped):
-                emp = session.get(Employee, emp_id)
-                assert emp is not None
+                emp = require_not_none(
+                    session.get(Employee, emp_id),
+                    f"payroll exclusion references missing employee {emp_id}",
+                )
                 report.problems.append(
                     f"employee {emp_id} ({emp.full_name}): pay_type is "
                     "exclude_from_payroll, but this period already carries "
@@ -837,8 +848,10 @@ def assemble_pay_run_entries(
         return report
 
     for card in cards:
-        employee = session.get(Employee, card.employee_id)
-        assert employee is not None
+        employee = require_not_none(
+            session.get(Employee, card.employee_id),
+            f"timecard references missing employee {card.employee_id}",
+        )
         who = f"employee {employee.employee_id} ({employee.full_name})"
         if not employee.payroll_data_complete:
             # A NAMED blocker, deliberately not a population filter: a
@@ -971,8 +984,10 @@ def assemble_pay_run_entries(
         # sick hours (all worked days at the other property, or none at
         # all) is priced by the sick days' own rate — the mismatch refusal
         # above guarantees they agree whenever both exist.
-        rate = distinct.pop() if distinct else sick_rate
-        assert rate is not None
+        rate = require_not_none(
+            distinct.pop() if distinct else sick_rate,
+            f"preflight admitted employee {employee.employee_id} without a pay rate",
+        )
         # G3 (decision 8): the estimate includes sick pay — an estimate that
         # ignored hours the submission pays would re-open the E1
         # fix-one-side shape on the carve check and the variance.
@@ -1006,8 +1021,10 @@ def assemble_pay_run_entries(
             continue
         days = sick_by_emp[employee_id]
         here_days = [t for t in days if t.property_id == property_id]
-        employee = session.get(Employee, employee_id)
-        assert employee is not None
+        employee = require_not_none(
+            session.get(Employee, employee_id),
+            f"sick-leave entry references missing employee {employee_id}",
+        )
         who = f"employee {employee_id} ({employee.full_name})"
         if employee_id not in paid_here:
             # Only days actually attributed HERE are this run's problem; an
@@ -1041,7 +1058,10 @@ def assemble_pay_run_entries(
             continue
         if sick_total == 0:
             continue  # fully voided
-        assert sick_rate is not None
+        sick_rate = require_not_none(
+            sick_rate,
+            f"preflight admitted sick leave for employee {employee_id} without a rate",
+        )
         person_problems = _person_problems(
             session, employee, who, provider_capabilities
         )
@@ -1212,8 +1232,10 @@ def payload_fingerprint(session: Session, employee_id: int) -> str:
     unshipped edit would re-send SSN + chain through transit for nothing —
     the exact G7 PII residual this retires. NUL separators keep adjacent
     values from concatenating into a collision."""
-    employee = session.get(Employee, employee_id)
-    assert employee is not None
+    employee = require_not_none(
+        session.get(Employee, employee_id),
+        f"provider payload references missing employee {employee_id}",
+    )
     ssn_sealed = session.execute(
         select(EmployeePayrollProfile.ssn_sealed).where(
             EmployeePayrollProfile.employee_id == employee_id
@@ -1326,17 +1348,23 @@ def _build_payroll_employee(
             EmployeePayrollProfile.employee_id == employee_id
         )
     ).scalar_one()
-    assert employee is not None and profile.ssn_sealed is not None
+    employee = require_not_none(
+        employee, f"payroll sync references missing employee {employee_id}"
+    )
+    ssn_sealed = require_not_none(
+        profile.ssn_sealed,
+        f"payroll sync reached employee {employee_id} without sealed SSN",
+    )
     chain = list(session.execute(
         select(DepositAccount)
         .where(DepositAccount.employee_id == employee_id)
         .order_by(DepositAccount.ordinal)
     ).scalars())
-    assert chain, "preflight guarantees a chain before anything is sent"
+    require(bool(chain), f"payroll sync reached employee {employee_id} without deposit chain")
     try:
         return PayrollEmployee(
             full_name=employee.full_name,
-            ssn=_open_field(opener, employee_id, "ssn", profile.ssn_sealed),
+            ssn=_open_field(opener, employee_id, "ssn", ssn_sealed),
             deposit_accounts=tuple(
                 PlainDepositAccount(
                     ordinal=r.ordinal,
@@ -1404,8 +1432,10 @@ def sync_employees(
         if existing is not None:
             if not provider_payload_stale(session, employee_id, existing):
                 continue
-            employee = session.get(Employee, employee_id)
-            assert employee is not None
+            employee = require_not_none(
+                session.get(Employee, employee_id),
+                f"provider reference points to missing employee {employee_id}",
+            )
             who = f"employee {employee_id} ({employee.full_name})"
             if not provider.capabilities().supports_employee_update:
                 # Preflight already refuses this by name when told the
@@ -1466,7 +1496,10 @@ def execute_pay_run(
     )
     if not report.ok:
         raise PayRunBlocked("; ".join(report.problems) or "no entries")
-    assert report.check_date is not None
+    check_date = require_not_none(
+        report.check_date,
+        "successful pay-run preflight did not produce a check date",
+    )
 
     existing = session.execute(
         select(PayRun).where(PayRun.property_id == property_id,
@@ -1488,7 +1521,7 @@ def execute_pay_run(
         session.flush()
 
     run = PayRun(property_id=property_id, period_start=report.period_start,
-                 period_end=report.period_end, check_date=report.check_date,
+                 period_end=report.period_end, check_date=check_date,
                  status="draft", provider=provider_name, created_by=actor)
     session.add(run)
     session.flush()
@@ -1535,7 +1568,7 @@ def execute_pay_run(
         ]
         provider_run = provider.submit_pay_run(
             period_start=report.period_start, period_end=report.period_end,
-            check_date=report.check_date, entries=entries,
+            check_date=check_date, entries=entries,
         )
     except ProviderError as exc:
         run.status = "failed"
@@ -1678,8 +1711,10 @@ def fetch_pay_run_results(session: Session, run: PayRun, *, provider: PayrollPro
         stored.employer_taxes = str(line.employer_taxes)
         stored.net = str(line.net)
         hours = Decimal(str(stored.hours))
-        employee = session.get(Employee, employee_id)
-        assert employee is not None
+        require_not_none(
+            session.get(Employee, employee_id),
+            f"provider result references missing employee {employee_id}",
+        )
         # Snapshot the SAME live department the aggregation below uses at this
         # moment: reporting-side employee counts (keyed on this snapshot) and
         # the department money can never disagree about attribution, even if
