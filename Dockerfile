@@ -7,7 +7,7 @@
 # .env, .demo-kiosk-token) out of the build context — pinned by test.
 
 ########## 1. frontend build ##########
-FROM node:22-slim AS frontend
+FROM node:26-slim AS frontend
 WORKDIR /build
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
