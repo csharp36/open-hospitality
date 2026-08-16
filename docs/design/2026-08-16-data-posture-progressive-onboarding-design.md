@@ -117,3 +117,47 @@ Because we assume sensitive data always, we minimize it at ingestion:
   data mode.
 - The **config-selected-provider seam** is reused as the per-integration
   *off → real* switch that the open-items checklist drives.
+
+## Environment topology & pilot gating
+
+Because there is no separate non-prod environment (D8.1), the deployment
+surface reduces to two, distinguished by **whether data is stored**, not
+by trust tier:
+
+- **Public — `demo.mandati.ai`.** The synthetic canned demo (browse, no
+  upload) **plus the persist-nothing parse-preview.** Open to anyone,
+  stores nothing, needs no tenant and no multi-tenancy. Guarded by abuse
+  hygiene (rate limits, file size/type caps, processing timeouts) — **not**
+  login-gated, because there is no data at rest to protect.
+- **Real prod — `app.mandati.ai`.** Always-sensitive, multi-tenant
+  (D1/D2). **Pilot = invite-only allowlist** (Keycloak self-registration
+  off + admin-invited users). **GA = open self-service signup.** It is
+  the *same* environment; the pilot gate is a flag lifted at launch, not
+  a second stack. Parallel prod stacks are rejected: they double the
+  attack surface, data stores, and config drift for no isolation benefit
+  an allowlist doesn't already give.
+
+**Sequencing consequence.** The persist-nothing aha pilots **publicly as
+soon as the front door (Track A) ships** — no tenancy required. Piloting
+**full auto-onboarding with real hotel data** requires **multi-tenancy
+(Track B) first** — a real owner's data cannot be stored without the
+D1/D2 isolation. The invite gate is trivial; the tenancy foundation is
+the real prerequisite.
+
+## Inbound email — deferred past first pilot
+
+The "PMS auto-emails the night audit" capability is a **real-tenant
+persist path**, not a preview/test path (it stores a recurring feed).
+Design when built: a **provider facade** (1–2 managed adapters — SES
+Inbound / Mailgun / Postmark — plus a self-hostable SMTP-receive/IMAP
+adapter so self-hosters need no third party) → a **per-property secret
+token address** (`token@in.mandati.ai`; the token is the rotatable bearer
+credential) → the **existing `detect()` → ingestion pipeline** (email is
+just a new *source* of the same PDFs) → monitored by the §5 expectation
+model (missing / duplicate / wrong-property / unparseable). Same
+ingestion-boundary redaction as D8.4; SPF/DKIM/DMARC verified, optional
+per-property sender allowlist.
+
+**Deferred:** manual portal upload proves the whole value chain first;
+inbound-email automation is a clean, deferrable layer in **Track C**, not
+a prerequisite for the aha or the first pilot.
