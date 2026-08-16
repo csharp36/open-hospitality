@@ -46,6 +46,11 @@ from usali.workforce import router as workforce_router
 
 _DEFAULT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 
+# PMS reports are normally well under 1 MiB. 25 MiB leaves ample room for
+# unusually image-heavy exports while keeping one authenticated request from
+# consuming an unbounded amount of worker memory.
+_MAX_PDF_BYTES = 25 * 1024 * 1024
+
 _T = TypeVar("_T")
 
 
@@ -325,7 +330,6 @@ def create_app(
 
     @app.post("/ingest", dependencies=operator_gates)
     async def ingest(request: Request, file: UploadFile) -> dict[str, object]:
-        payload = await file.read()
         # The request's org-bound factory (L3): the upload lands inside
         # the caller's validated active org — require_active_org stashed
         # the factory, and both walls confine every row process_file
@@ -338,9 +342,35 @@ def create_app(
         # into org 1's data.
         factory = request_session_factory(request)
         with factory() as session:
+            upload_name = file.filename or "upload.pdf"
+            # Multipart filenames are attacker-controlled. Keep them as a
+            # display name only: path components (including Windows separators
+            # on a Linux server) must never influence where the API writes.
+            if (
+                upload_name in {".", ".."}
+                or "/" in upload_name
+                or "\\" in upload_name
+                or "\x00" in upload_name
+            ):
+                raise HTTPException(status_code=422, detail="unsafe upload filename")
+
+            payload = await file.read(_MAX_PDF_BYTES + 1)
+            if len(payload) > _MAX_PDF_BYTES:
+                raise HTTPException(status_code=413, detail="PDF too large")
+            if not payload.startswith(b"%PDF-"):
+                raise HTTPException(status_code=422, detail="upload must be a PDF")
+
             inbox.mkdir(parents=True, exist_ok=True)
-            dest = inbox / (file.filename or "upload.pdf")
-            dest.write_bytes(payload)
+            dest = inbox / upload_name
+            try:
+                # Exclusive creation prevents a concurrent or repeated upload
+                # from overwriting a report already waiting in the inbox.
+                with dest.open("xb") as staged:
+                    staged.write(payload)
+            except FileExistsError as exc:
+                raise HTTPException(
+                    status_code=409, detail="an upload with that filename is pending"
+                ) from exc
             try:
                 r = process_file(
                     session, dest, processed_dir=processed, failed_dir=failed
