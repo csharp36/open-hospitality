@@ -27,6 +27,7 @@ import TimecardsPage from './pages/TimecardsPage'
 import PayRunsPage from './pages/PayRunsPage'
 import PayrollDashboardPage from './pages/PayrollDashboardPage'
 import SchedulePage from './pages/SchedulePage'
+import PreviewPage from './pages/PreviewPage'
 import { CallbackPage, RootShell } from './RootShell'
 
 const rootRoute = createRootRoute({ component: RootShell })
@@ -199,6 +200,12 @@ const scheduleRoute = createRoute({
   component: SchedulePage,
 })
 
+const tryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/try',
+  component: PreviewPage,
+})
+
 const routeTree = rootRoute.addChildren([
   callbackRoute,
   entryRoute,
@@ -217,6 +224,7 @@ const routeTree = rootRoute.addChildren([
   payrollRoute,
   payrollDashboardRoute,
   scheduleRoute,
+  tryRoute,
 ])
 
 export function createAppRouter(history?: RouterHistory) {
