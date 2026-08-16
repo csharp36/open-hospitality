@@ -1,5 +1,6 @@
 import threading
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import TypeVar
 
@@ -9,6 +10,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 from starlette.types import Scope
 
+from usali.adaptors import autoclerk_transaction_summary, opera_trial_balance
+from usali.adaptors.pdf import extract_words_from_bytes
 from usali.adp_adapter import AdpAdapter
 from usali.auth import (
     TokenVerifier,
@@ -21,6 +24,7 @@ from usali.crm_api import router as crm_router
 from usali.crm_feed import CRM_PROVIDERS, CrmFeed
 from usali.db import make_engine, make_session_factory
 from usali.delphi_adapter import DelphiAdapter
+from usali.detect import detect_report_signature
 from usali.gusto_adapter import GustoAdapter
 from usali.ingestion import ProcessingError, process_file
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminClient
@@ -33,6 +37,10 @@ from usali.payroll_provider import PayrollProvider
 from usali.payroll_run_api import router as payroll_run_router
 from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
+from usali.preview import PreviewPayload, build_financial_preview
+from usali.ratelimit import RateLimiter
+from usali.recognition import recognize_vendor
+from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
@@ -47,6 +55,33 @@ from usali.workforce import router as workforce_router
 _DEFAULT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 
 _T = TypeVar("_T")
+
+_MAX_PREVIEW_BYTES = 10 * 1024 * 1024
+_PREVIEW_ADAPTERS = {
+    ("OPERA", "trial_balance"): (
+        opera_trial_balance.parse_trial_balance,
+        opera_trial_balance.extract_business_date,
+    ),
+    ("AUTOCLERK", "transaction_summary"): (
+        autoclerk_transaction_summary.parse_transaction_summary,
+        autoclerk_transaction_summary.extract_business_date,
+    ),
+}
+_UNREADABLE_HINTS = [
+    "Is it a night-audit / trial-balance report (not a single folio or a photo)?",
+    "Is it the original PDF your PMS emailed, not a scan?",
+]
+
+
+def _payload_json(p: PreviewPayload) -> dict[str, object]:
+    d = asdict(p)
+    d["business_date"] = p.business_date.isoformat()
+    d["net_total"] = str(p.net_total)
+    for line in d["pnl_lines"]:
+        line["amount"] = str(line["amount"])
+    for kpi in d["kpis"]:
+        kpi["value"] = str(kpi["value"])
+    return d
 
 
 def _qbo_client_from_settings() -> QboClient:
@@ -357,6 +392,51 @@ def create_app(
             "unmapped": r.unmapped,
             "skipped": r.skipped,
         }
+
+    app.state.preview_rate_limiter = RateLimiter(max_events=20, window_s=60.0)
+
+    @app.post("/api/preview")  # PUBLIC: no operator_gates, no session, persists nothing
+    async def preview(request: Request, file: UploadFile) -> dict[str, object]:
+        limiter: RateLimiter = request.app.state.preview_rate_limiter
+        client_ip = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_ip):
+            raise HTTPException(status_code=429, detail="too many previews; try again shortly")
+        if (file.content_type or "") not in ("application/pdf", "application/octet-stream"):
+            raise HTTPException(status_code=415, detail="please upload a PDF")
+        if file.size is not None and file.size > _MAX_PREVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+        data = await file.read()
+        if len(data) > _MAX_PREVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+        if data[:5] != b"%PDF-":
+            raise HTTPException(status_code=415, detail="please upload a PDF")
+        try:
+            words = extract_words_from_bytes(data)
+        except Exception:
+            return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
+        sig = detect_report_signature(words)
+        if sig in _PREVIEW_ADAPTERS:
+            parse_fn, date_fn = _PREVIEW_ADAPTERS[sig]
+            try:
+                business_date = date_fn(words)
+                records = parse_fn(words, property_id="PREVIEW", business_date=business_date)
+            except Exception:
+                return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
+            payload = redact(
+                build_financial_preview(
+                    source=sig[0],
+                    report_type=sig[1],
+                    business_date=business_date,
+                    records=records,
+                )
+            )
+            return {"status": "ok", "payload": _payload_json(payload)}
+        if sig is not None:
+            return {"status": "unsupported", "vendor": sig[0].title(), "reason": "no_preview_for_report"}
+        vendor = recognize_vendor(words)
+        if vendor is not None:
+            return {"status": "unsupported", "vendor": vendor, "reason": "vendor_not_supported"}
+        return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
 
     # Serve the built portal SPA when a frontend build exists. Mounted LAST so
     # the /api/* and /ingest routes above always win; without a build the app

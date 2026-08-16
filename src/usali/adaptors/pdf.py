@@ -1,3 +1,4 @@
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,9 +12,9 @@ class Word:
     top: float
 
 
-def extract_words(pdf_path: str | Path) -> list[Word]:
+def extract_words_from_bytes(data: bytes) -> list[Word]:
     words: list[Word] = []
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
         for i, page in enumerate(pdf.pages):
             page_offset = i * (page.height + 1000)
             for w in page.extract_words():
@@ -21,6 +22,10 @@ def extract_words(pdf_path: str | Path) -> list[Word]:
                     Word(text=w["text"], x0=float(w["x0"]), top=float(w["top"]) + page_offset)
                 )
     return words
+
+
+def extract_words(pdf_path: str | Path) -> list[Word]:
+    return extract_words_from_bytes(Path(pdf_path).read_bytes())
 
 
 def cluster_rows(words: list[Word], y_tol: float = 3.0) -> list[list[Word]]:
