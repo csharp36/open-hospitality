@@ -715,3 +715,27 @@ Inside `create_app`, before the SPA mount:
 - Spec coverage: every Part-1 in-scope item (signature detect, recognition, preview map, redaction, abuse guards, stateless endpoint) has a task. KPIs/leads/frontend are explicitly deferred with reasons.
 - No placeholders: all steps carry real code; the one bind-at-implementation value (the synthetic sample PDF filename) is called out explicitly with how to resolve it.
 - Type consistency: `PreviewPayload`/`PnlLine`/`Kpi` names and `build_financial_preview(...)` signature are identical across Tasks 3, 4, 6.
+
+## Build outcome (2026-08-16)
+
+Built via subagent-driven-development (fresh implementer per task) + a final
+adversarial review. All 6 tasks landed green; the review found and we fixed 5
+issues before merge:
+
+- **H1 (must-fix):** the `balanced`/"ties out" signal was dishonest (transaction
+  rows don't net to zero; reconciliation is in the ledger block). **Removed**
+  `balanced` from the payload — coverage counts + P&L lines are the honest
+  signals; a real ties-out awaits ledger/stats reconciliation.
+- **H2 (must-fix):** added a **global rate-limit ceiling** (per-IP alone was
+  `X-Forwarded-For`-spoofable); proxy-trust CIDR hardening tracked as a deploy
+  follow-up.
+- **M3:** switched `/api/preview` to **raw-body streaming** (no multipart spool
+  of the raw PDF to disk) with a Content-Length pre-check + streamed cap.
+- **M4:** added an **80-page ceiling** failing closed to `unreadable`.
+- **M5:** added a **persist-nothing test** (spy session factory that raises if
+  the route ever opens a session, + empty-dir assertions).
+
+Residuals (documented, acceptable for pilot): CPU wall-clock timeout for a
+decompression-bomb PDF (bounded by size + page caps); the XFF proxy-trust CIDR;
+`mask_pans` glued/dotted-PAN edge cases (no file-derived text reaches the payload
+yet). Full suite: 1787 passed / 4 skipped; mypy + ruff clean.

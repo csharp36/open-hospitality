@@ -53,6 +53,14 @@ daily recap email (needs OH-12); full marketing content pages
   **ties out** sits right behind it; the "we understood your file" proof
   is a quiet strip. The visible **"🔒 nothing saved"** line and the
   **"✓ ties out"** reconciliation line are load-bearing trust signals.
+  - **Deferred (post-Part-1 review, 2026-08-16):** the "✓ ties out" claim
+    is NOT shipped in Part 1. A transaction-row net does not equal a real
+    reconciliation (an Opera trial balance reconciles in its *ledger
+    block*, not its coded rows), and surfacing a net-to-zero bool misfired
+    on the canonical sample — a D8 honesty violation. Until real
+    ledger-block / stats reconciliation lands, the preview shows coverage
+    ("we read & mapped N of M codes") and the P&L lines, never an unearned
+    balance claim.
 - **Edge handling:** detect the PMS *silently* and let the user correct
   us ("Recognized: X — not right?"). The strict "declared-X-but-detected-Y"
   mismatch flag lives later in real onboarding (a declared PMS exists to
