@@ -1,6 +1,6 @@
 # Track A — the "aha" front door + anonymous parse-preview (design)
 
-Status: **DESIGN / approved in brainstorm 2026-08-16.** The first
+Status: **APPROVED — scope FINAL (2026-08-16).** The first
 buildable slice of the self-service onboarding milestone (**OH-1**).
 Depends on and inherits the constraints of **D8**
 ([`2026-08-16-data-posture-progressive-onboarding-design.md`](2026-08-16-data-posture-progressive-onboarding-design.md)).
@@ -255,10 +255,19 @@ access; in Track B it becomes signup → OTP → real tenant. The preview's
 `PreviewPayload` and the parse path are reused there to show the same
 "aha" *inside* the authenticated flow — no rework.
 
-## 14. Open questions (small, non-blocking)
+## 14. Resolved scope calls (locked 2026-08-16)
 
-- Rate-limit backing store on a single Cloud Run instance vs. shared
-  (in-process token bucket is fine for the public preview at pilot scale;
-  revisit if it scales out).
-- Exact PAN/name redaction ruleset — start conservative (Luhn PAN + digit
-  runs); tune against synthetic adversarial fixtures, never real data.
+- **Lead capture stays in Track A (§5e).** It is the only persistence, and
+  it is what makes Track A a working funnel that feeds the invite-gated
+  prod pilot (D8 env topology). Marketing contact data only, with consent
+  + a deletion path from day one — never hotel financial data or a tenant.
+- **Abuse-guard defaults locked (§9):** PDF-only (declared type + `%PDF`
+  magic), 10 MB size cap enforced before buffering, per-IP + global rate
+  limits, parse timeout + page ceiling failing closed to `unreadable`.
+- **Rate-limit store:** in-process token bucket for the pilot (single
+  Cloud Run instance is fine at pilot scale); revisit only if the public
+  preview scales horizontally.
+- **Redaction ruleset:** start conservative — Luhn-checked PAN + digit
+  runs + name-shaped tokens — tuned against **synthetic** adversarial
+  fixtures, never real data. Aggregate-by-construction remains the primary
+  defense; redaction is the belt to it.
