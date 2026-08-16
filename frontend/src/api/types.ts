@@ -1077,3 +1077,31 @@ export interface PerformanceResponse {
   // Window length minus its data-complete days.
   days_excluded: number
 }
+
+// --- Public preview (anonymous front door, Part 1 backend) ------------------
+// Mirrors the POST /api/preview response models. Anonymous, unauthenticated —
+// no property_id, no persistence: a single PDF in, a preview payload out.
+
+export interface PreviewPnlLine {
+  major: string
+  sub: string
+  line_item: string
+  amount: string
+}
+
+export interface PreviewPayload {
+  pms_source: string
+  report_type: string
+  business_date: string
+  pnl_lines: PreviewPnlLine[]
+  kpis: { label: string; value: string }[]
+  codes_recognized: number
+  codes_mapped: number
+  codes_needs_review: number
+  net_total: string
+}
+
+export type PreviewResponse =
+  | { status: 'ok'; payload: PreviewPayload }
+  | { status: 'unsupported'; vendor: string; reason: string }
+  | { status: 'unreadable'; hints: string[] }
