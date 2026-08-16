@@ -52,7 +52,29 @@ from sqlalchemy.orm import Session
 
 from usali import qbo_push, reporting
 from usali.auth import Principal, request_session_factory, require_operator
+from usali.fiscal import (
+    FiscalCalendarNotConfigured,
+    require_config,
+    resolve_period,
+)
+from usali.inventory import InventoryInconsistent, InventoryNotConfigured
 from usali.models import Property, QboPushLedger
+from usali.performance import (
+    AdrBasisUnavailable,
+    Comparison,
+    CoreMetrics,
+    LaborProductivity,
+    ReconLine,
+    RollingStat,
+    TrendPair,
+    Trends,
+    compare,
+    complete_days,
+    labor_productivity,
+    reconciliation,
+    trends,
+)
+from usali.property_config_api import _adr_room_basis, _fiscal_config
 from usali.qbo_client import QboClient
 from usali.workforce import require_property_access, resolve_scope
 
@@ -812,6 +834,248 @@ def labor_analytics(
     )
 
 
+# --- Core performance statistics (issue #9) --------------------------------------
+
+
+class CoreMetricsModel(BaseModel):
+    start: str
+    end: str
+    rooms_available: str
+    rooms_sold: str
+    adr_rooms_sold: str
+    room_revenue: str
+    total_revenue: str
+    occupancy: str | None
+    adr: str | None
+    revpar: str | None
+    trevpar: str | None
+    adr_room_basis: str
+
+
+class ReconLineModel(BaseModel):
+    computed: str | None
+    ingested: str | None
+    agrees: bool | None
+
+
+class TrendPairModel(BaseModel):
+    current: str | None
+    prior: str | None
+    delta_pct: str | None
+
+
+class RollingStatModel(BaseModel):
+    avg: str | None
+    stdev: str | None
+    n: int
+
+
+class TrendsModel(BaseModel):
+    anchor: str
+    wow: dict[str, TrendPairModel]
+    mtd: dict[str, str | None]
+    rolling_30: dict[str, RollingStatModel]
+    dow: dict[str, TrendPairModel]
+
+
+class LaborProductivityModel(BaseModel):
+    # Hours are pure operational detail (never disclosure-gated); cost fields are
+    # None + cost_suppressed True when any contributing day withheld its labor
+    # cost (single-employee rate-derivation guard) — see `labor_productivity`.
+    labor_hours: str | None
+    rooms_sold: str | None
+    hours_per_occupied_room: str | None
+    labor_cost: str | None
+    cost_per_occupied_room: str | None
+    cost_suppressed: bool
+
+
+class PerformanceResponse(BaseModel):
+    property_id: str
+    adr_room_basis: str
+    period: str | None
+    start: str
+    end: str
+    current: CoreMetricsModel
+    prior_period: CoreMetricsModel | None
+    prior_year: CoreMetricsModel | None
+    prior_period_delta_pct: dict[str, str | None]
+    prior_year_delta_pct: dict[str, str | None]
+    reconciliation: dict[str, ReconLineModel]
+    trends: TrendsModel
+    labor: LaborProductivityModel
+    days_excluded: int
+
+
+class RoomRevenueTxnsModel(BaseModel):
+    """Drill-through payload for the room-revenue metric: the staged PMS
+    transactions behind the operating statement's Rooms revenue line."""
+
+    property_id: str
+    date_from: date
+    date_to: date
+    transactions: list[StagedTxnModel]
+
+
+# The room-revenue metric drills through to the operating statement's Rooms
+# revenue financial line (Schedule 1 accommodation revenue). Its (major,
+# sub_category, line_item) triple is stable across PMS sources — every mapping
+# routes accommodation revenue here (see mapping/opera.yaml, mapping/autoclerk.yaml).
+_ROOM_REVENUE_LINE = ("Operated Departments", "Rooms", "Room Revenue")
+
+
+def _dec(value: Decimal | None) -> str | None:
+    """Optional money/ratio -> exact string, mirroring `_opt` for the perf models."""
+    return None if value is None else str(value)
+
+
+def _core_metrics_model(m: CoreMetrics) -> CoreMetricsModel:
+    return CoreMetricsModel(
+        start=m.start.isoformat(),
+        end=m.end.isoformat(),
+        rooms_available=str(m.rooms_available),
+        rooms_sold=str(m.rooms_sold),
+        adr_rooms_sold=str(m.adr_rooms_sold),
+        room_revenue=str(m.room_revenue),
+        total_revenue=str(m.total_revenue),
+        occupancy=_dec(m.occupancy),
+        adr=_dec(m.adr),
+        revpar=_dec(m.revpar),
+        trevpar=_dec(m.trevpar),
+        adr_room_basis=m.adr_room_basis,
+    )
+
+
+def _recon_line_model(line: ReconLine) -> ReconLineModel:
+    return ReconLineModel(
+        computed=_dec(line.computed), ingested=_dec(line.ingested), agrees=line.agrees
+    )
+
+
+def _trend_pair_model(pair: TrendPair) -> TrendPairModel:
+    return TrendPairModel(
+        current=_dec(pair.current), prior=_dec(pair.prior), delta_pct=_dec(pair.delta_pct)
+    )
+
+
+def _rolling_stat_model(stat: RollingStat) -> RollingStatModel:
+    return RollingStatModel(avg=_dec(stat.avg), stdev=_dec(stat.stdev), n=stat.n)
+
+
+def _trends_model(t: Trends) -> TrendsModel:
+    return TrendsModel(
+        anchor=t.anchor.isoformat(),
+        wow={k: _trend_pair_model(v) for k, v in t.wow.items()},
+        mtd={k: _dec(v) for k, v in t.mtd.items()},
+        rolling_30={k: _rolling_stat_model(v) for k, v in t.rolling_30.items()},
+        dow={k: _trend_pair_model(v) for k, v in t.dow.items()},
+    )
+
+
+def _labor_productivity_model(labor: LaborProductivity) -> LaborProductivityModel:
+    return LaborProductivityModel(
+        labor_hours=_dec(labor.labor_hours),
+        rooms_sold=_dec(labor.rooms_sold),
+        hours_per_occupied_room=_dec(labor.hours_per_occupied_room),
+        labor_cost=_dec(labor.labor_cost),
+        cost_per_occupied_room=_dec(labor.cost_per_occupied_room),
+        cost_suppressed=labor.cost_suppressed,
+    )
+
+
+def _performance_response(
+    property_id: str,
+    basis: str,
+    period: str | None,
+    start: date,
+    end: date,
+    cmp: Comparison,
+    recon: dict[str, ReconLine],
+    trend: Trends,
+    labor: LaborProductivity,
+    excluded: int,
+) -> PerformanceResponse:
+    return PerformanceResponse(
+        property_id=property_id,
+        adr_room_basis=basis,
+        period=period,
+        start=start.isoformat(),
+        end=end.isoformat(),
+        current=_core_metrics_model(cmp.current),
+        prior_period=None if cmp.prior_period is None else _core_metrics_model(cmp.prior_period),
+        prior_year=None if cmp.prior_year is None else _core_metrics_model(cmp.prior_year),
+        prior_period_delta_pct={k: _dec(v) for k, v in cmp.prior_period_delta_pct.items()},
+        prior_year_delta_pct={k: _dec(v) for k, v in cmp.prior_year_delta_pct.items()},
+        reconciliation={k: _recon_line_model(v) for k, v in recon.items()},
+        trends=_trends_model(trend),
+        labor=_labor_productivity_model(labor),
+        days_excluded=excluded,
+    )
+
+
+@router.get("/performance", dependencies=[Depends(require_property_access)])
+def get_performance(
+    session: SessionDep,
+    property: Annotated[str, Query(alias="property")],
+    from_: Annotated[date | None, Query(alias="from")] = None,
+    to: Annotated[date | None, Query(alias="to")] = None,
+    period: Annotated[str | None, Query()] = None,
+) -> PerformanceResponse:
+    """Core performance statistics for a window: current-window occupancy/ADR/
+    RevPAR/TRevPAR with prior-period + prior-year comparisons, a PMS-KPI
+    reconciliation, and operator trend bases anchored on the window end.
+    `days_excluded` is the window length minus its data-complete days.
+
+    The window is given EITHER by `from`+`to` (an explicit range) OR by
+    `period=YYYY-Pnn` (resolved via the property's fiscal calendar) — exactly
+    one form, never both nor neither. The response echoes `period` when the
+    fiscal form was used, `null` for an explicit range.
+
+    Fail-loud service exceptions (inventory not configured, ADR basis missing its
+    segment data) map to 409 — a request the data cannot yet answer, distinct from
+    a malformed request (422). A `period` on a property with no fiscal calendar is
+    likewise 409; a malformed/out-of-range period key is 422.
+    """
+    ranged = from_ is not None and to is not None
+    if ranged == (period is not None):
+        # Both forms, or neither, or a half-given range (only from_ or only to).
+        raise HTTPException(
+            status_code=422,
+            detail="pass exactly one of period, or both from and to",
+        )
+    resolved_period: str | None
+    if period is not None:
+        try:
+            cfg = require_config(_fiscal_config(session, property))
+        except FiscalCalendarNotConfigured as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        try:
+            start, end = resolve_period(cfg, period)
+        except ValueError as exc:  # malformed / out-of-range period key
+            raise HTTPException(status_code=422, detail=str(exc)) from None
+        resolved_period = period
+    else:
+        assert from_ is not None and to is not None  # narrowed by `ranged`
+        if to < from_:
+            raise HTTPException(status_code=422, detail="'to' must not precede 'from'")
+        start, end, resolved_period = from_, to, None
+    basis = _adr_room_basis(session, property)
+    try:
+        cmp = compare(session, property, start, end, basis=basis)
+        recon = reconciliation(session, property, start, end, cmp.current)
+        trend = trends(session, property, end, basis=basis)
+        # Labor productivity (#9): hours/cost per occupied room. Safe inside this
+        # try — it never calls rooms_available, but keeping it here holds the one
+        # response-shaping block together.
+        labor = labor_productivity(session, property, start, end)
+        excluded = (end - start).days + 1 - len(complete_days(session, property, start, end))
+    except (InventoryNotConfigured, InventoryInconsistent, AdrBasisUnavailable) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    return _performance_response(
+        property, basis, resolved_period, start, end, cmp, recon, trend, labor, excluded
+    )
+
+
 @router.get("/sos/line/transactions", dependencies=[Depends(require_property_access)])
 def sos_line_transactions(
     session: SessionDep,
@@ -835,6 +1099,46 @@ def sos_line_transactions(
         )
     )
     return [_txn_model(t) for t in txns]
+
+
+@router.get(
+    "/performance/room-revenue/transactions",
+    dependencies=[Depends(require_property_access)],
+)
+def performance_room_revenue_transactions(
+    session: SessionDep,
+    property_id: Annotated[str, Query(alias="property")],
+    date_from: Annotated[date, Query(alias="from")],
+    date_to: Annotated[date, Query(alias="to")],
+) -> RoomRevenueTxnsModel:
+    """Drill-through for the room-revenue performance metric.
+
+    Reuses the SOS financial-fact -> stage machinery (`line_transactions`) for the
+    Rooms revenue line, so every dollar of the metric's `room_revenue` traces to a
+    staged PMS transaction, consistent with the operating statement. Other metrics
+    drill to their own source stage: occupancy/ADR -> statistic facts; labor ->
+    timecards. This endpoint implements the revenue (room-revenue) drill-through.
+    """
+    if date_from > date_to:
+        raise HTTPException(status_code=422, detail="from must not be after to")
+    major, sub_category, line_item = _ROOM_REVENUE_LINE
+    txns = _run(
+        lambda: reporting.line_transactions(
+            session,
+            property_id=property_id,
+            major=major,
+            sub_category=sub_category,
+            line_item=line_item,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    )
+    return RoomRevenueTxnsModel(
+        property_id=property_id,
+        date_from=date_from,
+        date_to=date_to,
+        transactions=[_txn_model(t) for t in txns],
+    )
 
 
 @router.get("/coverage")

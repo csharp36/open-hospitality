@@ -7,6 +7,7 @@
 # a half-alive container (API up, mocks gone) would demo refusals
 # instead of the product.
 set -euo pipefail
+# shellcheck disable=SC1091 # Runtime-relative path; env.sh is checked separately.
 source "$(dirname "${BASH_SOURCE[0]}")/env.sh"
 
 usali qbo-mock --port 9200 &

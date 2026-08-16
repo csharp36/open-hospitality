@@ -72,7 +72,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from usali.config import get_settings  # noqa: E402
 from usali.db import make_engine, make_session_factory  # noqa: E402
 from usali.deposit_accounts import account_slot, routing_slot  # noqa: E402
-from usali.ingestion import process_file  # noqa: E402
+from usali.ingestion import process_file, record_coverage  # noqa: E402
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError  # noqa: E402
 from usali.kiosk import mint_device_token  # noqa: E402
 from usali.labor import promote_timecard  # noqa: E402
@@ -93,6 +93,7 @@ from usali.models import (  # noqa: E402
     OutOfOrderRoom,
     PaySchedule,
     Property,
+    PropertyStatConfig,
     Punch,
     RoleAssignment,
     RoomInventory,
@@ -433,6 +434,70 @@ def _crm_feed():
 DEMAND_WEEK = date(2026, 8, 3)
 
 
+def _seed_property_config(session: Session) -> None:
+    """Per-property config (room inventory, fiscal calendars, OOO, stat
+    config — issues #8/#9), IDEMPOTENT and run on EVERY seed.
+
+    Deliberately OUTSIDE the `_seed_world` sentinel: these are additive
+    config rows a re-deploy must be able to BACKFILL onto an already-seeded
+    world. `_seed_world` is sentinel-sealed and cannot re-run, so config
+    that once lived there never reached a world seeded before it was added —
+    that is how the live demo ended up with no room inventory, failing every
+    performance/availability query. Find-or-create keeps a re-run a no-op.
+
+    HISJ: calendar-month fiscal year with a mid-history inventory change (the
+    effective-dated path); nets comp/house-use out of ADR's denominator.
+    SSSJ: 4-4-5 fiscal year; ROOMS_OCCUPIED as reported.
+    """
+    def _room(property_id: str, effective_date: date, total_rooms: int) -> None:
+        exists = session.execute(
+            select(RoomInventory).where(
+                RoomInventory.property_id == property_id,
+                RoomInventory.effective_date == effective_date,
+            )
+        ).scalar_one_or_none()
+        if exists is None:
+            session.add(RoomInventory(property_id=property_id,
+                                      effective_date=effective_date,
+                                      total_rooms=total_rooms))
+
+    def _fiscal(property_id: str, **kwargs: object) -> None:
+        if session.get(FiscalCalendar, property_id) is None:
+            session.add(FiscalCalendar(property_id=property_id, **kwargs))
+
+    def _stat(property_id: str, adr_room_basis: str) -> None:
+        if session.get(PropertyStatConfig, property_id) is None:
+            session.add(PropertyStatConfig(property_id=property_id,
+                                           adr_room_basis=adr_room_basis))
+
+    _room("HISJ", date(2025, 1, 1), 140)
+    _room("HISJ", date(2026, 3, 1), 138)
+    _room("SSSJ", date(2025, 1, 1), 90)
+    _fiscal("HISJ", calendar_type="calendar_month",
+            fiscal_year_start_month=1, week_start_weekday=None)
+    _fiscal("SSSJ", calendar_type="445",
+            fiscal_year_start_month=1, week_start_weekday=6)
+    _stat("HISJ", "exclude_comp_house")
+    _stat("SSSJ", "as_reported")
+
+    # One OOO block (HISJ renovation). OOO has no natural unique key, so a
+    # re-run is guarded on the block's own shape to avoid stacking duplicates.
+    ooo_exists = session.execute(
+        select(OutOfOrderRoom).where(
+            OutOfOrderRoom.property_id == "HISJ",
+            OutOfOrderRoom.start_date == date(2026, 2, 2),
+            OutOfOrderRoom.end_date == date(2026, 2, 8),
+            OutOfOrderRoom.reason_code == "renovation",
+        )
+    ).scalar_one_or_none()
+    if ooo_exists is None:
+        session.add(OutOfOrderRoom(
+            property_id="HISJ", start_date=date(2026, 2, 2),
+            end_date=date(2026, 2, 8), room_count=3, reason_code="renovation",
+            note="Wing 2 soft-goods refresh"))
+    session.commit()
+
+
 def _seed_world(
     session: Session, workers: list[DemoWorker]
 ) -> tuple[list[str], list[int]]:
@@ -458,21 +523,14 @@ def _seed_world(
         "".join(f"{p} {t}\n" for p, t in sorted(kiosk_tokens.items()))
     )
 
-    # Property config: room inventory, fiscal calendar, OOO (issue #8).
-    # HISJ: calendar-month fiscal year, plus a mid-history inventory change
-    # so the effective-dated path is exercised in the live demo. SSSJ: 4-4-5.
-    session.add_all([
-        RoomInventory(property_id="HISJ", effective_date=date(2025, 1, 1), total_rooms=140),
-        RoomInventory(property_id="HISJ", effective_date=date(2026, 3, 1), total_rooms=138),
-        RoomInventory(property_id="SSSJ", effective_date=date(2025, 1, 1), total_rooms=90),
-        FiscalCalendar(property_id="HISJ", calendar_type="calendar_month",
-                       fiscal_year_start_month=1, week_start_weekday=None),
-        FiscalCalendar(property_id="SSSJ", calendar_type="445",
-                       fiscal_year_start_month=1, week_start_weekday=6),
-        OutOfOrderRoom(property_id="HISJ", start_date=date(2026, 2, 2),
-                       end_date=date(2026, 2, 8), room_count=3, reason_code="renovation",
-                       note="Wing 2 soft-goods refresh"),
-    ])
+    # Property config (room inventory, fiscal calendars, OOO, stat config —
+    # issues #8/#9) is NOT seeded here: it lives in `_seed_property_config`,
+    # which `main` runs on EVERY seed, outside this run-once sentinel. It was
+    # here originally, but `_seed_world` is sentinel-sealed (it inserts
+    # punches/pay-runs/etc. unconditionally and cannot re-run), so config
+    # added after a world was first seeded never reached an already-seeded
+    # demo — the live demo lost room inventory exactly this way. Additive,
+    # idempotent config belongs on the always-run path.
 
     hourly = sorted((w for w in workers if w.pay_type == "hourly"),
                     key=lambda w: w.ref)
@@ -1023,6 +1081,25 @@ def _seed_synthetic_year(session: Session) -> None:
     stats_yaml = str(REPO_ROOT / "mapping" / "statistics.yaml")
     segments_yaml = str(REPO_ROOT / "mapping" / "segments.yaml")
     for pid, source in sorted(PROPERTY_SOURCE.items()):
+        report_type = "manager_flash" if source == "OPERA" else "manager_report"
+        # Coverage BACKFILL (idempotent): a world first seeded before issue #9
+        # added coverage recording has transformed facts but NO coverage rows,
+        # so every day reads 'incomplete' and complete_days — and thus every
+        # trend/comparison — excludes it. The per-day seed loop below only
+        # records coverage for NEWLY-seeded days, so it can never repair an
+        # already-seeded world. Ensure coverage here for days whose facts are
+        # already present; this runs on every deploy and no-ops once the rows
+        # exist. Guarded on `marker in done` so a coverage row never precedes
+        # the facts it attests to (complete_days must not count a factless day).
+        backfilled = 0
+        for day_date in synthetic_dates():
+            marker = hashlib.sha256(
+                f"synthetic-v1:{pid}:{day_date}".encode()).hexdigest()
+            if marker in done:
+                record_coverage(session, pid, day_date, report_type)
+                backfilled += 1
+        session.commit()
+
         seeded = skipped = 0
         for day_date in synthetic_dates():
             marker = hashlib.sha256(
@@ -1049,6 +1126,11 @@ def _seed_synthetic_year(session: Session) -> None:
                                             source_file=name, file_hash=marker))
             promote_statistics(session, stats_yaml, source=source,
                                business_date=day_date)
+            # Coverage row for the day's statistics report (issue #9). The
+            # synthetic path stages/promotes directly, so unlike process_file
+            # it must record coverage itself — without it complete_days (and
+            # therefore every trend/comparison) would ignore the seeded days.
+            record_coverage(session, pid, day_date, report_type)
             batches.append(stage_segments(session, day.segments,
                                           source_file=name, file_hash=marker))
             promote_segments(session, segments_yaml, source=source,
@@ -1058,7 +1140,7 @@ def _seed_synthetic_year(session: Session) -> None:
             session.commit()
             seeded += 1
         print(f"  {pid}: {seeded} synthetic days seeded, {skipped} already "
-              "present")
+              f"present ({backfilled} coverage backfilled)")
 
 
 # The dev personas' ORG-WIDE grants (Pillar L decision 4): role authority
@@ -1191,6 +1273,12 @@ def main() -> None:
         else:
             print("Documents (per-file idempotent)")
             _seed_documents(session)
+
+        # Additive, idempotent property config — OUTSIDE the sentinel so a
+        # re-deploy backfills it onto an already-seeded world (the room
+        # inventory / stat-config the sealed enrichment could never add).
+        print("Property config (room inventory, fiscal, OOO, stat — idempotent)")
+        _seed_property_config(session)
 
         state = _enrichment_state(session)
         seed_punch_ids: list[int] = []
