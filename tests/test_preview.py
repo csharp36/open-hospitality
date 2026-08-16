@@ -38,15 +38,3 @@ def test_build_financial_preview_aggregates_and_counts():
     assert p.codes_mapped == 3
     assert p.codes_needs_review == 2
     assert p.net_total == Decimal("120.00")
-    assert p.balanced is False
-
-
-def test_balanced_true_when_net_zero():
-    p = build_financial_preview(
-        source="OPERA",
-        report_type="trial_balance",
-        business_date=date(2026, 7, 7),
-        records=[_rec("1000", "5487.00"), _rec("9004", "-5487.00")],
-    )
-    assert p.balanced is True
-    assert p.net_total == Decimal("0")

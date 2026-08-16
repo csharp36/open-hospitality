@@ -13,6 +13,8 @@ from usali.server import create_app
 # real PMS export.
 SAMPLE_PDF = Path("docs/reference/samples/Trial Balance 07.07.2026 - Opera.pdf")
 
+_PDF_HEADERS = {"content-type": "application/pdf"}
+
 
 @pytest.fixture
 def client(tmp_path: Path) -> TestClient:
@@ -35,7 +37,8 @@ def client(tmp_path: Path) -> TestClient:
 def test_preview_ok_returns_pnl(client: TestClient) -> None:
     r = client.post(
         "/api/preview",
-        files={"file": ("audit.pdf", SAMPLE_PDF.read_bytes(), "application/pdf")},
+        content=SAMPLE_PDF.read_bytes(),
+        headers=_PDF_HEADERS,
     )
     assert r.status_code == 200
     body = r.json()
@@ -48,7 +51,7 @@ def test_preview_ok_returns_pnl(client: TestClient) -> None:
 
 def test_preview_wrong_type_is_415(client: TestClient) -> None:
     r = client.post(
-        "/api/preview", files={"file": ("x.txt", b"not a pdf", "text/plain")}
+        "/api/preview", content=b"not a pdf", headers={"content-type": "text/plain"}
     )
     assert r.status_code == 415
 
@@ -56,17 +59,14 @@ def test_preview_wrong_type_is_415(client: TestClient) -> None:
 def test_preview_bad_magic_is_415(client: TestClient) -> None:
     # Right content-type, but the bytes are not a PDF.
     r = client.post(
-        "/api/preview",
-        files={"file": ("x.pdf", b"not a pdf at all", "application/pdf")},
+        "/api/preview", content=b"not a pdf at all", headers=_PDF_HEADERS
     )
     assert r.status_code == 415
 
 
 def test_preview_too_large_is_413(client: TestClient) -> None:
     big = b"%PDF-" + b"0" * (10 * 1024 * 1024 + 1)
-    r = client.post(
-        "/api/preview", files={"file": ("big.pdf", big, "application/pdf")}
-    )
+    r = client.post("/api/preview", content=big, headers=_PDF_HEADERS)
     assert r.status_code == 413
 
 
@@ -77,14 +77,12 @@ def test_preview_unsupported_vendor(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(
         srv,
         "extract_words_from_bytes",
-        lambda data: [
+        lambda data, max_pages=None: [
             Word(text=t, x0=float(i), top=0.0)
             for i, t in enumerate(["HotelKey", "Final", "Audit"])
         ],
     )
-    r = client.post(
-        "/api/preview", files={"file": ("hk.pdf", b"%PDF-xx", "application/pdf")}
-    )
+    r = client.post("/api/preview", content=b"%PDF-xx", headers=_PDF_HEADERS)
     assert r.json() == {
         "status": "unsupported",
         "vendor": "HotelKey",
@@ -93,9 +91,48 @@ def test_preview_unsupported_vendor(client: TestClient, monkeypatch) -> None:
 
 
 def test_preview_rate_limited_after_burst(client: TestClient) -> None:
-    # 20/min window: the 21st preview from the same client is refused.
-    files = {"file": ("x.pdf", b"not a pdf", "application/pdf")}
+    # 20/min per-IP window: the 21st preview from the same client is refused.
     for _ in range(20):
-        client.post("/api/preview", files=files)
-    r = client.post("/api/preview", files=files)
+        client.post("/api/preview", content=b"not a pdf", headers=_PDF_HEADERS)
+    r = client.post("/api/preview", content=b"not a pdf", headers=_PDF_HEADERS)
     assert r.status_code == 429
+
+
+def test_preview_persists_nothing(tmp_path: Path) -> None:
+    # The strongest persist-nothing proof: wrap the DB session factory in a spy
+    # and assert the preview route never opened a session — plus the three
+    # spooling dirs stay empty after a successful 200.
+    calls: list[int] = []
+
+    def spy_session_factory():  # type: ignore[no-untyped-def]
+        calls.append(1)
+        raise AssertionError("preview must never open a DB session")
+
+    inbox = tmp_path / "in"
+    processed = tmp_path / "p"
+    failed = tmp_path / "f"
+    verifier, _ = make_authkit()
+    app = create_app(
+        inbox_dir=inbox,
+        processed_dir=processed,
+        failed_dir=failed,
+        session_factory=spy_session_factory,
+        token_verifier=verifier,
+        keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(),
+    )
+    client = TestClient(app)
+
+    r = client.post(
+        "/api/preview",
+        content=SAMPLE_PDF.read_bytes(),
+        headers=_PDF_HEADERS,
+    )
+    assert r.status_code == 200
+    assert r.json()["status"] == "ok"
+
+    # (a) the session factory was never called.
+    assert calls == []
+    # (b) nothing was spooled to any of the ingest dirs.
+    for d in (inbox, processed, failed):
+        assert not d.exists() or not any(d.iterdir())

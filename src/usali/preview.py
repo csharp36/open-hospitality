@@ -30,6 +30,10 @@ class Kpi:
 
 @dataclass(frozen=True)
 class PreviewPayload:
+    # net_total is the raw sum of the transaction rows — informational only, NOT
+    # a balance claim. A real "ties out" signal must come from reconciling the
+    # ledger block (a later plan); parse_trial_balance does not return that block,
+    # so a ties-out signal must never be derived from the transaction-row net.
     pms_source: str
     report_type: str
     business_date: date
@@ -39,7 +43,6 @@ class PreviewPayload:
     codes_mapped: int = 0
     codes_needs_review: int = 0
     net_total: Decimal = Decimal("0")
-    balanced: bool = False
 
 
 @lru_cache(maxsize=None)
@@ -96,5 +99,4 @@ def build_financial_preview(
         codes_mapped=len(mapped),
         codes_needs_review=len(needs_review),
         net_total=net_total,
-        balanced=net_total == Decimal("0"),
     )

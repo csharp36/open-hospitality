@@ -57,6 +57,7 @@ _DEFAULT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 _T = TypeVar("_T")
 
 _MAX_PREVIEW_BYTES = 10 * 1024 * 1024
+_MAX_PREVIEW_PAGES = 80
 _PREVIEW_ADAPTERS = {
     ("OPERA", "trial_balance"): (
         opera_trial_balance.parse_trial_balance,
@@ -394,24 +395,49 @@ def create_app(
         }
 
     app.state.preview_rate_limiter = RateLimiter(max_events=20, window_s=60.0)
+    # Hard ceiling across ALL callers, independent of the per-IP key: the global
+    # limiter is the cap that holds even if the per-IP host is spoofable.
+    app.state.preview_global_limiter = RateLimiter(max_events=300, window_s=60.0)
 
     @app.post("/api/preview")  # PUBLIC: no operator_gates, no session, persists nothing
-    async def preview(request: Request, file: UploadFile) -> dict[str, object]:
+    async def preview(request: Request) -> dict[str, object]:
+        # Global ceiling FIRST — a single constant key caps total preview volume
+        # regardless of how many distinct (possibly spoofed) client IPs appear.
+        global_limiter: RateLimiter = request.app.state.preview_global_limiter
+        if not global_limiter.allow("global"):
+            raise HTTPException(status_code=429, detail="too many previews; try again shortly")
+        # Per-IP key trusts request.client.host. Behind a proxy that is only
+        # trustworthy if uvicorn's forwarded_allow_ips is restricted to the
+        # proxy CIDR (deploy-side follow-up, tracked); the global ceiling above
+        # is the hard cap that holds regardless of any per-IP spoofing.
         limiter: RateLimiter = request.app.state.preview_rate_limiter
         client_ip = request.client.host if request.client else "unknown"
         if not limiter.allow(client_ip):
             raise HTTPException(status_code=429, detail="too many previews; try again shortly")
-        if (file.content_type or "") not in ("application/pdf", "application/octet-stream"):
+        if "application/pdf" not in request.headers.get("content-type", ""):
             raise HTTPException(status_code=415, detail="please upload a PDF")
-        if file.size is not None and file.size > _MAX_PREVIEW_BYTES:
+        # Early Content-Length reject: refuse an over-large upload before we
+        # stream a single byte (the streamed cap below still enforces the true
+        # size, since Content-Length can lie or be absent under chunked).
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > _MAX_PREVIEW_BYTES:
             raise HTTPException(status_code=413, detail="file too large")
-        data = await file.read()
-        if len(data) > _MAX_PREVIEW_BYTES:
-            raise HTTPException(status_code=413, detail="file too large")
+        # Stream the raw PDF body with a hard cap — never spool guest PII / card
+        # PANs to an on-disk SpooledTemporaryFile (which multipart would do).
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf.extend(chunk)
+            if len(buf) > _MAX_PREVIEW_BYTES:
+                raise HTTPException(status_code=413, detail="file too large")
+        data = bytes(buf)
         if data[:5] != b"%PDF-":
             raise HTTPException(status_code=415, detail="please upload a PDF")
         try:
-            words = extract_words_from_bytes(data)
+            # Fail closed to "unreadable" on an over-long PDF (page ceiling). A
+            # wall-clock/CPU timeout for a small-but-pathological (decompression-
+            # bomb) PDF is a documented residual for the pilot — bounded for now
+            # by the 10MB size cap + this page ceiling; tracked as a follow-up.
+            words = extract_words_from_bytes(data, max_pages=_MAX_PREVIEW_PAGES)
         except Exception:
             return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
         sig = detect_report_signature(words)

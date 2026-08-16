@@ -12,9 +12,11 @@ class Word:
     top: float
 
 
-def extract_words_from_bytes(data: bytes) -> list[Word]:
+def extract_words_from_bytes(data: bytes, max_pages: int | None = None) -> list[Word]:
     words: list[Word] = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
+        if max_pages is not None and len(pdf.pages) > max_pages:
+            raise ValueError("too many pages for preview")
         for i, page in enumerate(pdf.pages):
             page_offset = i * (page.height + 1000)
             for w in page.extract_words():
