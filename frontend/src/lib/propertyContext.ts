@@ -3,7 +3,7 @@
 // state when no provider is mounted, so pages render standalone in tests
 // without wrapping. The choice persists per browser (localStorage).
 
-import { createContext, useContext, useState, type ReactNode } from 'react'
+import { createContext, useContext, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { getProperties } from '../api/client'
@@ -20,9 +20,9 @@ export type GlobalProperty = {
   selected: PropertyInfo | undefined
 }
 
-const Ctx = createContext<GlobalProperty | null>(null)
+export const GlobalPropertyContext = createContext<GlobalProperty | null>(null)
 
-function usePropertyState(persist: boolean): GlobalProperty {
+export function usePropertyState(persist: boolean): GlobalProperty {
   const propertiesQuery = useQuery({ queryKey: ['properties'], queryFn: getProperties })
   const [picked, setPicked] = useState<string | undefined>(() =>
     persist ? (localStorage.getItem(STORAGE_KEY) ?? undefined) : undefined,
@@ -43,13 +43,8 @@ function usePropertyState(persist: boolean): GlobalProperty {
   }
 }
 
-export function GlobalPropertyProvider({ children }: { children: ReactNode }) {
-  const value = usePropertyState(true)
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
-}
-
 export function useGlobalProperty(): GlobalProperty {
-  const ctx = useContext(Ctx)
+  const ctx = useContext(GlobalPropertyContext)
   // Fallback keeps hook order stable: the state hook always runs, and is
   // simply ignored when a provider is present.
   const fallback = usePropertyState(false)
