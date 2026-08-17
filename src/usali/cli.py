@@ -8,7 +8,7 @@ import httpx
 import typer
 from sqlalchemy import select
 
-from usali import qbo_push, render, reporting
+from usali import invites, qbo_push, render, reporting
 from usali.adaptors import autoclerk_transaction_summary as autoclerk
 from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors.pdf import extract_words
@@ -22,6 +22,7 @@ from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
 from usali.models import Timecard
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
+from usali.notifications import Notifier, notifier_from_settings
 from usali.photo_store import LocalPhotoStore
 from usali.qbo_client import QboClient
 from usali.roster_seed import RosterError, load_roster, seed_roster
@@ -40,6 +41,10 @@ def _session_factory() -> OrgBoundSessionFactory:
     # seam (the CLI is a single-org operator surface until then).
     engine = make_engine(get_settings().db_url)
     return OrgBoundSessionFactory(make_session_factory(engine), FOUNDING_ORG_ID)
+
+
+def _notifier() -> Notifier:
+    return notifier_from_settings(get_settings())
 
 
 def _file_hash(path: str) -> str:
@@ -101,6 +106,29 @@ def seed_properties_cmd(
         n = seed_properties(s, yaml_path)
         s.commit()
     typer.echo(f"Seeded {n} properties")
+
+
+@app.command("invite")
+def invite_cmd(
+    email: str = typer.Argument(..., help="Email address to invite (pilot gate)"),
+) -> None:
+    """Create a one-time invite for EMAIL and send the signup link (D-B4).
+
+    Pilot invite origination: writes a pending invite row and emails the link
+    via the configured Notifier (console in dev — the link is logged). A GA
+    admin surface replaces this later; public signup CONSUMES the invite.
+    """
+    settings = get_settings()
+    with _session_factory()() as s:
+        invite, raw_token = invites.create_invite(s, email)
+        s.commit()
+    link = f"{settings.public_base_url.rstrip('/')}/signup?token={raw_token}"
+    _notifier().send_email(
+        to=email,
+        subject="Your Open Hospitality workspace invite",
+        body=f"You've been invited to create a workspace. Open: {link}",
+    )
+    typer.echo(f"Invited {email}: {link}")
 
 
 @app.command("gen-opera-draft")
