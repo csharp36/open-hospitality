@@ -14,10 +14,25 @@ from tests.notifiers import CapturingNotifier
 
 
 def test_console_notifier_logs_both_channels(caplog):
-    n = ConsoleNotifier()
-    with caplog.at_level(logging.INFO, logger="usali.notifications"):
-        n.send_email(to="a@example.test", subject="Hi", body="Body")
-        n.send_sms(to="+15550000000", body="123456")
+    # Neutralize two GLOBAL logging-state vectors that another test earlier in
+    # the suite can leave set (e.g. a logging.config.dictConfig/fileConfig call
+    # with the default disable_existing_loggers=True): the logger's own
+    # `.disabled` flag and the process-wide manager.disable threshold. Both
+    # short-circuit `isEnabledFor` before level/handler checks, so caplog would
+    # capture nothing regardless of at_level. Restore them afterward.
+    logger = logging.getLogger("usali.notifications")
+    saved_disabled = logger.disabled
+    saved_manager_disable = logging.root.manager.disable
+    logger.disabled = False
+    logging.disable(logging.NOTSET)  # resets manager.disable AND clears the level cache
+    try:
+        n = ConsoleNotifier()
+        with caplog.at_level(logging.INFO, logger="usali.notifications"):
+            n.send_email(to="a@example.test", subject="Hi", body="Body")
+            n.send_sms(to="+15550000000", body="123456")
+    finally:
+        logger.disabled = saved_disabled
+        logging.disable(saved_manager_disable)
     text = " ".join(r.message for r in caplog.records)
     assert "a@example.test" in text and "+15550000000" in text
 
