@@ -1280,7 +1280,10 @@ def test_j3_downgrade_drops_the_column_with_data_present(populated_url):
 # The exclusion judgment, pinned (recorded in the l1a0orgid docstring):
 # platform-curated reference data with no org dimension. Everything else
 # in the public schema except alembic_version must carry org_id NOT NULL.
-_L1_ORG_INDEPENDENT = {"usali_schedule", "usali_mapping_dictionary"}
+# `invite` joins this set for a different reason (D-B3, Task 3 of the B1
+# plan): an invite precedes any tenant, so it is plain Base, not OrgScoped —
+# it carries no org_id at all, by design, not because it is reference data.
+_L1_ORG_INDEPENDENT = {"usali_schedule", "usali_mapping_dictionary", "invite"}
 
 # Tables the pre-E1 population actually filled — the backfill must land
 # org 1 on real rows here, not just add an empty column.

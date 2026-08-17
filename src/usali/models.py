@@ -385,6 +385,36 @@ class Organization(Base):
     )
 
 
+class Invite(Base):
+    """A one-time, expiring, invite-gate row (Track B/B1, D-B3/D-B4). NOT
+    OrgScoped: an invite precedes any tenant, so it carries no org_id and no
+    org_wall RLS policy. The raw token is a BEARER secret shown once in the
+    emailed link and stored only hashed (SHA-256 hex). `consumed_org_id` is set
+    on consume for audit — the tenant the invite became."""
+
+    __tablename__ = "invite"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_invite_token_hash"),
+        CheckConstraint(
+            "status IN ('pending', 'consumed', 'revoked')",
+            name="ck_invite_status",
+        ),
+    )
+
+    invite_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(320))
+    token_hash: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(10), server_default="pending")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    consumed_org_id: Mapped[int | None] = mapped_column(
+        ForeignKey("organization.org_id", name="fk_invite_consumed_org"),
+        nullable=True,
+    )
+
+
 class OrgSettings(OrgScoped, Base):
     """Per-org integration config (Pillar L decision 5). One row per org,
     org-scoped by its OWN primary key — `org_id` is BOTH the PK and the FK
