@@ -15,7 +15,7 @@ from tests.notifiers import CapturingNotifier
 
 def test_console_notifier_logs_both_channels(caplog):
     n = ConsoleNotifier()
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.INFO, logger="usali.notifications"):
         n.send_email(to="a@example.test", subject="Hi", body="Body")
         n.send_sms(to="+15550000000", body="123456")
     text = " ".join(r.message for r in caplog.records)
