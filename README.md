@@ -36,10 +36,13 @@ PMS picker should be generated from that same registry rather than a parallel li
 **SkyTouch** delivers a bundled **"Standard Audit Pack"** — one PDF auto-emailed after
 the nightly audit, containing many report sections. It is ingested via `process_pack`,
 which splits the pack into per-report sections and runs each through the same pipeline.
-Two sections are wired:
+The wired section is:
 
 - **Hotel Journal Summary** — the transaction-code financial feed → USALI financial facts.
-- **Hotel Statistics** — occupancy / ADR / RevPAR → statistics facts.
+- **Hotel Statistics** (occupancy / ADR / RevPAR) ingestion is **deferred** until a
+  real-sample calibration: its parser is anchored to the synthetic mock's column layout
+  and would fail on a real header, so the section is currently skipped while the Hotel
+  Journal (the supported financial feed) still ingests.
 
 Other sections (housekeeping, in-house, vacant lists, and the like) are skipped. The
 SkyTouch transaction-code dictionary (`mapping/skytouch.yaml`) ships seeded

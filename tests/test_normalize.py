@@ -35,8 +35,27 @@ def test_parse_paren_amount():
     from usali.normalize import parse_paren_amount
 
     assert parse_paren_amount("(1234.56)") == Decimal("-1234.56")
+    assert parse_paren_amount("(1,234.56)") == Decimal("-1234.56")
     assert parse_paren_amount("7,890.12") == Decimal("7890.12")
-    assert parse_paren_amount("0.00") == Decimal("0.00")
+    assert parse_paren_amount("0.00") == Decimal("0")
+    assert parse_paren_amount("-1234.56") == Decimal("-1234.56")
+
+
+def test_parse_paren_amount_rejects_double_negative():
+    from usali.normalize import parse_paren_amount
+
+    # "(-1234.56)" is a MINUS inside parens; the old code stripped the parens and
+    # returned +1234.56 (sign inverted). It must be rejected, not silently flipped.
+    with pytest.raises(ValueError):
+        parse_paren_amount("(-1234.56)")
+
+
+def test_parse_paren_amount_rejects_unclosed_paren():
+    from usali.normalize import parse_paren_amount
+
+    # "(123.45" (unbalanced) must raise ValueError, not decimal.InvalidOperation.
+    with pytest.raises(ValueError):
+        parse_paren_amount("(123.45")
 
 
 def test_parse_skytouch_date():

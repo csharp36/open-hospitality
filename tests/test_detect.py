@@ -84,10 +84,13 @@ def test_detects_skytouch_hotel_journal():
     assert det.property_id == "STDEMO"
 
 
-def test_detects_skytouch_hotel_statistics():
+def test_skytouch_hotel_statistics_is_unregistered():
+    # Hotel Statistics is deliberately un-registered (its adapter awaits a real-sample
+    # recalibration), so detect() no longer recognizes the section — it raises, and the
+    # pack pipeline skips it rather than quarantining the whole pack.
     words = _hdr("Hotel", "Statistics", "Property", "Name:", "Redstone", "Test", "Inn")
-    det = detect(words, _ST_REGISTRY)
-    assert (det.pms_source, det.report_type) == ("SKYTOUCH", "hotel_statistics")
+    with pytest.raises(ValueError):
+        detect(words, _ST_REGISTRY)
 
 
 def test_unknown_skytouch_section_raises():

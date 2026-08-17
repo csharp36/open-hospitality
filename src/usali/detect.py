@@ -16,7 +16,10 @@ _REPORT_SIGNATURES: list[tuple[str, tuple[str, str]]] = [
     ("MARKET CODE STATISTICS", ("OPERA", "market_stats")),
     ("RATE PLAN", ("AUTOCLERK", "rate_plan")),
     ("HOTEL JOURNAL SUMMARY", ("SKYTOUCH", "hotel_journal")),
-    ("HOTEL STATISTICS", ("SKYTOUCH", "hotel_statistics")),
+    # SkyTouch "Hotel Statistics" is deliberately UN-registered: its adapter is calibrated
+    # to the synthetic mock's single-word column anchors and raises on a real header, so
+    # registering it would quarantine the whole pack (including the correct financial
+    # section). Deferred until a real-sample recalibration; the section is simply skipped.
 ]
 # Only the header area is needed; scanning a bounded prefix keeps false positives out
 # of table bodies further down the page.

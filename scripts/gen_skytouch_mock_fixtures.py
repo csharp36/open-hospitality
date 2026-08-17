@@ -139,7 +139,7 @@ def write_json(path: Path, words: list[dict[str, object]]) -> None:
 
 def build_pack_pdf(path: Path) -> None:
     """Render a synthetic multi-page audit pack with reportlab (Courier)."""
-    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.pagesizes import landscape, letter
     from reportlab.pdfgen import canvas
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -156,6 +156,14 @@ def build_pack_pdf(path: Path) -> None:
             y -= line_h
         c.showPage()
 
+    def draw_lines_at(page_height: float, lines: list[str]) -> None:
+        c.setFont("Courier", 10)
+        y = page_height - 60.0
+        for line in lines:
+            c.drawString(left, y, line)
+            y -= line_h
+        c.showPage()
+
     # Page 1 -- A/R Aging (synthetic filler rows).
     draw_page([
         "A/R Aging",
@@ -166,20 +174,34 @@ def build_pack_pdf(path: Path) -> None:
         "Mock City Ledger             (75.00)",
     ])
 
-    # Page 2 -- Hotel Journal Summary (same synthetic rows as the fixture).
+    # Page 2 -- Hotel Journal Summary. Rendered in LANDSCAPE with FIXED-WIDTH monospace
+    # columns so the "Postings" column header lands directly above its money column (the
+    # header-anchored parser derives the Postings x0 from that header). Courier is
+    # monospace, so equal character widths == equal pixel columns; the wide right-hand
+    # columns (7 money cols) need the landscape width to fit. Fields are space-padded so
+    # pdfplumber keeps each cell a distinct word.
+    label_w, col_w = 30, 13
+    headers = ["Postings", "Corrections", "Adjustments", "Totals",
+               "GuestLedger", "ARLedger", "AdvDepLedger"]
     journal_lines = [
         "Hotel Journal Summary",
         "",
         f"Property Name: {PROPERTY_NAME}",
         f"Business Date: {BUSINESS_DATE} Property Code: {PROPERTY_CODE}",
         "",
+        " " * label_w + "".join(h.ljust(col_w) for h in headers),
     ]
     for label, code, amounts in JOURNAL_ROWS:
         prefix = f"{label} {code}" if code is not None else label
-        journal_lines.append(f"{prefix:<24} " + " ".join(amounts))
-    draw_page(journal_lines)
+        journal_lines.append(prefix.ljust(label_w) + "".join(a.ljust(col_w) for a in amounts))
+    land = landscape(letter)  # (792, 612)
+    c.setPageSize(land)
+    draw_lines_at(land[1], journal_lines)
 
-    # Page 3 -- Hotel Statistics (same synthetic rows as the fixture).
+    # Page 3 -- Hotel Statistics (same synthetic rows as the fixture). Kept as plain
+    # Courier text: this section is intentionally NOT ingested (deferred to a real-sample
+    # calibration), so its exact column geometry is immaterial to the pack pipeline.
+    c.setPageSize(letter)
     stats_lines = [
         "Hotel Statistics",
         "",
