@@ -415,6 +415,27 @@ class Invite(Base):
     )
 
 
+class OtpChallenge(Base):
+    """A short-lived, hashed, attempt-limited one-time code (Track B/B1). NOT
+    OrgScoped — it gates SIGNUP, before any tenant exists. The code is a bearer
+    secret stored only as its SHA-256; `attempts` is the fail-closed counter."""
+
+    __tablename__ = "otp_challenge"
+    __table_args__ = (
+        Index("ix_otp_challenge_purpose_target", "purpose", "target"),
+    )
+
+    otp_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    purpose: Mapped[str] = mapped_column(String(30))
+    target: Mapped[str] = mapped_column(String(200))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(Integer, server_default=text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class OrgSettings(OrgScoped, Base):
     """Per-org integration config (Pillar L decision 5). One row per org,
     org-scoped by its OWN primary key — `org_id` is BOTH the PK and the FK

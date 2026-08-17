@@ -1283,7 +1283,11 @@ def test_j3_downgrade_drops_the_column_with_data_present(populated_url):
 # `invite` joins this set for a different reason (D-B3, Task 3 of the B1
 # plan): an invite precedes any tenant, so it is plain Base, not OrgScoped —
 # it carries no org_id at all, by design, not because it is reference data.
-_L1_ORG_INDEPENDENT = {"usali_schedule", "usali_mapping_dictionary", "invite"}
+# `otp_challenge` joins for the same reason (D-B6, Task 4): OTP gates signup,
+# before any tenant exists.
+_L1_ORG_INDEPENDENT = {
+    "usali_schedule", "usali_mapping_dictionary", "invite", "otp_challenge",
+}
 
 # Tables the pre-E1 population actually filled — the backfill must land
 # org 1 on real rows here, not just add an empty column.

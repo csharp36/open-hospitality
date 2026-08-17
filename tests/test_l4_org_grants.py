@@ -355,7 +355,7 @@ def test_l4_is_the_single_alembic_head():
     # The invariant is ONE head — no branch — not any particular name. L8 built
     # linearly on L5 and L9 (l9a0deptfk) builds linearly on L8, so the name
     # moves each time the chain grows and only the count is the assertion.
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["b1b0invite"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["b1c0otp"]
 
 
 def _mig_cfg(url: str) -> Config:
