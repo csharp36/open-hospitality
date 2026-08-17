@@ -9,9 +9,14 @@ IngestBatch (with the error message), quarantines the source file to `failed_dir
 re-raises as ProcessingError. Success commits, then moves the source file to
 `processed_dir` as a separate phase — a filing failure after the commit leaves the file
 in place (retry is an idempotent no-op) and never fabricates a `failed` batch. Exactly
-one IngestBatch row is produced per call, regardless of outcome.
+one IngestBatch row is produced per `process_file` call, regardless of outcome.
+
+`process_pack` splits a bundled night-audit pack and ingests each recognized section
+under a shared transaction, producing one IngestBatch per recognized section on success
+(still exactly one `failed` batch on failure, with the whole transaction rolled back).
 """
 
+import dataclasses
 import hashlib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -27,7 +32,9 @@ from usali.adaptors import autoclerk_transaction_summary as autoclerk
 from usali.adaptors import opera_manager_flash as flash
 from usali.adaptors import opera_market_stats as market_stats
 from usali.adaptors import opera_trial_balance as opera
-from usali.adaptors.pdf import Word, extract_words
+from usali.adaptors import skytouch_hotel_journal as sky_journal
+from usali.adaptors.pack import split_pack
+from usali.adaptors.pdf import Word, extract_pages, extract_words
 from usali.detect import Detection, detect, load_registry
 from usali.ledger_promote import promote_ledgers
 from usali.ledger_stage import stage_ledgers
@@ -168,6 +175,22 @@ def _run_autoclerk_rate_plan(
     return batch, business_date, _Counts(len(records), r.promoted_segments, 0, r.skipped)
 
 
+def _run_skytouch_hotel_journal(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> tuple[IngestBatch, date, _Counts]:
+    business_date = sky_journal.extract_business_date(words)
+    records = sky_journal.parse_hotel_journal(
+        words, property_id=det.property_id, business_date=business_date
+    )
+    batch = stage_records(session, records, source_file=path.name, file_hash=file_hash)
+    r = transform(session, source=det.pms_source, business_date=business_date, edition=edition)
+    return batch, business_date, _Counts(len(records), r.mapped, r.unmapped, r.skipped)
+
+
+# NOTE: SkyTouch "Hotel Statistics" is intentionally NOT wired here (and is un-registered
+# in detect._REPORT_SIGNATURES). Its adapter (skytouch_hotel_statistics) and unit tests are
+# retained for a future real-sample recalibration; until then the section is skipped by the
+# pack pipeline so the financial Hotel Journal still ingests.
 _PIPELINES: dict[tuple[str, str], _Handler] = {
     ("OPERA", "trial_balance"): _run_opera_trial_balance,
     ("AUTOCLERK", "transaction_summary"): _run_autoclerk_transaction_summary,
@@ -175,6 +198,7 @@ _PIPELINES: dict[tuple[str, str], _Handler] = {
     ("AUTOCLERK", "manager_report"): _run_autoclerk_manager_report,
     ("OPERA", "market_stats"): _run_opera_market_stats,
     ("AUTOCLERK", "rate_plan"): _run_autoclerk_rate_plan,
+    ("SKYTOUCH", "hotel_journal"): _run_skytouch_hotel_journal,
 }
 
 
@@ -231,14 +255,7 @@ def process_file(
     try:
         words = extract_words(path)
         det = detect(words, load_registry(session))
-        handler = _PIPELINES[(det.pms_source, det.report_type)]
-        batch, business_date, counts = handler(
-            session, words, det, path, _file_hash(path), edition
-        )
-        # Record which report type landed for this property-day. A file that spans
-        # DAY/MONTH/YEAR periods records the DAY business_date the handler returns.
-        record_coverage(session, det.property_id, business_date, det.report_type)
-        batch.status = "transformed"
+        result = _process_section(session, words, det, path, _file_hash(path), edition)
         session.commit()
     except Exception as exc:
         session.rollback()
@@ -255,6 +272,22 @@ def process_file(
         raise ProcessingError(
             f"{path.name}: data committed, but filing to {processed_dir} failed: {exc}"
         ) from exc
+    return dataclasses.replace(result, destination=dest)
+
+
+def _process_section(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> ProcessResult:
+    """Run one detected report through its handler + coverage, marking the batch
+    transformed. Shared by `process_file` (single report) and `process_pack` (each
+    section). Neither commits nor moves — the caller owns the transaction and filing.
+    The returned `destination` is the pre-move source path; the caller fixes it up."""
+    handler = _PIPELINES[(det.pms_source, det.report_type)]
+    batch, business_date, counts = handler(session, words, det, path, file_hash, edition)
+    # Record which report type landed for this property-day. A file that spans
+    # DAY/MONTH/YEAR periods records the DAY business_date the handler returns.
+    record_coverage(session, det.property_id, business_date, det.report_type)
+    batch.status = "transformed"
     return ProcessResult(
         pms_source=det.pms_source,
         report_type=det.report_type,
@@ -264,8 +297,55 @@ def process_file(
         mapped=counts.mapped,
         unmapped=counts.unmapped,
         skipped=counts.skipped,
-        destination=dest,
+        destination=path,  # pre-move source; caller replaces with the filed destination
     )
+
+
+def process_pack(
+    session: Session,
+    pdf_path: str | Path,
+    *,
+    processed_dir: Path,
+    failed_dir: Path,
+    edition: int = 12,
+) -> list[ProcessResult]:
+    """Split a bundled night-audit pack into its constituent reports and ingest each
+    recognised section under a shared transaction.
+
+    Unknown sections (housekeeping/filler like A/R Aging, or a report with no registered
+    handler) are silently skipped. All recognised sections stage + transform in one
+    transaction: any failure rolls the whole pack back, records a `failed` IngestBatch,
+    quarantines the file to `failed_dir`, and re-raises as ProcessingError. A pack with no
+    recognised sections is itself a failure (quarantined). On success the transaction
+    commits and the single source file moves to `processed_dir`.
+    """
+    path = Path(pdf_path)
+    file_hash = _file_hash(path)
+    try:
+        sections = split_pack(extract_pages(path))
+        registry = load_registry(session)
+        results: list[ProcessResult] = []
+        for section in sections:
+            try:
+                det = detect(section.words, registry)
+            except ValueError:
+                continue  # unknown report or unresolved property (housekeeping/filler)
+            if (det.pms_source, det.report_type) not in _PIPELINES:
+                continue
+            results.append(
+                _process_section(session, section.words, det, path, file_hash, edition)
+            )
+        if not results:
+            raise ValueError("no recognized report sections in pack")
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        _record_failure(session, path, exc)
+        _move(path, failed_dir)
+        raise ProcessingError(f"{path.name}: {exc}") from exc
+
+    dest = _move(path, processed_dir)
+    return [dataclasses.replace(r, destination=dest) for r in results]
 
 
 def _record_failure(session: Session, path: Path, exc: Exception) -> None:

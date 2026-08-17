@@ -12,8 +12,8 @@ scheduling, and a time clock — with tenant isolation enforced at the database.
 
 ## What it does
 
-- **Ingests PMS reports** (Opera, AutoClerk, and an extensible source registry) and
-  maps every transaction to the correct **USALI** schedule.
+- **Ingests PMS reports** (Oracle Opera, AutoClerk, SkyTouch, and an extensible source
+  registry) and maps every transaction to the correct **USALI** schedule.
 - **Produces the financials** — a Summary Operating Statement with drill-through to
   the staged transactions behind each line.
 - **Measures labor** — Schedule 14/15 cost and hours, per-day and per-department
@@ -24,6 +24,45 @@ scheduling, and a time clock — with tenant isolation enforced at the database.
   convention, so one property can never read another's rows.
 - **Seals sensitive PII client-side** — SSN, bank, and tax elections are encrypted
   before they reach the server, which never holds them in plaintext at rest.
+
+## Supported PMS sources
+
+Open Hospitality ingests from **Oracle Opera**, **AutoClerk**, and **SkyTouch**
+(Choice / choiceADVANTAGE). All three run through one detection registry — a report's
+own header maps to `(pms_source, report_type)` — so every source shares the same
+detect → parse → stage → promote path and a single source of truth. Any onboarding
+PMS picker should be generated from that same registry rather than a parallel list.
+
+**SkyTouch** delivers a bundled **"Standard Audit Pack"** — one PDF auto-emailed after
+the nightly audit, containing many report sections. It is ingested via `process_pack`,
+which splits the pack into per-report sections and runs each through the same pipeline.
+The wired section is:
+
+- **Hotel Journal Summary** — the transaction-code financial feed → USALI financial facts.
+- **Hotel Statistics** (occupancy / ADR / RevPAR) ingestion is **deferred** until a
+  real-sample calibration: its parser is anchored to the synthetic mock's column layout
+  and would fail on a real header, so the section is currently skipped while the Hotel
+  Journal (the supported financial feed) still ingests.
+
+Other sections (housekeeping, in-house, vacant lists, and the like) are skipped. The
+SkyTouch transaction-code dictionary (`mapping/skytouch.yaml`) ships seeded
+`needs-review`: SkyTouch codes are franchise-configurable, so classifications await
+per-property curation.
+
+*Known limitations (SkyTouch):*
+
+- **Segmentation** (Revenue by Market / Revenue by Rate Code) exists in choiceADVANTAGE
+  but is not built yet — it must first be enabled in a property's audit pack (an
+  onboarding step).
+- **CLI / watcher auto-routing** of a dropped file to pack-vs-single is deferred;
+  `process_pack` is a standalone entry point for now. (The property registry already
+  records `pms_source`, the intended routing key.)
+- The parser is calibrated against a **synthetic mock pack**; a real, de-identified
+  sample is needed to confirm/adjust the column anchors.
+
+**HotelKey** is planned but intentionally **on hold**, pending API access and a real
+"Final Audit Report" sample — we don't want to build against a single report shape that
+may vary across M3 / Inn-Flow integrations in the wild.
 
 ## What we do vs. what we delegate
 
