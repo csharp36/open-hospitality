@@ -28,6 +28,7 @@ from usali.face_enrollment import router as face_enrollment_router
 from usali.face_match import FaceEmbedder
 from usali.kiosk import admin_router as kiosk_admin_router
 from usali.kiosk import kiosk_router
+from usali.notifications import Notifier, notifier_from_settings
 from usali.opener import Opener, SoftwareOpener
 from usali.payroll_provider import PayrollProvider
 from usali.payroll_run_api import router as payroll_run_router
@@ -210,6 +211,7 @@ def create_app(
     payroll_provider_factory: Callable[[], PayrollProvider] | None = None,
     face_engine_factory: Callable[[], FaceEmbedder] | None = None,
     crm_feed_factory: Callable[[str], CrmFeed | None] | None = None,
+    notifier: Notifier | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # Fail fast on a misconfigured provider NAME (cheap string check — the
@@ -268,6 +270,9 @@ def create_app(
     # settings.photo_store_dir. Selection lives in photo_store_from_settings —
     # the demo seed uses the same function (one predicate, one function).
     app.state.photo_store = photo_store or photo_store_from_settings(settings)
+    # Notification seam (B1/D-B6). Tests inject a capturing fake; the default is
+    # config-selected (console-only in B1). One instance for the app's lifetime.
+    app.state.notifier = notifier or notifier_from_settings(settings)
     # Sealed-PII Opener seam (C1). Tests inject a SoftwareOpener; the default
     # builds one from settings, but env=prod refuses the in-process key entirely
     # (an HSM-backed Opener is a deploy-time drop-in, not shipped in C1).

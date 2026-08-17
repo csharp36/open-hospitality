@@ -143,6 +143,24 @@ class Settings(BaseSettings):
     pii_hpke_key_id: str = "dev-1"
     pii_hpke_private_key: str = ""  # set by the test/dev bootstrap; empty in prod
 
+    # Notification/OTP delivery seam (Track B/B1, D-B6). Only "console" ships in
+    # B1 (logs the link/code, no vendor); SMTP + one SMS vendor land in B2.
+    notifier: str = "console"
+
+    # Public base URL the invite/signup links point at (usali invite CLI).
+    public_base_url: str = "http://localhost:8100"
+
+    # Provisioner DB role (D-B7): the signup-completion path connects as this
+    # least-privilege role to write ONLY organization + role_assignment. In dev
+    # these match scripts/dev_pg_init.sql; prod overrides via USALI_PROVISIONER_*.
+    provisioner_db_role: str = "usali_provisioner"
+    provisioner_db_password: str = "usali_provisioner"
+
+    # Signup abuse guards (Track B/B1). Per-target OTP request ceiling and the
+    # per-invite completion attempt ceiling, each over the sliding window below.
+    signup_otp_max_per_window: int = 5
+    signup_rate_window_seconds: int = 3600
+
     @property
     def is_production(self) -> bool:
         # Fail closed: anything not explicitly a known non-prod env is treated as
