@@ -21,7 +21,6 @@ const okPayload: PreviewPayload = {
   codes_recognized: 4,
   codes_mapped: 3,
   codes_needs_review: 2,
-  net_total: '0.00',
 }
 
 function renderPreviewPage() {

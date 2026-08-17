@@ -1098,7 +1098,6 @@ export interface PreviewPayload {
   codes_recognized: number
   codes_mapped: number
   codes_needs_review: number
-  net_total: string
 }
 
 export type PreviewResponse =

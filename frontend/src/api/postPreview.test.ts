@@ -14,7 +14,6 @@ describe('postPreview (public front door)', () => {
       codes_recognized: 10,
       codes_mapped: 9,
       codes_needs_review: 1,
-      net_total: '1000.00',
     }
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
       new Response(JSON.stringify({ status: 'ok', payload }), { status: 200 }),

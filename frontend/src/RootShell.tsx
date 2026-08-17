@@ -72,7 +72,12 @@ export function RootShell() {
   useEffect(() => {
     rememberRoute(href)
   }, [href])
-  if (pathname === '/callback' || pathname === '/kiosk' || pathname === '/try')
+  if (
+    pathname === '/callback' ||
+    pathname === '/kiosk' ||
+    pathname === '/try' ||
+    pathname === '/try/'
+  )
     return <Outlet />
   return (
     <RequireAuth>

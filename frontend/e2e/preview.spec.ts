@@ -17,6 +17,11 @@ test('anonymous visitor drops a report and sees a P&L', async ({ page }) => {
   await expect(region.getByText(/mapped/)).toBeVisible()
 })
 
+test('a trailing-slash /try/ stays public (no Keycloak bounce)', async ({ page }) => {
+  await page.goto('/try/')
+  await expect(page.getByText(/see your night audit/i)).toBeVisible()
+})
+
 test('a non-PDF drop shows a validation message', async ({ page }) => {
   await page.goto('/try')
   await page.getByLabel('PDF file').setInputFiles({
