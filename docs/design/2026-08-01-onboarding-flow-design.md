@@ -5,6 +5,14 @@ structures it into a tenant lifecycle, and flags the decisions that
 gate the build. Not a plan — the plan doc follows once the forks below
 are resolved. The PMS-variant matrix (§4) is pending a research pass.
 
+> **Update 2026-08-16 — the sandbox/prod spine is superseded.** The
+> "PROD-only vs sandbox" fork is resolved by **D8**
+> ([`2026-08-16-data-posture-progressive-onboarding-design.md`](2026-08-16-data-posture-progressive-onboarding-design.md)):
+> one always-sensitive data-security posture (no mock-data tier), no
+> global promotion flip, and per-integration progressive onboarding
+> (a resumable checklist of open items; unconfigured = honestly off, not
+> mocked). This reshapes §2 and §6 and absorbs D3 below; read D8 first.
+
 ## 1. Purpose & principle
 
 An arbitrary hotel operator finds us, signs up, sets up, and starts

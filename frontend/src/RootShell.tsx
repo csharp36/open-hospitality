@@ -52,14 +52,17 @@ export function CallbackPage() {
 }
 
 /**
- * /callback and /kiosk render unguarded (bare Outlet); every other route is
- * wrapped in <RequireAuth><Layout/></RequireAuth> so all authenticated pages
- * require login. Guarding here (rather than via a nested layout route) keeps
- * every page a direct child of the root route, so their route ids ('/',
- * '/coverage', …) — which pages resolve via getRouteApi — stay unchanged.
+ * /callback, /kiosk, and /try render unguarded (bare Outlet); every other
+ * route is wrapped in <RequireAuth><Layout/></RequireAuth> so all
+ * authenticated pages require login. Guarding here (rather than via a nested
+ * layout route) keeps every page a direct child of the root route, so their
+ * route ids ('/', '/coverage', …) — which pages resolve via getRouteApi —
+ * stay unchanged.
  *
  * /callback and /kiosk render unguarded: the callback completes OIDC, and the
- * kiosk authenticates by DEVICE token (no operator session exists on an iPad).
+ * kiosk authenticates by DEVICE token (no operator session exists on an
+ * iPad). /try is the public marketing/preview front door: it must render for
+ * anonymous visitors with no operator session at all.
  */
 export function RootShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -69,7 +72,13 @@ export function RootShell() {
   useEffect(() => {
     rememberRoute(href)
   }, [href])
-  if (pathname === '/callback' || pathname === '/kiosk') return <Outlet />
+  if (
+    pathname === '/callback' ||
+    pathname === '/kiosk' ||
+    pathname === '/try' ||
+    pathname === '/try/'
+  )
+    return <Outlet />
   return (
     <RequireAuth>
       <Layout />

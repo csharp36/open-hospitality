@@ -87,6 +87,17 @@
   --radius-control: 0.5rem;
   --shadow-card: 0 1px 3px oklch(20.8% 0.042 265.8 / 0.06), 0 4px 12px oklch(20.8% 0.042 265.8 / 0.04);
   --shadow-overlay: 0 10px 40px oklch(20.8% 0.042 265.8 / 0.25);
+  /* --- Marketing front door (public /try): a warm hospitality identity,
+     deliberately separate from the app's indigo so the product palette is
+     untouched. Serif display + terracotta accent + monospace numbers. --- */
+  --font-display: Georgia, "Times New Roman", serif;
+  --color-brand-canvas: oklch(96.6% 0.012 79);
+  --color-brand-surface: oklch(98.6% 0.008 79);
+  --color-brand-ink: oklch(31% 0.03 47);
+  --color-brand-ink-muted: oklch(52% 0.03 60);
+  --color-brand-line: oklch(89% 0.02 74);
+  --color-brand-accent: oklch(58% 0.13 42);
+  --color-brand-accent-soft: oklch(94% 0.03 55);
 }
 
 /* Native form controls (selects, date/month pickers, scrollbars) render UA
@@ -140,6 +151,13 @@
   /* dark-mode accent is indigo-400 — white text fails AA on it */
   --color-accent-contrast: oklch(20.8% 0.042 265.8);
   /* --color-scrim intentionally NOT remapped — stays dark in both modes */
+  --color-brand-canvas: oklch(26% 0.02 60);
+  --color-brand-surface: oklch(30% 0.02 60);
+  --color-brand-ink: oklch(93% 0.012 79);
+  --color-brand-ink-muted: oklch(74% 0.02 74);
+  --color-brand-line: oklch(40% 0.02 60);
+  --color-brand-accent: oklch(70% 0.12 45);
+  --color-brand-accent-soft: oklch(34% 0.05 45 / 0.6);
 }
 
 @layer base {
