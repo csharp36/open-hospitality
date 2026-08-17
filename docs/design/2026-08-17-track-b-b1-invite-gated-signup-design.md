@@ -130,11 +130,29 @@ Happy path: as the diagram. Failure modes, all **fail-closed**:
 
 ## 7. Security & posture (the sharp edges)
 
-- **Owner session from a public endpoint.** `provision_tenant` requires an
-  owner (non-org-instrumented) session. The signup endpoint is the *only*
-  public path that touches one, so it is confined to exactly `provision_tenant`
-  + `invite.consume` with fully-validated inputs — no other query runs on it.
-  This boundary is the review focus.
+- **Provisioning DB access — least-privilege role (D-B7, decided 2026-08-17).**
+  `provision_tenant` needs to bypass RLS to write the cross-org `organization`
+  row + `org_admin` `role_assignment`, but the serving process connects as the
+  RLS-bound `usali_app` role (no `BYPASSRLS`). Rather than hand the public web
+  process the full owner role (a web-process compromise would then dump every
+  tenant's data), B1 adds a **dedicated `usali_provisioner` role** that can write
+  **only** `organization` + `role_assignment` (a role-specific permissive RLS
+  policy on those two tables — no cluster-wide `BYPASSRLS`) and holds **no table
+  grants on any tenant-data table**. A stolen provisioner cred can create junk
+  empty orgs but **cannot `SELECT` a single row of any tenant's real data**, and
+  cannot pivot into the app (that still needs KC org membership + a valid token).
+  Considered and rejected: a separate async provisioner process — its benefit is
+  conditional on real secret/identity isolation and doesn't neutralize the
+  in-flight-credential-harvesting that any web-process RCE already enables, so it
+  is over-engineering for the pilot vs. the least-privilege role. Role creation
+  lands in `bootstrap.sh`/`dev_pg_init.sql` (cluster-level, like `usali_app`);
+  the grants + role-specific policies land in the migration.
+- **The provisioner session is confined.** A new `provisioner_session_factory`
+  seam (that role's creds) is reachable **only** by the signup-completion code,
+  which runs exactly `provision_tenant` + `invite.consume` with fully-validated
+  inputs. "This role cannot read any tenant-data table" is an
+  **adversarial-review pin** (a test connects as `usali_provisioner` and asserts
+  `SELECT` on `employee`/`payroll`/etc. is denied).
 - **Invite token + OTP code are bearer secrets** — stored hashed, expiring,
   single-use / attempt-limited.
 - **Always-sensitive from creation (D8)** — the new tenant is prod-grade the
