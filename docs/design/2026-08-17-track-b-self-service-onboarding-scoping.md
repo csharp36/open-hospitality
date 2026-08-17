@@ -65,13 +65,34 @@ dormant `provision_tenant` into the real pilot on-ramp. B2 and B4 layer on next.
   is the token *claim shape*, not the IdP, so the app is already
   provider-agnostic and adding it is zero app code.
 
-- **D-B2 — Signup is server-driven (2026-08-17, proposed/leaning).** The app
+- **D-B2 — Signup is server-driven (CONFIRMED 2026-08-17).** The app
   orchestrates KC user creation via the admin API (as `provision_tenant`
   already does), keeping invite-gate + OTP + provisioning in one controlled
-  flow; NOT Keycloak-native self-registration. *(Confirm during B1 brainstorm.)*
+  flow; NOT Keycloak-native self-registration.
 
-- **D-B3 — Signup-adjacent tables live OUTSIDE RLS (2026-08-17, proposed).**
+- **D-B3 — Signup-adjacent tables live OUTSIDE RLS (CONFIRMED 2026-08-17).**
   Lead-capture, the invite allowlist, and any pre-tenant rows are
   **org-independent** (no org exists yet), so they are **NOT `OrgScoped`** and
   carry no RLS policy — resolving the "non-tenant rows under RLS" question
-  deferred from Track A's lead-capture. *(Confirm during B1/B3 brainstorm.)*
+  deferred from Track A's lead-capture.
+
+- **D-B4 — Invite-gate = hybrid approve→emailed-link (C) (CONFIRMED 2026-08-17).**
+  Admin approves an email (Track A capture or manual) → system emails that
+  address a one-time expiring invite link → clicking it opens signup with the
+  email pre-bound and already verified. Threads the Track A funnel into the gate
+  and is the GA-ready shape. For the pilot, **invite creation is a CLI command**
+  (owner-session), so we need no cross-org platform-admin HTTP surface yet
+  (D2 §8 keeps that out of scope); public signup *consumes* the invite.
+
+- **D-B5 — Credential = local password (CONFIRMED 2026-08-17).** Owner sets a
+  password at signup; passkey/passwordless is a later Keycloak option. Email
+  verified by the invite click; the **cell** verified by SMS OTP (and captured
+  for owner alerting).
+
+- **D-B6 — Minimal notification/OTP seam folds into B1 (CONFIRMED 2026-08-17).**
+  Rather than build B2 first, B1 ships the `Notifier`/OTP **interface** + a dev
+  **console adapter** (logs the link/code — testable with no vendor) + a config
+  path for real providers (SMTP + one SMS vendor). The full vendor matrix stays
+  B2. Follows the existing config-selected-seam pattern (payroll/CRM/photo-store).
+
+**First spec:** `2026-08-17-track-b-b1-invite-gated-signup-design.md`.
