@@ -37,10 +37,11 @@ class CompleteRequest(BaseModel):
     pms_source: str = Field(min_length=1, max_length=20)
     wage_jurisdiction: str = Field(min_length=1, max_length=10)
     cell: str = Field(min_length=3, max_length=32)
-    # No length floor: the owner proved their invite + cell; the chosen
-    # password's strength is not a field-shape concern, and enforcing it here
-    # would preempt the invite/OTP refusals the tests pin.
-    password: str = Field(min_length=1, max_length=200)
+    # An 8-char floor is the D-B5 baseline for the self-service credential. The
+    # alias-format 422 is deferred to the handler (after the invite/OTP refusals)
+    # so a bad alias can't preempt them, but a too-short password is a pure
+    # field-shape refusal and stays here.
+    password: str = Field(min_length=8, max_length=200)
 
 
 def _refuse() -> HTTPException:

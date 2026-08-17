@@ -120,7 +120,7 @@ def test_happy_path_provisions_a_second_tenant_and_consumes_the_invite(
     again = client.post("/api/signup/complete", json={
         "token": raw, "otp": code, "workspace_name": "x", "workspace_alias": "y",
         "property_name": "z", "pms_source": "opera", "wage_jurisdiction": "US-CA",
-        "cell": "+15550000000", "password": "p",
+        "cell": "+15550000000", "password": "passw0rd",
     })
     assert again.status_code in (404, 409)
 
@@ -133,7 +133,7 @@ def test_complete_fails_closed_on_wrong_otp(db_url, tmp_path, _founding_committe
     r = client.post("/api/signup/complete", json={
         "token": raw, "otp": "000000", "workspace_name": "x",
         "workspace_alias": "y", "property_name": "z", "pms_source": "opera",
-        "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "p",
+        "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "passw0rd",
     })
     assert r.status_code == 403
     factory = make_session_factory(make_engine(app_role_url(db_url)))
@@ -168,6 +168,6 @@ def test_the_endpoint_opens_the_provisioner_session_only_in_completion(
         "token": raw, "otp": code, "workspace_name": "Only Once Group",
         "workspace_alias": "only-once-group", "property_name": "H",
         "pms_source": "opera", "wage_jurisdiction": "US-CA",
-        "cell": "+15550000000", "password": "p",
+        "cell": "+15550000000", "password": "passw0rd",
     })
     assert opened == ["prov"]  # exactly one confined provisioning session
