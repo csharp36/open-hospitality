@@ -30,7 +30,7 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
-from tests.orgwall import ensure_app_role  # noqa: E402
+from tests.orgwall import ensure_app_role, ensure_provisioner_role  # noqa: E402
 
 # The revision immediately before E1 -- where a real pilot database would have
 # been sitting when this work started.
@@ -72,6 +72,7 @@ def _populate():
         # The RLS-bound app role, before any upgrade reaches l2a0rlswall
         # (which refuses without it — CREATE ROLE is cluster-level).
         ensure_app_role(url)
+        ensure_provisioner_role(url)   # b1a0provrole refuses without it too
         command.upgrade(_cfg(url), _PRE_E1)
 
         engine = create_engine(url)

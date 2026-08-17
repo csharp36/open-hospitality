@@ -18,3 +18,18 @@ BEGIN
   END IF;
 END
 $$;
+
+-- D-B7 (Track B/B1): the least-privilege PROVISIONER role. LOGIN only — no
+-- SUPERUSER, no BYPASSRLS, not the table owner. The b1a0provrole migration
+-- grants it INSERT/SELECT on ONLY organization + role_assignment and a
+-- role-specific permissive RLS policy on those two; it holds NO grant on any
+-- tenant-data table. CREATE ROLE is cluster-level, so it cannot live in the
+-- migration chain — the migration REFUSES to run until this role exists.
+-- CLOUD: scripts/cloud/bootstrap.sh creates it the same way as usali_app.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'usali_provisioner') THEN
+    CREATE ROLE usali_provisioner LOGIN PASSWORD 'usali_provisioner';
+  END IF;
+END
+$$;

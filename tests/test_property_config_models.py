@@ -17,7 +17,7 @@ from alembic import command  # noqa: E402
 from alembic.config import Config  # noqa: E402
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
-from tests.orgwall import ensure_app_role  # noqa: E402
+from tests.orgwall import ensure_app_role, ensure_provisioner_role  # noqa: E402
 from usali.models import (  # noqa: E402
     ADR_ROOM_BASES,
     CALENDAR_TYPES,
@@ -166,6 +166,7 @@ def test_migration_round_trips_with_rows_present():
         with PostgresContainer("postgres:16", driver="psycopg") as pg:
             url = pg.get_connection_url()
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             cfg = _cfg(url)
             command.upgrade(cfg, "head")
             engine = create_engine(url)
@@ -267,6 +268,7 @@ def test_m2_downgrade_restores_the_five_value_dnr_check():
         with PostgresContainer("postgres:16", driver="psycopg") as pg:
             url = pg.get_connection_url()
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             cfg = _cfg(url)
             command.upgrade(cfg, "head")
             # Step ONE revision back: m2a0perffoundations -> m1a0propcfg. At

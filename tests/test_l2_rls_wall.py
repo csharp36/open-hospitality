@@ -43,7 +43,11 @@ from usali.tenancy import (  # noqa: E402
     instrument_org_wall,
 )
 
-from tests.orgwall import app_role_url, ensure_app_role  # noqa: E402
+from tests.orgwall import (  # noqa: E402
+    app_role_url,
+    ensure_app_role,
+    ensure_provisioner_role,
+)
 
 _spec = importlib.util.spec_from_file_location(
     "l2a0rlswall", "migrations/versions/l2a0rlswall_rls_wall.py"
@@ -501,6 +505,7 @@ def test_the_migration_refuses_without_the_app_role():
                 command.upgrade(cfg, "head")
             # ... and creating the role makes the same upgrade converge.
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             command.upgrade(cfg, "head")
     finally:
         if previous is None:

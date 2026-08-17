@@ -41,7 +41,7 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.exc import IntegrityError
 from testcontainers.postgres import PostgresContainer
 
-from tests.orgwall import ensure_app_role
+from tests.orgwall import ensure_app_role, ensure_provisioner_role
 
 from tests.authkit import DEFAULT_ORG_ALIAS, make_authkit
 from tests.employees import make_employee
@@ -355,7 +355,7 @@ def test_l4_is_the_single_alembic_head():
     # The invariant is ONE head — no branch — not any particular name. L8 built
     # linearly on L5 and L9 (l9a0deptfk) builds linearly on L8, so the name
     # moves each time the chain grows and only the count is the assertion.
-    assert ScriptDirectory.from_config(cfg).get_heads() == ["m2a0perffoundations"]
+    assert ScriptDirectory.from_config(cfg).get_heads() == ["b1a0provrole"]
 
 
 def _mig_cfg(url: str) -> Config:
@@ -381,6 +381,7 @@ def test_l4_round_trips_with_data_present():
         with PostgresContainer("postgres:16", driver="psycopg") as pg:
             url = pg.get_connection_url()
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             cfg = _mig_cfg(url)
             command.upgrade(cfg, "l3a0aliaslookup")
             engine = create_engine(url)

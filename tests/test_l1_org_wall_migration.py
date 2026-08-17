@@ -35,7 +35,7 @@ from testcontainers.postgres import PostgresContainer  # noqa: E402
 
 from usali.models import Base  # noqa: E402
 
-from tests.orgwall import ensure_app_role  # noqa: E402
+from tests.orgwall import ensure_app_role, ensure_provisioner_role  # noqa: E402
 
 _PRE_L1 = "j3a0crmref"
 
@@ -114,6 +114,7 @@ def test_l1_round_trips_on_an_empty_database():
             url = pg.get_connection_url()
             # l2a0rlswall (upstream of head) refuses without the app role.
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             command.upgrade(_cfg(url), "head")
             engine = create_engine(url)
 
