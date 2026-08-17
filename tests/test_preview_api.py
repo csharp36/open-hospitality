@@ -96,6 +96,21 @@ def test_preview_rate_limited_after_burst(client: TestClient) -> None:
         client.post("/api/preview", content=b"not a pdf", headers=_PDF_HEADERS)
     r = client.post("/api/preview", content=b"not a pdf", headers=_PDF_HEADERS)
     assert r.status_code == 429
+    # A 429 must tell the client when to retry.
+    assert r.headers["Retry-After"] == "60"
+
+
+def test_preview_response_omits_net_total(client: TestClient) -> None:
+    # net_total is a never-a-balance-signal (D8): it stays server-side on the
+    # PreviewPayload but must NOT be serialized to the client, so nothing
+    # downstream can rebuild the dishonest signal from the response.
+    r = client.post(
+        "/api/preview",
+        content=SAMPLE_PDF.read_bytes(),
+        headers=_PDF_HEADERS,
+    )
+    assert r.status_code == 200
+    assert "net_total" not in r.json()["payload"]
 
 
 def test_preview_persists_nothing(tmp_path: Path) -> None:
