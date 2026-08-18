@@ -230,6 +230,7 @@ def create_app(
     crm_feed_factory: Callable[[str], CrmFeed | None] | None = None,
     notifier: Notifier | None = None,
     provisioner_session_factory: SessionFactory | None = None,
+    admin_notify_email: str | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # Fail fast on a misconfigured provider NAME (cheap string check — the
@@ -291,6 +292,12 @@ def create_app(
     # Notification seam (B1/D-B6). Tests inject a capturing fake; the default is
     # config-selected (console-only in B1). One instance for the app's lifetime.
     app.state.notifier = notifier or notifier_from_settings(settings)
+    # Admin routing address for unsupported-PMS signup demand (B1/Task 6). Tests
+    # inject a specific address via _signup_client; the default reads settings.
+    app.state.admin_notify_email = (
+        admin_notify_email if admin_notify_email is not None
+        else settings.admin_notify_email
+    )
     # Provisioner seam (D-B7): the confined signup-completion path's ONLY
     # elevated credential. Tests inject a factory on the provisioner role; the
     # default builds one from settings. Unbound — provision_tenant refuses an

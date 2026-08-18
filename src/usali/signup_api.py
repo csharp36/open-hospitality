@@ -11,7 +11,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
-from usali import invites
+from usali import invites, pms_interest
 from usali.mapping.property_registry import create_first_property
 from usali.otp import OtpService
 from usali.provisioning import provision_tenant
@@ -165,6 +165,24 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str | bool
                 timezone=payload.timezone,
             )
             session.commit()
+    else:
+        # Unsupported PMS: no property; capture de-duped demand + route to admin.
+        # pms_interest_request is not-OrgScoped (keyed by org_alias), so no org
+        # binding is needed.
+        with factory() as session:
+            _, is_new = pms_interest.record_request(
+                session, org_alias=payload.workspace_alias, email=invite_email,
+                raw_pms=payload.pms_other_name or "",
+            )
+            session.commit()
+        admin_email = request.app.state.admin_notify_email
+        if is_new and admin_email:
+            request.app.state.notifier.send_email(
+                to=admin_email,
+                subject="New PMS request from a signup",
+                body=(f"Org {payload.workspace_alias} ({invite_email}) requested "
+                      f"PMS: {payload.pms_other_name}"),
+            )
 
     # STEP 3 (APP role): record which tenant the invite became (audit).
     with factory() as session:

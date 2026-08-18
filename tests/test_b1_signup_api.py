@@ -18,7 +18,7 @@ from usali.photo_store import InMemoryPhotoStore
 from usali.server import create_app
 
 
-def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None):
+def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None, admin_email: str = ""):
     """A serving app whose PUBLIC surfaces run as usali_app and whose
     provisioner seam runs as usali_provisioner. `spy` wraps the provisioner
     factory so a test can assert it is (or is not) opened."""
@@ -36,6 +36,7 @@ def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None):
         keycloak_admin=kc,
         photo_store=InMemoryPhotoStore(),
         notifier=notifier,
+        admin_notify_email=admin_email,
     )
     return TestClient(app)
 
@@ -294,3 +295,44 @@ def test_complete_creates_the_first_property(db_url, tmp_path, _founding_committ
         assert prop.name == "Owner Hotel" and prop.pms_source == "opera"
         assert prop.wage_jurisdiction == "US-CA"
         assert prop.timezone == "America/New_York"
+
+
+def test_complete_other_pms_records_interest_and_notifies_admin(
+    db_url, tmp_path, _founding_committed
+):
+    from usali.db import make_engine as me
+    from usali.db import make_session_factory as msf
+    from usali.models import Organization, PmsInterestRequest, Property
+    from sqlalchemy import select
+
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin(), admin_email="ops@example.test")
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+
+    done = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code,
+        "workspace_name": "Sky Group", "workspace_alias": "sky-group",
+        "property_name": "Sky Hotel", "pms_source": "other",
+        "pms_other_name": "SkyTouch",
+        "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "passw0rd",
+    })
+    assert done.status_code == 201, done.text
+    assert done.json()["pms_supported"] is False
+
+    su = msf(me(db_url))
+    with su() as s:
+        org = s.execute(select(Organization).where(
+            Organization.kc_org_alias == "sky-group")).scalar_one()
+        # No property was created for an unsupported PMS.
+        assert s.execute(select(Property).where(
+            Property.org_id == org.org_id)).scalar_one_or_none() is None
+        # A de-duped interest row was recorded (keyed by org_alias).
+        req = s.execute(select(PmsInterestRequest).where(
+            PmsInterestRequest.org_alias == "sky-group")).scalar_one()
+        assert req.raw_pms == "SkyTouch" and req.normalized_pms == "skytouch"
+    # The admin was emailed (new request).
+    assert any(e["to"] == "ops@example.test" and "SkyTouch" in e["body"]
+               for e in notifier.emails)
