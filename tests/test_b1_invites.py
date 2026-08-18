@@ -58,3 +58,43 @@ def test_revoke_makes_it_invalid(db_session):
     invites.revoke(db_session, invite)
     db_session.commit()
     assert invites.validate(db_session, raw, now=_NOW) is None
+
+
+def test_claim_wins_once_then_loses(db_session):
+    _, raw = invites.create_invite(db_session, "e@example.test")
+    db_session.commit()
+    assert invites.claim(db_session, raw) is True     # first wins
+    db_session.commit()
+    assert invites.claim(db_session, raw) is False    # already consumed -> loses
+    db_session.commit()
+
+
+def test_claim_loses_on_unknown_or_expired(db_session):
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)
+    _, raw = invites.create_invite(db_session, "f@example.test",
+                                   ttl=timedelta(hours=1), now=now)
+    db_session.commit()
+    assert invites.claim(db_session, "no-such-token", now=now) is False
+    assert invites.claim(db_session, raw, now=now + timedelta(hours=2)) is False  # expired
+
+
+def test_revert_claim_returns_it_to_pending(db_session):
+    _, raw = invites.create_invite(db_session, "g@example.test")
+    db_session.commit()
+    assert invites.claim(db_session, raw) is True
+    db_session.commit()
+    invites.revert_claim(db_session, raw)
+    db_session.commit()
+    assert invites.validate(db_session, raw) is not None  # pending again, retryable
+
+
+def test_mark_consumed_org_records_the_tenant(db_session):
+    ensure_default_org(db_session)
+    invite, raw = invites.create_invite(db_session, "h@example.test")
+    db_session.commit()
+    invites.claim(db_session, raw)
+    invites.mark_consumed_org(db_session, raw, org_id=1)
+    db_session.commit()
+    db_session.refresh(invite)
+    assert invite.status == "consumed" and invite.consumed_org_id == 1

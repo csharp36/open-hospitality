@@ -141,6 +141,40 @@ def test_complete_fails_closed_on_wrong_otp(db_url, tmp_path, _founding_committe
         assert invites.validate(s, raw) is not None
 
 
+def test_complete_reverts_claim_when_provisioning_fails(
+    db_url, tmp_path, _founding_committed
+):
+    """Provisioning boom AFTER the atomic claim must revert the claim so the
+    invite returns to pending and stays retryable — the documented retry
+    posture. TestClient re-raises the server exception, so it surfaces as a
+    raised KeycloakAdminError rather than a 500; the load-bearing assertion is
+    that the invite is pending afterward."""
+    from usali.keycloak_admin import InMemoryKeycloakAdmin, KeycloakAdminError
+
+    class _BoomKc(InMemoryKeycloakAdmin):
+        def create_user(self, *a, **k):
+            raise KeycloakAdminError("boom")
+
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier, kc=_BoomKc())
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+
+    with pytest.raises(KeycloakAdminError):
+        client.post("/api/signup/complete", json={
+            "token": raw, "otp": code,
+            "workspace_name": "Boom Group", "workspace_alias": "boom-group",
+            "property_name": "H", "pms_source": "opera",
+            "wage_jurisdiction": "US-CA", "cell": "+15550000000",
+            "password": "passw0rd",
+        })
+
+    factory = make_session_factory(make_engine(app_role_url(db_url)))
+    with factory() as s:
+        assert invites.validate(s, raw) is not None  # reverted to pending, retryable
+
+
 def test_the_endpoint_opens_the_provisioner_session_only_in_completion(
     db_url, tmp_path, _founding_committed
 ):

@@ -10,8 +10,10 @@ provision_tenant, so a provisioning failure leaves the invite pending)."""
 import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from usali.models import Invite
@@ -70,6 +72,54 @@ def consume(session: Session, invite: Invite, org_id: int) -> None:
     invite.status = "consumed"
     invite.consumed_org_id = org_id
     session.flush()
+
+
+def claim(session: Session, raw_token: str, *, now: datetime | None = None) -> bool:
+    """Atomically transition a pending, unexpired invite to ``consumed`` in a
+    single UPDATE. Returns True iff THIS call won the claim (exactly one row
+    moved pending->consumed). Concurrent callers serialize on the row under
+    READ COMMITTED, so at most one wins — this is the one-time-use gate for the
+    signup-completion path: provisioning happens only for the winner. Does NOT
+    set consumed_org_id (the org does not exist yet); record it with
+    ``consume``/``mark_consumed_org`` after provisioning. The caller commits."""
+    moment = now or _now()
+    result = cast("CursorResult[Any]", session.execute(
+        update(Invite)
+        .where(
+            Invite.token_hash == _hash_token(raw_token),
+            Invite.status == "pending",
+            Invite.expires_at > moment,
+        )
+        .values(status="consumed")
+    ))
+    return result.rowcount == 1
+
+
+def revert_claim(session: Session, raw_token: str) -> None:
+    """Undo a claim that did not result in a provisioned tenant (e.g. a
+    provisioning failure), returning the invite to ``pending`` so it can be
+    retried. Only reverts a still-org-less claim (consumed_org_id IS NULL), so
+    it never resurrects a fully-completed signup. The caller commits."""
+    session.execute(
+        update(Invite)
+        .where(
+            Invite.token_hash == _hash_token(raw_token),
+            Invite.status == "consumed",
+            Invite.consumed_org_id.is_(None),
+        )
+        .values(status="pending")
+    )
+
+
+def mark_consumed_org(session: Session, raw_token: str, org_id: int) -> None:
+    """Record which tenant a consumed invite became (audit). The claim already
+    set status=consumed; this fills consumed_org_id after provisioning. The
+    caller commits."""
+    session.execute(
+        update(Invite)
+        .where(Invite.token_hash == _hash_token(raw_token))
+        .values(consumed_org_id=org_id)
+    )
 
 
 def revoke(session: Session, invite: Invite) -> None:

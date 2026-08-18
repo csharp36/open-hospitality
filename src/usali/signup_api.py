@@ -87,10 +87,11 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str]:
     kc = request.app.state.keycloak_admin
     prov_factory = request.app.state.provisioner_session_factory
 
-    # STEP 1 (APP role): validate invite + verify OTP. Capture invite.email
-    # before leaving the session. The OTP attempt increment/consume commits
-    # regardless of verify outcome. A wrong/expired OTP must NOT consume the
-    # invite (pinned by test_complete_fails_closed_on_wrong_otp).
+    # STEP 1 (APP role): validate invite + verify OTP, then ATOMICALLY CLAIM the
+    # invite (pending->consumed) so concurrent /complete calls for the same
+    # invite serialize and only ONE wins. Capture invite.email before the
+    # session closes. A wrong/expired OTP returns 403 WITHOUT claiming (invite
+    # stays pending).
     with factory() as session:
         invite = invites.validate(session, payload.token)
         if invite is None:
@@ -99,9 +100,15 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str]:
         verified = otp.verify(
             session, purpose=_OTP_PURPOSE, target=payload.cell, code=payload.otp
         )
+        if not verified:
+            session.commit()  # persist the OTP attempt increment
+            raise HTTPException(status_code=403, detail="verification failed")
+        won = invites.claim(session, payload.token)
         session.commit()
-    if not verified:
-        raise HTTPException(status_code=403, detail="verification failed")
+    if not won:
+        # A concurrent caller already claimed this invite — one invite, one
+        # tenant. No oracle: same 404 as any other invite miss.
+        raise _refuse()
 
     # Alias FORMAT check runs only AFTER a valid invite + verified OTP, so a
     # malformed alias never preempts the 404/403 those checks owe the caller.
@@ -109,27 +116,29 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=422, detail="invalid workspace alias")
 
     # STEP 2 (PROVISIONER role — the ONLY place this session is opened): run
-    # exactly provision_tenant. The provisioner holds NO grant on `invite`, so
-    # it never touches it. provision_tenant is find-or-create idempotent.
-    with prov_factory() as session:
-        result = provision_tenant(
-            session, kc,
-            org_name=payload.workspace_name,
-            org_alias=payload.workspace_alias,
-            admin_username=payload.workspace_alias,
-            admin_email=invite_email,
-            admin_full_name=invite_email,
-            password=payload.password,
-        )
-        session.commit()
-
-    # STEP 3 (APP role): consume the invite, recording the tenant it became.
-    # Separate transaction from provision (acceptable: provision_tenant is
-    # idempotent, so a re-tried completion after a step-3 failure adopts the
-    # existing org and re-consumes).
-    with factory() as session:
-        fresh = invites.validate(session, payload.token)
-        if fresh is not None:
-            invites.consume(session, fresh, org_id=result.org_id)
+    # exactly provision_tenant. On failure, revert the claim so the invite is
+    # retryable, then re-raise. The provisioner holds NO grant on `invite`, so
+    # it never touches it; the revert uses the APP factory.
+    try:
+        with prov_factory() as session:
+            result = provision_tenant(
+                session, kc,
+                org_name=payload.workspace_name,
+                org_alias=payload.workspace_alias,
+                admin_username=payload.workspace_alias,
+                admin_email=invite_email,
+                admin_full_name=invite_email,
+                password=payload.password,
+            )
             session.commit()
+    except Exception:
+        with factory() as session:
+            invites.revert_claim(session, payload.token)
+            session.commit()
+        raise
+
+    # STEP 3 (APP role): record which tenant the invite became (audit).
+    with factory() as session:
+        invites.mark_consumed_org(session, payload.token, result.org_id)
+        session.commit()
     return {"org_alias": payload.workspace_alias}
