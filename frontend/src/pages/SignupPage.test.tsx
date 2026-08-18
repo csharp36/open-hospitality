@@ -12,7 +12,7 @@ vi.mock('../api/signup', async (importOriginal) => ({
   requestOtp: vi.fn(),
   completeSignup: vi.fn(),
 }))
-import { getInvite, requestOtp } from '../api/signup'
+import { getInvite, requestOtp, completeSignup } from '../api/signup'
 
 function renderSignup(token = 'tok-123') {
   const router = createAppRouter(
@@ -93,5 +93,93 @@ describe('SignupPage — cell step', () => {
     await userEvent.click(screen.getByRole('button', { name: /send code/i }))
     expect(await screen.findByText(/isn'?t valid or has expired/i)).toBeInTheDocument()
     expect(screen.queryByLabelText(/verification code/i)).not.toBeInTheDocument()
+  })
+})
+
+async function toDetails() {
+  vi.mocked(getInvite).mockResolvedValue('owner@hotel.test')
+  vi.mocked(requestOtp).mockResolvedValue(undefined)
+  renderSignup()
+  await userEvent.type(await screen.findByLabelText(/mobile/i), '+15550000000')
+  await userEvent.click(screen.getByRole('button', { name: /send code/i }))
+  await screen.findByLabelText(/verification code/i)
+}
+
+describe('SignupPage — details step', () => {
+  it('auto-slugs the workspace alias from the name (editable)', async () => {
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'Sunset Group!!')
+    expect((screen.getByLabelText(/workspace url/i) as HTMLInputElement).value).toBe('sunset-group')
+  })
+
+  it('reveals a PMS name field only when "Other" is chosen', async () => {
+    await toDetails()
+    expect(screen.queryByLabelText(/which pms/i)).not.toBeInTheDocument()
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'other')
+    expect(screen.getByLabelText(/which pms/i)).toBeInTheDocument()
+  })
+
+  it('submits the full payload and advances on 201', async () => {
+    vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'sunset-group', pms_supported: true })
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/verification code/i), '123456')
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'Sunset Group')
+    await userEvent.type(screen.getByLabelText(/property name/i), 'Sunset Inn')
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'opera')
+    await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+    await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(completeSignup).mock.calls[0]![0]
+    expect(payload).toMatchObject({
+      token: 'tok-123', otp: '123456', workspace_name: 'Sunset Group',
+      workspace_alias: 'sunset-group', property_name: 'Sunset Inn',
+      pms_source: 'opera', wage_jurisdiction: 'US-CA', cell: '+15550000000',
+      password: 'passw0rd1',
+    })
+    expect(payload.timezone).toBeTruthy() // browser-detected
+    expect(payload).not.toHaveProperty('pms_other_name')
+    expect(await screen.findByText(/ready/i)).toBeInTheDocument()
+  })
+
+  it('includes pms_other_name in the payload when PMS is "Other"', async () => {
+    vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'x-group', pms_supported: false })
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/verification code/i), '123456')
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'X Group')
+    await userEvent.type(screen.getByLabelText(/property name/i), 'X Inn')
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'other')
+    await userEvent.type(screen.getByLabelText(/which pms/i), 'SkyTouch')
+    await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+    await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(completeSignup).mock.calls[0]![0]
+    expect(payload).toMatchObject({ pms_source: 'other', pms_other_name: 'SkyTouch' })
+  })
+
+  it('stops auto-slugging the workspace URL once the user edits it', async () => {
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'Sunset')
+    const url = screen.getByLabelText(/workspace url/i) as HTMLInputElement
+    await userEvent.clear(url)
+    await userEvent.type(url, 'custom-alias')
+    await userEvent.type(screen.getByLabelText(/workspace name/i), ' Group')
+    expect(url.value).toBe('custom-alias')
+  })
+
+  it('shows an inline retry on a wrong OTP (403) and stays on the details step', async () => {
+    const { SignupError } = await import('../api/signup')
+    vi.mocked(completeSignup).mockRejectedValue(new SignupError(403))
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/verification code/i), '000000')
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'X Group')
+    await userEvent.type(screen.getByLabelText(/property name/i), 'X Inn')
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'opera')
+    await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+    await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    expect(await screen.findByText(/code is incorrect or expired/i)).toBeInTheDocument()
+    expect(screen.getByLabelText(/verification code/i)).toBeInTheDocument()
   })
 })
