@@ -12,8 +12,10 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from usali import invites
+from usali.mapping.property_registry import create_first_property
 from usali.otp import OtpService
 from usali.provisioning import provision_tenant
+from usali.tenancy import bind_org_context
 
 router = APIRouter(prefix="/api/signup")
 
@@ -86,7 +88,7 @@ def send_otp(payload: OtpRequest, request: Request) -> None:
 
 
 @router.post("/complete", status_code=201)
-def complete(payload: CompleteRequest, request: Request) -> dict[str, str]:
+def complete(payload: CompleteRequest, request: Request) -> dict[str, str | bool]:
     limiter = request.app.state.signup_rate_limiter
     if not limiter.allow(f"complete:{payload.token}"):
         raise HTTPException(status_code=429, detail="too many requests")
@@ -147,8 +149,25 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str]:
             session.commit()
         raise
 
+    # STEP 2b (APP role, bound to the NEW org): create the first property. The
+    # provisioner role cannot write `property` (D-B7), so this is a fresh
+    # app-role session bound to result.org_id. Supported PMS only; "other" is
+    # handled separately (Task 6).
+    pms_supported = payload.pms_source in ("opera", "autoclerk")
+    if pms_supported:
+        with factory() as session:
+            bind_org_context(session, result.org_id)
+            create_first_property(
+                session, result.org_id,
+                name=payload.property_name,
+                pms_source=payload.pms_source,
+                wage_jurisdiction=payload.wage_jurisdiction,
+                timezone=payload.timezone,
+            )
+            session.commit()
+
     # STEP 3 (APP role): record which tenant the invite became (audit).
     with factory() as session:
         invites.mark_consumed_org(session, payload.token, result.org_id)
         session.commit()
-    return {"org_alias": payload.workspace_alias}
+    return {"org_alias": payload.workspace_alias, "pms_supported": pms_supported}

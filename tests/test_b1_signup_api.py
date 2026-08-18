@@ -260,3 +260,37 @@ def test_complete_rejects_unknown_pms_source(db_url, tmp_path, _founding_committ
         "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "passw0rd",
     })
     assert r.status_code == 422
+
+
+def test_complete_creates_the_first_property(db_url, tmp_path, _founding_committed):
+    from usali.db import make_engine as me
+    from usali.db import make_session_factory as msf
+    from usali.models import Property, Organization
+    from sqlalchemy import select
+
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    kc = InMemoryKeycloakAdmin()
+    client = _signup_client(db_url, tmp_path, notifier=notifier, kc=kc)
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+
+    done = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code,
+        "workspace_name": "New Owner Group", "workspace_alias": "new-owner-group",
+        "property_name": "Owner Hotel", "pms_source": "opera",
+        "wage_jurisdiction": "US-CA", "timezone": "America/New_York",
+        "cell": "+15550000000", "password": "chosen-password",
+    })
+    assert done.status_code == 201, done.text
+    assert done.json()["pms_supported"] is True
+
+    su = msf(me(db_url))  # superuser session sees across orgs
+    with su() as s:
+        org = s.execute(select(Organization).where(
+            Organization.kc_org_alias == "new-owner-group")).scalar_one()
+        prop = s.execute(select(Property).where(
+            Property.org_id == org.org_id)).scalar_one()
+        assert prop.name == "Owner Hotel" and prop.pms_source == "opera"
+        assert prop.wage_jurisdiction == "US-CA"
+        assert prop.timezone == "America/New_York"
