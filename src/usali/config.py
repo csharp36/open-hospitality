@@ -161,6 +161,10 @@ class Settings(BaseSettings):
     signup_otp_max_per_window: int = 5
     signup_rate_window_seconds: int = 3600
 
+    # Where unsupported-PMS demand requests are routed (Track B/B1 Part-2).
+    # Empty in dev -> the ConsoleNotifier just logs it; a real address in prod.
+    admin_notify_email: str = ""
+
     @property
     def is_production(self) -> bool:
         # Fail closed: anything not explicitly a known non-prod env is treated as

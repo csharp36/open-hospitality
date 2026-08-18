@@ -230,3 +230,33 @@ def test_malformed_alias_is_422_and_does_not_burn_the_invite(
     factory = make_session_factory(make_engine(app_role_url(db_url)))
     with factory() as s:
         assert invites.validate(s, raw) is not None  # still pending, not burned
+
+
+def test_complete_rejects_other_pms_without_a_name(db_url, tmp_path, _founding_committed):
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin())
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+    r = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code, "workspace_name": "W", "workspace_alias": "w-x",
+        "property_name": "P", "pms_source": "other",  # no pms_other_name
+        "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "passw0rd",
+    })
+    assert r.status_code == 422
+
+
+def test_complete_rejects_unknown_pms_source(db_url, tmp_path, _founding_committed):
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin())
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+    r = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code, "workspace_name": "W", "workspace_alias": "w-y",
+        "property_name": "P", "pms_source": "sabre-x",  # not a member of the set
+        "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "passw0rd",
+    })
+    assert r.status_code == 422

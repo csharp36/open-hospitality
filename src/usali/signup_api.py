@@ -6,9 +6,10 @@ ONLY by /complete, which runs exactly provision_tenant. Invite validate/consume
 stay on the APP-role session so the provisioner holds NO grant on `invite`."""
 
 import re
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from usali import invites
 from usali.otp import OtpService
@@ -34,14 +35,22 @@ class CompleteRequest(BaseModel):
     # that precedence). The Field bound is only a coarse length ceiling.
     workspace_alias: str = Field(min_length=1, max_length=63)
     property_name: str = Field(min_length=1, max_length=200)
-    pms_source: str = Field(min_length=1, max_length=20)
+    pms_source: Literal["opera", "autoclerk", "other"]
+    pms_other_name: str | None = Field(default=None, min_length=1, max_length=60)
     wage_jurisdiction: str = Field(min_length=1, max_length=10)
+    timezone: str | None = Field(default=None, min_length=1, max_length=50)
     cell: str = Field(min_length=3, max_length=32)
     # An 8-char floor is the D-B5 baseline for the self-service credential. The
     # alias-format 422 is deferred to the handler (after the invite/OTP refusals)
     # so a bad alias can't preempt them, but a too-short password is a pure
     # field-shape refusal and stays here.
     password: str = Field(min_length=8, max_length=200)
+
+    @model_validator(mode="after")
+    def _other_requires_name(self) -> "CompleteRequest":
+        if self.pms_source == "other" and not self.pms_other_name:
+            raise ValueError("pms_other_name is required when pms_source is 'other'")
+        return self
 
 
 def _refuse() -> HTTPException:
