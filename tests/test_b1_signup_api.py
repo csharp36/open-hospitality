@@ -205,3 +205,28 @@ def test_the_endpoint_opens_the_provisioner_session_only_in_completion(
         "cell": "+15550000000", "password": "passw0rd",
     })
     assert opened == ["prov"]  # exactly one confined provisioning session
+
+
+def test_malformed_alias_is_422_and_does_not_burn_the_invite(
+    db_url, tmp_path, _founding_committed
+):
+    """A valid invite + verified OTP but a malformed workspace alias returns 422
+    WITHOUT claiming/consuming the one-time invite — the alias check runs before
+    the claim, so a client typo leaves the invite pending and retryable."""
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin())
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+    r = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code, "workspace_name": "Typo Group",
+        "workspace_alias": "Bad Alias!!",  # spaces + caps + punctuation
+        "property_name": "H", "pms_source": "opera",
+        "wage_jurisdiction": "US-CA", "cell": "+15550000000",
+        "password": "passw0rd",
+    })
+    assert r.status_code == 422
+    factory = make_session_factory(make_engine(app_role_url(db_url)))
+    with factory() as s:
+        assert invites.validate(s, raw) is not None  # still pending, not burned

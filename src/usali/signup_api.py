@@ -103,17 +103,18 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str]:
         if not verified:
             session.commit()  # persist the OTP attempt increment
             raise HTTPException(status_code=403, detail="verification failed")
+        # Alias FORMAT check runs AFTER invite+OTP (so it never preempts their
+        # 404/403) but BEFORE the claim, so a malformed alias (a client typo)
+        # returns 422 without burning the one-time invite. Not yet committed, so
+        # the raise rolls the transaction back and leaves the invite pending.
+        if not _ALIAS_RE.match(payload.workspace_alias):
+            raise HTTPException(status_code=422, detail="invalid workspace alias")
         won = invites.claim(session, payload.token)
         session.commit()
     if not won:
         # A concurrent caller already claimed this invite — one invite, one
         # tenant. No oracle: same 404 as any other invite miss.
         raise _refuse()
-
-    # Alias FORMAT check runs only AFTER a valid invite + verified OTP, so a
-    # malformed alias never preempts the 404/403 those checks owe the caller.
-    if not _ALIAS_RE.match(payload.workspace_alias):
-        raise HTTPException(status_code=422, detail="invalid workspace alias")
 
     # STEP 2 (PROVISIONER role — the ONLY place this session is opened): run
     # exactly provision_tenant. On failure, revert the claim so the invite is
