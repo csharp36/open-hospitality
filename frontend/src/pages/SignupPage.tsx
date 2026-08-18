@@ -14,6 +14,7 @@ import {
   SignupError,
   type CompletePayload,
 } from '../api/signup'
+import { login } from '../auth/oidc'
 import { controlLargeClass } from '../components/ui'
 
 // getRouteApi avoids the router.tsx <-> SignupPage.tsx circular value import.
@@ -70,8 +71,13 @@ function SignupFlow({ token, email }: { token: string; email: string }) {
   const [cell, setCell] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  // Stashed for Task 6 (real success screen + OIDC handoff).
-  const [result, setResult] = useState<{ alias: string; supported: boolean } | null>(null)
+  // Stashed for the success screen + OIDC handoff. pmsName is the user-facing
+  // PMS name (their typed "Other" value, else the selected label) for the
+  // unsupported copy.
+  const [result, setResult] = useState<{
+    supported: boolean
+    pmsName: string
+  } | null>(null)
 
   async function sendCode() {
     setBusy(true)
@@ -141,13 +147,44 @@ function SignupFlow({ token, email }: { token: string; email: string }) {
           }}
         />
       )}
-      {step === 'done' && (
-        // Minimal placeholder — Task 6 replaces this with the real success
-        // screen + OIDC handoff. `result` is stashed for that step.
-        <p className="mt-6 text-sm text-ink">
-          Your workspace {result?.alias} is ready.
+      {step === 'done' && result && (
+        <DoneStep email={email} supported={result.supported} pmsName={result.pmsName} />
+      )}
+    </div>
+  )
+}
+
+// Success screen. Confirms the workspace is ready, tells an unsupported-PMS
+// owner their PMS is logged for later, and hands off to the OIDC login with the
+// invited email as login_hint so Keycloak pre-fills it.
+function DoneStep({
+  email,
+  supported,
+  pmsName,
+}: {
+  email: string
+  supported: boolean
+  pmsName: string
+}) {
+  return (
+    <div role="status" className="mt-6 space-y-4 text-center">
+      {supported ? (
+        <p className="text-sm text-ink">
+          Your workspace is ready — your property is set up too.
+        </p>
+      ) : (
+        <p className="text-sm text-ink">
+          Your workspace is ready. We don&apos;t support {pmsName} yet — we&apos;ve
+          logged it and will email {email} when it&apos;s live.
         </p>
       )}
+      <button
+        type="button"
+        onClick={() => void login(email)}
+        className="w-full rounded-control bg-accent px-3 py-2 text-sm font-medium text-accent-contrast disabled:opacity-50"
+      >
+        Go to your workspace
+      </button>
     </div>
   )
 }
@@ -161,7 +198,7 @@ function DetailsStep({
 }: {
   token: string
   cell: string
-  onDone: (r: { alias: string; supported: boolean }) => void
+  onDone: (r: { supported: boolean; pmsName: string }) => void
 }) {
   const [otp, setOtp] = useState('')
   const [workspaceName, setWorkspaceName] = useState('')
@@ -196,7 +233,11 @@ function DetailsStep({
     }
     try {
       const res = await completeSignup(payload)
-      onDone({ alias: res.org_alias, supported: res.pms_supported })
+      const pmsName =
+        pms === 'other'
+          ? pmsOther
+          : (SUPPORTED_PMS.find((o) => o.value === pms)?.label ?? pms)
+      onDone({ supported: res.pms_supported, pmsName })
     } catch (e) {
       setError(
         e instanceof SignupError && e.status === 403

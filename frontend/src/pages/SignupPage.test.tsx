@@ -14,6 +14,9 @@ vi.mock('../api/signup', async (importOriginal) => ({
 }))
 import { getInvite, requestOtp, completeSignup } from '../api/signup'
 
+vi.mock('../auth/oidc', () => ({ login: vi.fn() }))
+import { login } from '../auth/oidc'
+
 function renderSignup(token = 'tok-123') {
   const router = createAppRouter(
     createMemoryHistory({ initialEntries: [`/signup?token=${token}`] }),
@@ -168,6 +171,25 @@ describe('SignupPage — details step', () => {
     expect(url.value).toBe('custom-alias')
   })
 
+  it('submits the manually-edited workspace alias in the payload', async () => {
+    vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'custom-alias', pms_supported: true })
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/verification code/i), '123456')
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'Sunset Group')
+    const url = screen.getByLabelText(/workspace url/i) as HTMLInputElement
+    await userEvent.clear(url)
+    await userEvent.type(url, 'custom-alias')
+    await userEvent.type(screen.getByLabelText(/property name/i), 'Sunset Inn')
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'opera')
+    await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+    await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(completeSignup).mock.calls[0]![0]).toMatchObject({
+      workspace_alias: 'custom-alias',
+    })
+  })
+
   it('shows an inline retry on a wrong OTP (403) and stays on the details step', async () => {
     const { SignupError } = await import('../api/signup')
     vi.mocked(completeSignup).mockRejectedValue(new SignupError(403))
@@ -181,5 +203,45 @@ describe('SignupPage — details step', () => {
     await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
     expect(await screen.findByText(/code is incorrect or expired/i)).toBeInTheDocument()
     expect(screen.getByLabelText(/verification code/i)).toBeInTheDocument()
+  })
+})
+
+async function completeTo(supported: boolean, otherName?: string) {
+  vi.mocked(getInvite).mockResolvedValue('owner@hotel.test')
+  vi.mocked(requestOtp).mockResolvedValue(undefined)
+  vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'sunset-group', pms_supported: supported })
+  renderSignup()
+  await userEvent.type(await screen.findByLabelText(/mobile/i), '+15550000000')
+  await userEvent.click(screen.getByRole('button', { name: /send code/i }))
+  await userEvent.type(await screen.findByLabelText(/verification code/i), '123456')
+  await userEvent.type(screen.getByLabelText(/workspace name/i), 'Sunset Group')
+  await userEvent.type(screen.getByLabelText(/property name/i), 'Sunset Inn')
+  if (otherName) {
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'other')
+    await userEvent.type(screen.getByLabelText(/which pms/i), otherName)
+  } else {
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'opera')
+  }
+  await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+  await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
+  await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+}
+
+describe('SignupPage — success + handoff', () => {
+  it('supported PMS: confirms the workspace is ready and hands off with login_hint', async () => {
+    await completeTo(true)
+    expect(await screen.findByText(/your workspace.*is ready/i)).toBeInTheDocument()
+    // Supported-only clause — distinguishes this branch from the unsupported copy.
+    expect(screen.getByText(/property is set up/i)).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: /go to your workspace/i }))
+    expect(login).toHaveBeenCalledWith('owner@hotel.test')
+  })
+
+  it('unsupported PMS: says the PMS will be enabled later', async () => {
+    await completeTo(false, 'SkyTouch')
+    expect(await screen.findByText(/don'?t support skytouch yet/i)).toBeInTheDocument()
+    // The handoff CTA fires on the unsupported branch too.
+    await userEvent.click(screen.getByRole('button', { name: /go to your workspace/i }))
+    expect(login).toHaveBeenCalledWith('owner@hotel.test')
   })
 })
