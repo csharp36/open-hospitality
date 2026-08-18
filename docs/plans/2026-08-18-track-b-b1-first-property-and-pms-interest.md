@@ -24,6 +24,19 @@ Implements the BACKEND half of
 (§5). The frontend SPA is a separate Part-2 plan, written after this lands.
 Branch: `feat/track-b-b1-signup-frontend` (cut off `feat/onboarding-track-b`).
 
+> **REVISION (2026-08-18, during execution):** `pms_interest_request` stores the
+> requesting workspace as **`org_alias` (String(63))**, NOT an `org_id` FK. The
+> full-suite L1 test (`test_l1_every_tenant_table_carries_org_id...`) enforces
+> the tenancy invariant that a table either has NO `org_id` or a NOT NULL,
+> RLS-scoped one — a non-tenant table with a nullable org_id fails it. So
+> **everywhere below that says `org_id` for `pms_interest_request` / `record_request`,
+> read `org_alias: str`**: the model/migration use `org_alias` + `UNIQUE(org_alias,
+> normalized_pms)`; `record_request(session, *, org_alias, email, raw_pms)`; Task 6
+> passes `org_alias=payload.workspace_alias`. The table joins `_L1_ORG_INDEPENDENT`
+> and the `test_tables_registered` set (like `invite`/`otp`). `create_first_property`
+> (Task 1) is unaffected — it writes the real `property.org_id` under an org-bound
+> session.
+
 ## Gates (run for EVERY task before committing)
 
 ```bash

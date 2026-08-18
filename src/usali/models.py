@@ -436,6 +436,34 @@ class OtpChallenge(Base):
     )
 
 
+class PmsInterestRequest(Base):
+    """A captured request for a PMS we don't support yet (Track B/B1 Part-2).
+    NOT OrgScoped — platform-level demand data an admin reads ACROSS orgs (same
+    rationale as Invite/OtpChallenge). The requesting workspace is stored as its
+    `org_alias` STRING, deliberately NOT an org_id: a non-tenant table with a
+    (nullable) org_id violates the tenancy invariant that org_id ⟺ a NOT NULL,
+    RLS-scoped tenant column. `normalized_pms` is the de-dupe key (lowercased,
+    non-alphanumerics stripped); UNIQUE(org_alias, normalized_pms) stops one
+    workspace spamming the same PMS while admins aggregate demand by
+    normalized_pms."""
+
+    __tablename__ = "pms_interest_request"
+    __table_args__ = (
+        UniqueConstraint("org_alias", "normalized_pms",
+                         name="uq_pms_interest_org_norm"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    org_alias: Mapped[str] = mapped_column(String(63))
+    email: Mapped[str] = mapped_column(String(320))
+    raw_pms: Mapped[str] = mapped_column(String(60))
+    normalized_pms: Mapped[str] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(String(12), server_default="new")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class OrgSettings(OrgScoped, Base):
     """Per-org integration config (Pillar L decision 5). One row per org,
     org-scoped by its OWN primary key — `org_id` is BOTH the PK and the FK
