@@ -67,14 +67,16 @@ jobs:
 
       # deploy_app.sh reads the environment-specific knobs from env with
       # defaults (REGION=us-west1, SQL_INSTANCE=usali-demo, AR_REPO=usali,
-      # AUTH_HOST=auth.mandati.ai). Only PROJECT is required; the rest are
-      # overridable via repo Variables if the demo ever moves.
+      # AUTH_HOST=auth.mandati.ai, APP_HOST=demo.mandati.ai — the latter is
+      # the public host the /signup invite links point at). Only PROJECT is
+      # required; the rest are overridable via repo Variables if the demo moves.
       - name: Deploy to the demo (build → migrate-seed job → serving revision)
         env:
           REGION: ${{ vars.GCP_REGION }}
           SQL_INSTANCE: ${{ vars.GCP_SQL_INSTANCE }}
           AR_REPO: ${{ vars.GCP_AR_REPO }}
           AUTH_HOST: ${{ vars.DEMO_AUTH_HOST }}
+          APP_HOST: ${{ vars.DEMO_APP_HOST }}
         run: |
           set -euo pipefail
           project="${{ vars.GCP_PROJECT }}"

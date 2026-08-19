@@ -31,8 +31,8 @@ DEPLOY_SA_NAME="usali-deploy"
 APP_SA="${APP_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 DEPLOY_SA="${DEPLOY_SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
 BUDGET_NAME="usali-demo-budget-25"
-SECRETS=(usali-db-password usali-app-db-password keycloak-db-password
-         keycloak-admin-password usali-hpke-private-key
+SECRETS=(usali-db-password usali-app-db-password usali-provisioner-db-password
+         keycloak-db-password keycloak-admin-password usali-hpke-private-key
          usali-field-encryption-key usali-admin-client-secret)
 
 say() { printf '\n== %s\n' "$*"; }
@@ -140,6 +140,11 @@ ensure_secret usali-db-password gen_password
 # as usali_app (no BYPASSRLS, not the table owner — FORCE RLS applies);
 # the migrate-seed job keeps the owner (usali).
 ensure_secret usali-app-db-password gen_password
+# D-B7: the least-privilege provisioner role's password. The SERVING
+# revision opens a provisioner session (signup /complete) to write ONLY
+# organization + role_assignment; a strong secret here replaces the
+# config dev default (usali_provisioner).
+ensure_secret usali-provisioner-db-password gen_password
 ensure_secret keycloak-db-password gen_password
 ensure_secret keycloak-admin-password gen_password
 ensure_secret usali-hpke-private-key gen_hpke_key
@@ -172,6 +177,17 @@ ensure_sql_user usali usali-db-password
 # migration strips those two (dev/cloud parity), holds the RLS grants,
 # and refuses to run until this role exists.
 ensure_sql_user usali_app usali-app-db-password
+# D-B7: the provisioner role. LOGIN only — the b1a0provrole migration
+# strips CREATEROLE/CREATEDB and grants a role-specific permissive RLS
+# policy on organization + role_assignment, and refuses to run until this
+# role exists (CREATE ROLE is cluster-level, outside the migration chain).
+# NOTE (existing environments): ensure_sql_user is describe-or-create and
+# will NOT rotate a role that already exists. A demo where the role was
+# created out-of-band with a placeholder password needs a one-time
+# `gcloud sql users set-password usali_provisioner` to the secret value
+# before the serving revision (which now mounts the secret) is deployed —
+# see docs/deploy/demo-continuous-deploy.md.
+ensure_sql_user usali_provisioner usali-provisioner-db-password
 ensure_sql_user keycloak keycloak-db-password
 
 say "Photos bucket (${BUCKET}: uniform access, public access PREVENTED)"
