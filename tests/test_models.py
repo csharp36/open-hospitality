@@ -29,6 +29,7 @@ def test_tables_registered():
         "organization",
         "invite",
         "otp_challenge",
+        "pms_interest_request",
         "org_settings",
         "property",
         "property_detection_alias",

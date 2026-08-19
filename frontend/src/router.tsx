@@ -27,6 +27,7 @@ import TimecardsPage from './pages/TimecardsPage'
 import PayRunsPage from './pages/PayRunsPage'
 import PayrollDashboardPage from './pages/PayrollDashboardPage'
 import SchedulePage from './pages/SchedulePage'
+import SignupPage from './pages/SignupPage'
 import { CallbackPage, RootShell } from './RootShell'
 
 const rootRoute = createRootRoute({ component: RootShell })
@@ -199,6 +200,22 @@ const scheduleRoute = createRoute({
   component: SchedulePage,
 })
 
+/**
+ * The signup invite token lives in the URL: `/signup?token=…`. It is the whole
+ * credential an invited owner arrives with (no session yet), so the page reads
+ * it from search and fails closed when it is absent or invalid.
+ */
+export type SignupSearch = { token?: string }
+
+const signupRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/signup',
+  component: SignupPage,
+  validateSearch: (search: Record<string, unknown>): SignupSearch => ({
+    token: typeof search.token === 'string' ? search.token : undefined,
+  }),
+})
+
 const routeTree = rootRoute.addChildren([
   callbackRoute,
   entryRoute,
@@ -217,6 +234,7 @@ const routeTree = rootRoute.addChildren([
   payrollRoute,
   payrollDashboardRoute,
   scheduleRoute,
+  signupRoute,
 ])
 
 export function createAppRouter(history?: RouterHistory) {

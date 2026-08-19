@@ -22,8 +22,10 @@ export const userManager = new UserManager({
   userStore: new WebStorageStateStore({ store: window.localStorage }),
 })
 
-export function login(): Promise<void> {
-  return userManager.signinRedirect()
+export function login(loginHint?: string): Promise<void> {
+  return loginHint
+    ? userManager.signinRedirect({ login_hint: loginHint })
+    : userManager.signinRedirect()
 }
 export function logout(): Promise<void> {
   return userManager.signoutRedirect()

@@ -1285,8 +1285,12 @@ def test_j3_downgrade_drops_the_column_with_data_present(populated_url):
 # it carries no org_id at all, by design, not because it is reference data.
 # `otp_challenge` joins for the same reason (D-B6, Task 4): OTP gates signup,
 # before any tenant exists.
+# `pms_interest_request` joins for the same reason (Part-2): platform-level PMS
+# demand read across orgs — it stores the requesting workspace as an `org_alias`
+# STRING, deliberately carrying no org_id at all.
 _L1_ORG_INDEPENDENT = {
     "usali_schedule", "usali_mapping_dictionary", "invite", "otp_challenge",
+    "pms_interest_request",
 }
 
 # Tables the pre-E1 population actually filled — the backfill must land

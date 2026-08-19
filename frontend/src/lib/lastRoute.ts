@@ -10,11 +10,13 @@ const HOME = '/dashboard'
 
 /**
  * Paths that must never become the restore target: '/' is the entry route
- * itself (restoring it would loop), and '/callback' is a one-shot OIDC code
- * exchange URL that is invalid the second time it is visited.
+ * itself (restoring it would loop), and '/callback' and '/signup' are one-shot
+ * URLs that are invalid the second time they are visited — '/callback' is the
+ * OIDC code exchange, and '/signup' carries an invite token consumed on first
+ * use, so restoring either dead-ends the newly-authenticated owner.
  */
 function restorable(href: string): boolean {
-  return href !== '/' && !href.startsWith('/callback')
+  return href !== '/' && !href.startsWith('/callback') && !href.startsWith('/signup')
 }
 
 /** Record the current location (pathname + search) as the restore target. */
