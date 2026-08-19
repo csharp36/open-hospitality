@@ -28,7 +28,9 @@ from usali.face_enrollment import router as face_enrollment_router
 from usali.face_match import FaceEmbedder
 from usali.kiosk import admin_router as kiosk_admin_router
 from usali.kiosk import kiosk_router
+from usali.notifications import Notifier, notifier_from_settings
 from usali.opener import Opener, SoftwareOpener
+from usali.otp import OtpService
 from usali.payroll_provider import PayrollProvider
 from usali.payroll_run_api import router as payroll_run_router
 from usali.photo_store import PhotoStore, photo_store_from_settings
@@ -37,7 +39,9 @@ from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
 from usali.qbo_client import QboClient
+from usali.ratelimit import RateLimiter
 from usali.schedule_api import router as schedule_router
+from usali.signup_api import router as signup_router
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory, SessionFactory
 from usali.timecard_api import router as timecard_router
 from usali.tripleseat_adapter import TripleseatAdapter
@@ -167,6 +171,20 @@ def _opener_from_settings(settings: Settings) -> Opener:
     return SoftwareOpener.from_settings(settings)
 
 
+def _provisioner_session_factory_from_settings(settings: Settings) -> SessionFactory:
+    """The least-privilege provisioner session factory (D-B7): an UNBOUND base
+    factory connected as usali_provisioner. Unbound on purpose — provision_tenant
+    refuses an org-instrumented session; the role's permissive RLS policy lets its
+    cross-org writes land without BYPASSRLS."""
+    from sqlalchemy.engine import make_url
+
+    prov_url = make_url(settings.db_url).set(
+        username=settings.provisioner_db_role,
+        password=settings.provisioner_db_password,
+    ).render_as_string(hide_password=False)
+    return make_session_factory(make_engine(prov_url))
+
+
 class _SpaStaticFiles(StaticFiles):
     """StaticFiles with an SPA history fallback.
 
@@ -210,6 +228,8 @@ def create_app(
     payroll_provider_factory: Callable[[], PayrollProvider] | None = None,
     face_engine_factory: Callable[[], FaceEmbedder] | None = None,
     crm_feed_factory: Callable[[str], CrmFeed | None] | None = None,
+    notifier: Notifier | None = None,
+    provisioner_session_factory: SessionFactory | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # Fail fast on a misconfigured provider NAME (cheap string check — the
@@ -268,6 +288,23 @@ def create_app(
     # settings.photo_store_dir. Selection lives in photo_store_from_settings —
     # the demo seed uses the same function (one predicate, one function).
     app.state.photo_store = photo_store or photo_store_from_settings(settings)
+    # Notification seam (B1/D-B6). Tests inject a capturing fake; the default is
+    # config-selected (console-only in B1). One instance for the app's lifetime.
+    app.state.notifier = notifier or notifier_from_settings(settings)
+    # Provisioner seam (D-B7): the confined signup-completion path's ONLY
+    # elevated credential. Tests inject a factory on the provisioner role; the
+    # default builds one from settings. Unbound — provision_tenant refuses an
+    # instrumented session.
+    app.state.provisioner_session_factory = (
+        provisioner_session_factory
+        or _provisioner_session_factory_from_settings(settings)
+    )
+    # OTP + rate-limit singletons for the public signup surface.
+    app.state.otp_service = OtpService()
+    app.state.signup_rate_limiter = RateLimiter(
+        max_events=settings.signup_otp_max_per_window,
+        window_seconds=settings.signup_rate_window_seconds,
+    )
     # Sealed-PII Opener seam (C1). Tests inject a SoftwareOpener; the default
     # builds one from settings, but env=prod refuses the in-process key entirely
     # (an HSM-backed Opener is a deploy-time drop-in, not shipped in C1).
@@ -327,6 +364,9 @@ def create_app(
     # Device-authenticated (X-Kiosk-Token), NOT an operator session — so this
     # router is deliberately included without require_operator.
     app.include_router(kiosk_router)
+    # Public, UNGATED signup surface (Track B/B1) — like kiosk_router, mounted
+    # without operator_gates. Its own invite + OTP checks are the gate.
+    app.include_router(signup_router)
 
     @app.post("/ingest", dependencies=operator_gates)
     async def ingest(request: Request, file: UploadFile) -> dict[str, object]:

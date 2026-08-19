@@ -27,6 +27,8 @@ def test_tables_registered():
         "usali_segment_fact",
         "usali_labor_fact",
         "organization",
+        "invite",
+        "otp_challenge",
         "org_settings",
         "property",
         "property_detection_alias",
