@@ -5,6 +5,9 @@ import pytest
 from sqlalchemy import func, select
 
 import usali.ingestion as ingestion
+from usali.adaptors.pack import split_pack
+from usali.adaptors.pdf import extract_pages
+from usali.detect import detect_report_signature
 from usali.ingestion import ProcessingError, process_pack
 from usali.mapping.loader import load_mappings
 from usali.mapping.property_registry import seed_properties
@@ -33,10 +36,13 @@ def test_skytouch_pack_end_to_end(db_session, tmp_path):
     # export's header shape; it used to be un-registered and skipped.
     assert ("SKYTOUCH", "hotel_statistics") in kinds
     assert all(r.property_id == "STDEMO" for r in results)
-    # The pack has 3 sections (A/R Aging + Hotel Journal + Hotel Statistics). Exactly 2
-    # results prove BOTH recognised sections ingested and the unknown A/R Aging filler
-    # was dropped, with nothing extra leaking.
+    # The pack has 4 sections (A/R Aging + Cancellation List + Hotel Journal +
+    # Hotel Statistics). Exactly 2 results prove BOTH recognised sections ingested and
+    # the two unrecognised ones were dropped, with nothing extra leaking.
     assert len(results) == 2
+    # Cancellation List prints a `Rate Plan` COLUMN and must not be attributed to the
+    # AutoClerk rate_plan report (issue #78).
+    assert ("AUTOCLERK", "rate_plan") not in kinds
     # The source file was filed to processed_dir, and every result's destination was
     # fixed up to point at the filed location (the dataclasses.replace after the move).
     assert (tmp_path / "done" / SAMPLE.name).exists()
@@ -111,3 +117,35 @@ def test_pack_section_failure_rolls_back_and_quarantines(
     assert failed == 1
     assert (tmp_path / "fail" / SAMPLE.name).exists()
     assert not (tmp_path / "done" / SAMPLE.name).exists()
+
+
+def test_pack_section_title_decides_the_signature_not_a_body_column():
+    """Regression for issue #78, at the level the bug actually lives.
+
+    `Cancellation List` is an ordinary SkyTouch section that happens to print a
+    `Rate Plan` column heading. Matching signatures against the 120-word header
+    window reaches that column and calls the section an AutoClerk rate_plan
+    report; matching against the section title does not. Both halves are asserted
+    so the test fails if either the false positive returns OR the title stops
+    being consulted.
+    """
+    sections = {s.title: s for s in split_pack(extract_pages(SAMPLE))}
+    cancellation = sections["Cancellation List"]
+
+    header_window = " ".join(w.text for w in cancellation.words[:120]).upper()
+    assert "RATE PLAN" in header_window, "fixture no longer reproduces the false positive"
+
+    assert detect_report_signature(cancellation.words) == ("AUTOCLERK", "rate_plan")
+    assert detect_report_signature(cancellation.words, cancellation.title) is None
+
+    # The sections that genuinely are what their titles say still resolve.
+    journal = sections["Hotel Journal Summary"]
+    stats = sections["Hotel Statistics"]
+    assert detect_report_signature(journal.words, journal.title) == (
+        "SKYTOUCH",
+        "hotel_journal",
+    )
+    assert detect_report_signature(stats.words, stats.title) == (
+        "SKYTOUCH",
+        "hotel_statistics",
+    )

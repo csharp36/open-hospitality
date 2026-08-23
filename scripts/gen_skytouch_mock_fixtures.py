@@ -203,7 +203,26 @@ def build_pack_pdf(path: Path) -> None:
         "Mock City Ledger             (75.00)",
     ])
 
-    # Page 2 -- Hotel Journal Summary. Rendered in LANDSCAPE with FIXED-WIDTH monospace
+    # Page 2 -- Cancellation List. Carries no financial data we ingest; it is here
+    # purely as a REGRESSION FIXTURE for issue #78. Four real SkyTouch reports print
+    # a `Rate Plan` COLUMN, and the 120-word header window matched that against the
+    # bare AutoClerk `RATE PLAN` signature, routing the section to the wrong
+    # adapter. The mock pack could not express that before -- no section carried a
+    # foreign column heading -- so the false positive was invisible until a real
+    # multi-section pack was run through detection. Column names mirror the real
+    # report's; every value is synthetic.
+    draw_page([
+        "Cancellation List",
+        "",
+        f"Property Name: {PROPERTY_NAME}",
+        f"Business Date: {BUSINESS_DATE} Property Code: {PROPERTY_CODE}",
+        "",
+        "GUEST NAME        ARRIVAL     NIGHTS  RATE PLAN   GTD  SOURCE",
+        "Test Guest One    06/22/2026       2  RACK        CC   Web",
+        "Sample Guest Two  06/23/2026       1  CORP        CC   Phone",
+    ])
+
+    # Page 3 -- Hotel Journal Summary. Rendered in LANDSCAPE with FIXED-WIDTH monospace
     # columns so the "Postings" column header lands directly above its money column (the
     # header-anchored parser derives the Postings x0 from that header). Courier is
     # monospace, so equal character widths == equal pixel columns; the wide right-hand
@@ -227,7 +246,7 @@ def build_pack_pdf(path: Path) -> None:
     c.setPageSize(land)
     draw_lines_at(land[1], journal_lines)
 
-    # Page 3 -- Hotel Statistics. LANDSCAPE monospace, like page 2: now that this
+    # Page 4 -- Hotel Statistics. LANDSCAPE monospace, like page 3: now that this
     # section IS ingested, its column geometry matters. Each header group is
     # placed so its LAST token starts at its value column ("Current PTD" ->
     # "PTD" over the PTD values), which is how a real export aligns them.
