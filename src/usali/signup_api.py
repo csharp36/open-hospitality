@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from usali import invites, pms_interest
+from usali.detect import supported_pms_sources
 from usali.mapping.property_registry import create_first_property
 from usali.otp import OtpService
 from usali.provisioning import provision_tenant
@@ -20,6 +21,12 @@ from usali.tenancy import bind_org_context
 router = APIRouter(prefix="/api/signup")
 
 _OTP_PURPOSE = "signup_cell"
+# Derived from the detection registry, never hand-listed: signup offers exactly
+# what this repo can detect and parse. Everything else routes to pms_interest.
+# `test_signup_literal_tracks_the_detection_registry` pins the Literal above to
+# this set, so registering an adapter without offering it (or the reverse) fails
+# a test rather than shipping silently.
+_SUPPORTED_PMS = supported_pms_sources()
 _ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
 
 
@@ -37,7 +44,12 @@ class CompleteRequest(BaseModel):
     # that precedence). The Field bound is only a coarse length ceiling.
     workspace_alias: str = Field(min_length=1, max_length=63)
     property_name: str = Field(min_length=1, max_length=200)
-    pms_source: Literal["opera", "autoclerk", "other"]
+    # SkyTouch was deliberately absent while its Hotel Statistics adapter was
+    # un-registered: advertising a source whose night-audit pack would quarantine
+    # on ingest is worse than not offering it. Both SkyTouch reports parse now,
+    # so it is offered. Keep this set and `_SUPPORTED_PMS` in step -- a member
+    # that is not supported silently takes the pms_interest branch instead.
+    pms_source: Literal["opera", "autoclerk", "skytouch", "other"]
     pms_other_name: str | None = Field(default=None, min_length=1, max_length=60)
     wage_jurisdiction: str = Field(min_length=1, max_length=10)
     timezone: str | None = Field(default=None, min_length=1, max_length=50)
@@ -153,7 +165,7 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str | bool
     # provisioner role cannot write `property` (D-B7), so this is a fresh
     # app-role session bound to result.org_id. Supported PMS only; "other" is
     # handled separately (Task 6).
-    pms_supported = payload.pms_source in ("opera", "autoclerk")
+    pms_supported = payload.pms_source in _SUPPORTED_PMS
     if pms_supported:
         with factory() as session:
             bind_org_context(session, result.org_id)

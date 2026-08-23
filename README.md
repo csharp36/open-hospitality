@@ -36,13 +36,12 @@ PMS picker should be generated from that same registry rather than a parallel li
 **SkyTouch** delivers a bundled **"Standard Audit Pack"** — one PDF auto-emailed after
 the nightly audit, containing many report sections. It is ingested via `process_pack`,
 which splits the pack into per-report sections and runs each through the same pipeline.
-The wired section is:
+The wired sections are:
 
 - **Hotel Journal Summary** — the transaction-code financial feed → USALI financial facts.
-- **Hotel Statistics** (occupancy / ADR / RevPAR) ingestion is **deferred** until a
-  real-sample calibration: its parser is anchored to the synthetic mock's column layout
-  and would fail on a real header, so the section is currently skipped while the Hotel
-  Journal (the supported financial feed) still ingests.
+- **Hotel Statistics** — occupancy / ADR / RevPAR. Its column anchors are located by
+  header *shape* rather than a fixed phrase, because a real export repeats the header
+  once per section in two variants that differ by a `Current` prefix.
 
 Other sections (housekeeping, in-house, vacant lists, and the like) are skipped. The
 SkyTouch transaction-code dictionary (`mapping/skytouch.yaml`) ships seeded
@@ -57,8 +56,9 @@ per-property curation.
 - **CLI / watcher auto-routing** of a dropped file to pack-vs-single is deferred;
   `process_pack` is a standalone entry point for now. (The property registry already
   records `pms_source`, the intended routing key.)
-- The parser is calibrated against a **synthetic mock pack**; a real, de-identified
-  sample is needed to confirm/adjust the column anchors.
+- Section identity comes from a report's **title row**, so a section whose top row is
+  not its title would go unrecognised (it is skipped, never mis-parsed). No such section
+  exists in the packs seen so far.
 
 **HotelKey** is planned but intentionally **on hold**, pending API access and a real
 "Final Audit Report" sample — we don't want to build against a single report shape that
