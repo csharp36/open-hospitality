@@ -245,3 +245,112 @@ describe('SignupPage — success + handoff', () => {
     expect(login).toHaveBeenCalledWith('owner@hotel.test')
   })
 })
+
+// Fill the details step with valid values, applying per-field overrides so a
+// single test can drive exactly ONE constraint invalid. Assumes toDetails() ran.
+// An empty-string override leaves that field blank (no typing). PMS is selected
+// by role — /pms/i is ambiguous once "Other" reveals the "Which PMS" field.
+async function fillValidDetails(
+  opts: {
+    otp?: string
+    workspaceName?: string
+    alias?: string
+    propertyName?: string
+    pms?: 'opera' | 'other'
+    pmsOther?: string
+    password?: string
+  } = {},
+) {
+  const {
+    otp = '123456',
+    workspaceName = 'Sunset Group',
+    propertyName = 'Sunset Inn',
+    pms = 'opera',
+    pmsOther,
+    password = 'passw0rd1',
+    alias,
+  } = opts
+  if (otp) await userEvent.type(screen.getByLabelText(/verification code/i), otp)
+  if (workspaceName)
+    await userEvent.type(screen.getByLabelText(/workspace name/i), workspaceName)
+  if (alias !== undefined) {
+    const url = screen.getByLabelText(/workspace url/i)
+    await userEvent.clear(url)
+    if (alias) await userEvent.type(url, alias)
+  }
+  if (propertyName)
+    await userEvent.type(screen.getByLabelText(/property name/i), propertyName)
+  await userEvent.selectOptions(screen.getByRole('combobox', { name: 'PMS' }), pms)
+  if (pms === 'other' && pmsOther)
+    await userEvent.type(screen.getByLabelText(/which pms/i), pmsOther)
+  await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+  if (password) await userEvent.type(screen.getByLabelText(/password/i), password)
+}
+
+describe('SignupPage — client-side validation blocks the submit', () => {
+  const submit = () =>
+    userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+
+  it('flags a password shorter than 8 characters and never calls the API', async () => {
+    await toDetails()
+    await fillValidDetails({ password: 'short1' })
+    await submit()
+    expect(await screen.findByText(/at least 8 characters/i)).toBeInTheDocument()
+    expect(completeSignup).not.toHaveBeenCalled()
+    // Stays on the details step (the code field is still present).
+    expect(screen.getByLabelText(/verification code/i)).toBeInTheDocument()
+  })
+
+  it('flags an empty verification code', async () => {
+    await toDetails()
+    await fillValidDetails({ otp: '' })
+    await submit()
+    expect(await screen.findByText(/enter the verification code/i)).toBeInTheDocument()
+    expect(completeSignup).not.toHaveBeenCalled()
+  })
+
+  it('flags an empty workspace name', async () => {
+    await toDetails()
+    await fillValidDetails({ workspaceName: '' })
+    await submit()
+    expect(await screen.findByText(/workspace name is required/i)).toBeInTheDocument()
+    expect(completeSignup).not.toHaveBeenCalled()
+  })
+
+  it('flags a workspace URL with invalid characters', async () => {
+    await toDetails()
+    await fillValidDetails({ alias: 'Bad_Alias' })
+    await submit()
+    expect(await screen.findByText(/workspace url can only use/i)).toBeInTheDocument()
+    expect(completeSignup).not.toHaveBeenCalled()
+  })
+
+  it('flags an empty property name', async () => {
+    await toDetails()
+    await fillValidDetails({ propertyName: '' })
+    await submit()
+    expect(await screen.findByText(/property name is required/i)).toBeInTheDocument()
+    expect(completeSignup).not.toHaveBeenCalled()
+  })
+
+  it('flags a blank PMS name when "Other" is chosen', async () => {
+    await toDetails()
+    await fillValidDetails({ pms: 'other' })
+    await submit()
+    expect(await screen.findByText(/enter the name of your pms/i)).toBeInTheDocument()
+    expect(completeSignup).not.toHaveBeenCalled()
+  })
+})
+
+describe('SignupPage — server 422 is not the opaque error', () => {
+  it('maps a 422 to a check-your-entries message, not "Something didn’t go through"', async () => {
+    const { SignupError } = await import('../api/signup')
+    vi.mocked(completeSignup).mockRejectedValue(new SignupError(422))
+    await toDetails()
+    await fillValidDetails() // all valid → clears client checks, reaches the server
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    expect(screen.getByText(/some details weren.t accepted/i)).toBeInTheDocument()
+    expect(screen.queryByText(/something didn.t go through/i)).not.toBeInTheDocument()
+  })
+})
