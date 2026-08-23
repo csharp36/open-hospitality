@@ -47,6 +47,7 @@ from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
+from usali.night_audit_api import router as night_audit_router
 from usali.qbo_client import QboClient
 from usali.schedule_api import router as schedule_router
 from usali.signup_api import router as signup_router
@@ -321,6 +322,9 @@ def create_app(
     app = FastAPI(
         title="Open Hospitality", docs_url=None, redoc_url=None, openapi_url=None
     )
+    # The night-audit upload runs the same inbox -> process pipeline as
+    # /ingest; the router reads the dirs from app.state.
+    app.state.ingest_dirs = (inbox, processed, failed)
     # Per-request sessions (tests inject a factory bound to their engine;
     # the default reads settings once here — the engine connects lazily,
     # so an unused default costs nothing). L3 (decision 3): the OPERATOR
@@ -412,6 +416,7 @@ def create_app(
     app.include_router(portal_router, dependencies=operator_gates)
     app.include_router(workforce_router, dependencies=operator_gates)
     app.include_router(property_config_router, dependencies=operator_gates)
+    app.include_router(night_audit_router, dependencies=operator_gates)
     # Face-template enrollment (F3). Route-level require_onboarder narrows to
     # org_admin/property_gm — require_operator is only the outer gate.
     app.include_router(face_enrollment_router, dependencies=operator_gates)
