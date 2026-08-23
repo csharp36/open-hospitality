@@ -48,3 +48,29 @@ jobs:
         run: npx oxlint
       - name: Tests
         run: npm test
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # The other jobs run against the RUNNER's toolchain: `backend` uses the
+      # runner's Python, `frontend` its own pinned Node. NOTHING here built the
+      # Dockerfile, so a base-image or system-dependency change passed CI green
+      # and was first exercised by scripts/cloud/deploy_app.sh — i.e. a deploy
+      # to the live demo was the smoke test. Two base-image bumps had to be
+      # verified by hand before merging to close that gap; this closes it for
+      # good.
+      - name: Build the deployment image
+        run: docker build -t usali-app:ci .
+      # Building proves dependencies RESOLVE on the base image. It does not
+      # prove the result runs — a wheel can install and still fail to import on
+      # a new interpreter. Exercise the runtime surface the serving revision
+      # and the Cloud Run jobs actually use.
+      - name: Smoke the built image
+        run: |
+          docker run --rm --entrypoint sh usali-app:ci -c '
+            set -e
+            python --version
+            python -c "import usali, usali.server, usali.cli, usali.kiosk, usali.signup_api"
+            usali --help >/dev/null
+          '
