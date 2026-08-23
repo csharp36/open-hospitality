@@ -26,7 +26,7 @@ ENV VITE_OIDC_AUTHORITY=${VITE_OIDC_AUTHORITY} \
 RUN npm run build
 
 ########## 2. python deps + face models ##########
-FROM python:3.13-slim AS python-deps
+FROM python:3.14-slim AS python-deps
 COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /usr/local/bin/
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
@@ -39,7 +39,7 @@ COPY scripts/fetch_face_models.py scripts/fetch_face_models.py
 RUN /app/.venv/bin/python scripts/fetch_face_models.py /app/models/face
 
 ########## 3. runtime ##########
-FROM python:3.13-slim
+FROM python:3.14-slim
 RUN useradd --system --create-home --uid 1001 usali
 WORKDIR /app
 ENV PATH="/app/.venv/bin:${PATH}" \
