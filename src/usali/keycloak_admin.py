@@ -91,6 +91,18 @@ class KeycloakAdmin(Protocol):
         the client swallows it), so provisioning can re-run safely."""
         ...
 
+    def set_password(self, subject_id: str, password: str) -> None:
+        """Set a PERMANENT password on an existing user, clear the
+        UPDATE_PASSWORD required action, and mark the email verified.
+
+        Used by the self-service signup path (Track B/B1): the owner chose
+        their own password at signup and proved their email by clicking the
+        invite link, so there is nothing left to reset on first login. The
+        operator-provisioned path never calls this — it passes password=None
+        to `provision_tenant` and keeps `create_user`'s UPDATE_PASSWORD /
+        reset-on-first-login posture."""
+        ...
+
 
 class KeycloakAdminClient:
     """Talks the slice of the Keycloak admin REST API onboarding needs."""
@@ -267,6 +279,23 @@ class KeycloakAdminClient:
         if r.status_code not in (201, 204):
             raise KeycloakAdminError(f"add member failed: {r.status_code}")
 
+    def set_password(self, subject_id: str, password: str) -> None:
+        headers = self._auth()
+        r = self._http.put(
+            f"/admin/realms/{self._realm}/users/{subject_id}/reset-password",
+            headers=headers,
+            json={"type": "password", "value": password, "temporary": False},
+        )
+        if r.status_code not in (204, 200):
+            raise KeycloakAdminError(f"set password failed: {r.status_code}")
+        r2 = self._http.put(
+            f"/admin/realms/{self._realm}/users/{subject_id}",
+            headers=headers,
+            json={"requiredActions": [], "emailVerified": True},
+        )
+        if r2.status_code not in (204, 200):
+            raise KeycloakAdminError(f"clear required actions failed: {r2.status_code}")
+
 
 class InMemoryKeycloakAdmin:
     """Offline fake for tests/dev. Records users in a dict; deterministic ids."""
@@ -297,6 +326,8 @@ class InMemoryKeycloakAdmin:
         self.users[subject_id] = {
             "username": username, "email": email, "full_name": full_name,
             "realm_roles": realm_roles, "enabled": True,
+            "required_actions": ["UPDATE_PASSWORD"], "password": None,
+            "email_verified": False,
         }
         return subject_id
 
@@ -341,3 +372,11 @@ class InMemoryKeycloakAdmin:
         members = org["members"]
         assert isinstance(members, set)
         members.add(subject_id)  # set semantics = idempotent, mirrors the 409 swallow
+
+    def set_password(self, subject_id: str, password: str) -> None:
+        user = self.users.get(subject_id)
+        if user is None:
+            raise KeycloakAdminError(f"set password failed: unknown user {subject_id!r}")
+        user["password"] = password
+        user["required_actions"] = []
+        user["email_verified"] = True

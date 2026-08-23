@@ -33,7 +33,7 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
-from tests.orgwall import ensure_app_role  # noqa: E402
+from tests.orgwall import ensure_app_role, ensure_provisioner_role  # noqa: E402
 from usali.auth import Principal  # noqa: E402
 from usali.db import make_session_factory  # noqa: E402
 from usali.models import (  # noqa: E402
@@ -88,6 +88,7 @@ def test_f1_l1_downgrade_refuses_a_multi_org_db_atomically():
         with PostgresContainer("postgres:16", driver="psycopg") as pg:
             url = pg.get_connection_url()
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             cfg = _cfg(url)
             command.upgrade(cfg, "head")
             engine = create_engine(url)

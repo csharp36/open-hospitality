@@ -25,7 +25,11 @@ from usali.mapping.property_registry import ensure_default_org, seed_properties 
 from usali.mapping.schedules import seed_schedules  # noqa: E402
 from usali.models import Base  # noqa: E402
 
-from tests.orgwall import app_role_url, ensure_app_role  # noqa: E402
+from tests.orgwall import (  # noqa: E402
+    app_role_url,
+    ensure_app_role,
+    ensure_provisioner_role,
+)
 from tests.orgworld import build_two_tenant_world  # noqa: E402
 
 SAMPLES = [
@@ -46,6 +50,7 @@ def db_url() -> Iterator[str]:
         # to run without it (CREATE ROLE is cluster-level — dev init and
         # bootstrap own it in real environments; here the fixture does).
         ensure_app_role(url)
+        ensure_provisioner_role(url)   # b1a0provrole refuses loudly without it
         os.environ["USALI_DB_URL"] = url
         cfg = Config("alembic.ini")
         cfg.set_main_option("script_location", "migrations")
