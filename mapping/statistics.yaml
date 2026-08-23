@@ -23,3 +23,8 @@
 - {source: AUTOCLERK, label: "Statistics - Departures", code: DEPARTURES}
 - {source: AUTOCLERK, label: "Statistics - In-House", code: IN_HOUSE_ROOMS}
 - {source: AUTOCLERK, label: "Statistics - No Shows", code: NO_SHOWS}
+- {source: SKYTOUCH, label: "Total Rooms", code: TOTAL_ROOMS}
+- {source: SKYTOUCH, label: "Total Occupied Rooms", code: ROOMS_OCCUPIED}
+- {source: SKYTOUCH, label: "ADR for Total Occupied Rooms", code: ADR}
+- {source: SKYTOUCH, label: "RevPar", code: REVPAR}
+- {source: SKYTOUCH, label: "Total Room Revenue", code: ROOM_REVENUE}
