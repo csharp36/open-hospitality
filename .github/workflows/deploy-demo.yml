@@ -49,7 +49,7 @@ jobs:
     steps:
       # Full history (not the default shallow clone): scripts/gen-release-notes.mjs
       # walks first-parent merges to rebuild the baked release notes for this build.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
