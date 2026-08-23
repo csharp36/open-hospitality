@@ -1415,6 +1415,59 @@ class FiscalCalendar(OrgScoped, Base):
     )
 
 
+class NightAuditState(OrgScoped, Base):
+    """The property's EXPLICIT current business date (night-audit flow). One row
+    per property (the FiscalCalendar precedent), created lazily on first read
+    and initialized from the property's own data (max fact date + 1). The ROLL
+    action advances it by one day, gated on the night's required reports having
+    landed, the ledger checks passing, and the property-local roll window
+    (00:00–05:00 for now — becomes onboarding config later)."""
+
+    __tablename__ = "night_audit_state"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_night_audit_state_property_org",
+        ),
+    )
+
+    property_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    current_business_date: Mapped[date] = mapped_column(Date)
+    last_rolled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class NightAuditAdjustment(OrgScoped, Base):
+    """One night-audit balance correction: the auditor edited a stored ledger
+    close directly (the roll-forward hole a re-upload cannot fix, since the PMS
+    export is what it is). The stage row keeps the PMS-said value; this row
+    keeps old -> new + the mandatory reason, so the edit stays attributable."""
+
+    __tablename__ = "night_audit_adjustment"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_night_audit_adjustment_property_org",
+        ),
+    )
+
+    adjustment_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    property_id: Mapped[str] = mapped_column(String(50))
+    business_date: Mapped[date] = mapped_column(Date)
+    ledger_code: Mapped[str] = mapped_column(String(50))
+    old_amount: Mapped[float] = mapped_column(Numeric(15, 4))
+    new_amount: Mapped[float] = mapped_column(Numeric(15, 4))
+    reason: Mapped[str] = mapped_column(String(300))
+    actor_subject: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class PropertyStatConfig(OrgScoped, Base):
     """Per-property performance-metric settings (issue #9). One row per property
     (the FiscalCalendar precedent). `adr_room_basis` decides whether comp and
