@@ -312,11 +312,13 @@ def test_complete_other_pms_records_interest_and_notifies_admin(
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
     code = notifier.smses[-1]["body"]
 
+    # HotelKey, not SkyTouch: SkyTouch is a SUPPORTED source now, so using it as
+    # the example of an unsupported one would assert nothing.
     done = client.post("/api/signup/complete", json={
         "token": raw, "otp": code,
         "workspace_name": "Sky Group", "workspace_alias": "sky-group",
         "property_name": "Sky Hotel", "pms_source": "other",
-        "pms_other_name": "SkyTouch",
+        "pms_other_name": "HotelKey",
         "wage_jurisdiction": "US-CA", "cell": "+15550000000", "password": "passw0rd",
     })
     assert done.status_code == 201, done.text
@@ -332,7 +334,72 @@ def test_complete_other_pms_records_interest_and_notifies_admin(
         # A de-duped interest row was recorded (keyed by org_alias).
         req = s.execute(select(PmsInterestRequest).where(
             PmsInterestRequest.org_alias == "sky-group")).scalar_one()
-        assert req.raw_pms == "SkyTouch" and req.normalized_pms == "skytouch"
+        assert req.raw_pms == "HotelKey" and req.normalized_pms == "hotelkey"
     # The admin was emailed (new request).
-    assert any(e["to"] == "ops@example.test" and "SkyTouch" in e["body"]
+    assert any(e["to"] == "ops@example.test" and "HotelKey" in e["body"]
                for e in notifier.emails)
+
+
+def test_complete_skytouch_pms_creates_a_property(db_url, tmp_path, _founding_committed):
+    """SkyTouch is a supported source: it must take the property-creating branch,
+    not the pms_interest one.
+
+    It was held out of the Literal on purpose while the Hotel Statistics adapter
+    was un-registered -- advertising a source whose pack would quarantine on
+    ingest is worse than not offering it. Both SkyTouch reports parse now
+    (mapping/skytouch.yaml maps them, and detection no longer misroutes sections
+    of a real pack), so the source is offered.
+    """
+    from usali.db import make_engine as me
+    from usali.db import make_session_factory as msf
+    from usali.models import Organization, PmsInterestRequest, Property
+    from sqlalchemy import select
+
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin(), admin_email="ops@example.test")
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = notifier.smses[-1]["body"]
+
+    done = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code,
+        "workspace_name": "Redstone Group", "workspace_alias": "redstone-group",
+        "property_name": "Redstone Test Inn", "pms_source": "skytouch",
+        "wage_jurisdiction": "US-CA", "timezone": "America/Denver",
+        "cell": "+15550000000", "password": "chosen-password",
+    })
+    assert done.status_code == 201, done.text
+    assert done.json()["pms_supported"] is True
+
+    su = msf(me(db_url))
+    with su() as s:
+        org = s.execute(select(Organization).where(
+            Organization.kc_org_alias == "redstone-group")).scalar_one()
+        prop = s.execute(select(Property).where(
+            Property.org_id == org.org_id)).scalar_one()
+        assert prop.name == "Redstone Test Inn" and prop.pms_source == "skytouch"
+        assert prop.timezone == "America/Denver"
+        # A supported source records NO interest row and emails no admin.
+        assert s.execute(select(PmsInterestRequest).where(
+            PmsInterestRequest.org_alias == "redstone-group")).scalar_one_or_none() is None
+    assert not notifier.emails
+
+
+def test_signup_literal_tracks_the_detection_registry():
+    """The `pms_source` Literal must offer exactly the detectable sources, plus
+    'other'.
+
+    This is the guard the SkyTouch gap needed. SkyTouch had a registered adapter
+    and a mapping/skytouch.yaml, but signup's hand-maintained Literal never
+    learned about it, so the front door quietly offered two sources while the
+    pipeline supported three -- and nothing failed. Registering (or
+    un-registering) an adapter now breaks this test instead.
+    """
+    from typing import get_args
+
+    from usali.detect import supported_pms_sources
+    from usali.signup_api import CompleteRequest
+
+    offered = set(get_args(CompleteRequest.model_fields["pms_source"].annotation))
+    assert offered == supported_pms_sources() | {"other"}

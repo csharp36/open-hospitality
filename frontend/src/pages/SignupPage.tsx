@@ -13,6 +13,7 @@ import {
   requestOtp,
   SignupError,
   type CompletePayload,
+  type PmsSource,
 } from '../api/signup'
 import { login } from '../auth/oidc'
 import { controlLargeClass } from '../components/ui'
@@ -20,11 +21,15 @@ import { controlLargeClass } from '../components/ui'
 // getRouteApi avoids the router.tsx <-> SignupPage.tsx circular value import.
 const routeApi = getRouteApi('/signup')
 
+// SkyTouch was held back while its Hotel Statistics adapter was un-registered:
+// offering a source whose night-audit pack would quarantine on ingest is worse
+// than not listing it. Both its reports parse now.
 const SUPPORTED_PMS = [
   { value: 'opera', label: 'Opera' },
   { value: 'autoclerk', label: 'AutoClerk' },
+  { value: 'skytouch', label: 'SkyTouch' },
   { value: 'other', label: 'Other — my PMS isn’t listed' },
-] as const
+] as const satisfies readonly { value: PmsSource; label: string }[]
 const JURISDICTIONS = ['US-CA', 'US-FL'] as const
 
 // Derive a URL-safe workspace alias from the workspace name: lowercase, collapse
@@ -53,7 +58,7 @@ function validateDetails(v: {
   workspaceName: string
   alias: string
   propertyName: string
-  pms: 'opera' | 'autoclerk' | 'other'
+  pms: PmsSource
   pmsOther: string
   password: string
 }): string | null {
@@ -233,7 +238,7 @@ function DetailsStep({
   const [alias, setAlias] = useState('')
   const [aliasEdited, setAliasEdited] = useState(false)
   const [propertyName, setPropertyName] = useState('')
-  const [pms, setPms] = useState<'opera' | 'autoclerk' | 'other'>('opera')
+  const [pms, setPms] = useState<PmsSource>('opera')
   const [pmsOther, setPmsOther] = useState('')
   const [jurisdiction, setJurisdiction] = useState<string>('US-CA')
   const [password, setPassword] = useState('')

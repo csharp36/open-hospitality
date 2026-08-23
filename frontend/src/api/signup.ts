@@ -14,13 +14,17 @@ export class SignupError extends Error {
   }
 }
 
+/** Mirrors the `pms_source` Literal on the backend's CompleteRequest. Sources
+ *  other than 'other' must have an ingestion pipeline behind them. */
+export type PmsSource = 'opera' | 'autoclerk' | 'skytouch' | 'other'
+
 export interface CompletePayload {
   token: string
   otp: string
   workspace_name: string
   workspace_alias: string
   property_name: string
-  pms_source: 'opera' | 'autoclerk' | 'other'
+  pms_source: PmsSource
   pms_other_name?: string
   wage_jurisdiction: string
   timezone?: string
