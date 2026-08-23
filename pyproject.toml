@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,23 +7,23 @@ name = "open-hospitality"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "sqlalchemy>=2.0",
-    "alembic>=1.13",
-    "psycopg[binary]>=3.1",
-    "pydantic>=2.6",
-    "pydantic-settings>=2.2",
-    "typer>=0.12",
-    "pdfplumber>=0.11",
-    "pyyaml>=6.0",
-    "watchdog>=4.0",
-    "fastapi>=0.111",
-    "uvicorn>=0.30",
-    "python-multipart>=0.0.9",
-    "httpx>=0.27",
-    "pyjwt[crypto]>=2.8",
+    "sqlalchemy>=2.0.52",
+    "alembic>=1.19.1",
+    "psycopg[binary]>=3.3.4",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "typer>=0.27.1",
+    "pdfplumber>=0.11.10",
+    "pyyaml>=6.0.3",
+    "watchdog>=6.0.0",
+    "fastapi>=0.141.1",
+    "uvicorn>=0.52.4",
+    "python-multipart>=0.0.32",
+    "httpx>=0.28.1",
+    "pyjwt[crypto]>=2.13.0",
     "cryptography>=50.0.0",
-    "pyhpke>=0.6",
-    "google-cloud-storage>=3.13.0",
+    "pyhpke>=0.6.5",
+    "google-cloud-storage>=3.13.1",
     "defusedxml>=0.7.1",
 ]
 
@@ -31,15 +31,15 @@ dependencies = [
 # Face matching (Pillar F): heavy, optional, dark-flagged. The core install
 # never pays for onnxruntime; the engine imports lazily and fails loudly.
 face = [
-    "onnxruntime>=1.18",
-    "numpy>=1.26",
-    "pillow>=10",
+    "onnxruntime>=1.29.0",
+    "numpy>=2.5.2",
+    "pillow>=12.3.0",
 ]
 dev = [
-    "pytest>=8.0",
-    "testcontainers[postgres]>=4.0",
-    "ruff>=0.4",
-    "mypy>=1.10",
+    "pytest>=9.1.1",
+    "testcontainers[postgres]>=4.15.0",
+    "ruff>=0.16.3",
+    "mypy>=2.3.1",
     "types-PyYAML",
     "types-defusedxml",
 ]
