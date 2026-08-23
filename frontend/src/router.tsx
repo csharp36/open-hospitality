@@ -22,6 +22,7 @@ import EmployeesPage from './pages/EmployeesPage'
 import KioskDevicesPage from './pages/KioskDevicesPage'
 import KioskPage from './pages/KioskPage'
 import PropertyConfigPage from './pages/PropertyConfigPage'
+import NightAuditPage from './pages/NightAuditPage'
 import PerformancePage from './pages/PerformancePage'
 import TimecardsPage from './pages/TimecardsPage'
 import PayRunsPage from './pages/PayRunsPage'
@@ -171,6 +172,12 @@ const kioskDevicesRoute = createRoute({
   component: KioskDevicesPage,
 })
 
+const nightAuditRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/night-audit',
+  component: NightAuditPage,
+})
+
 const propertyConfigRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/property-config',
@@ -237,6 +244,7 @@ const routeTree = rootRoute.addChildren([
   timecardsRoute,
   kioskDevicesRoute,
   propertyConfigRoute,
+  nightAuditRoute,
   performanceRoute,
   payrollRoute,
   payrollDashboardRoute,

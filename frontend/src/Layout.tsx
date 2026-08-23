@@ -107,7 +107,7 @@ const SECTIONS: NavSection[] = [
       { to: '/qbo', label: 'QBO', icon: SyncIcon },
       { to: '/coverage', label: 'Coverage', icon: CoverageIcon },
       { label: 'Daily Reports', icon: FileIcon, soon: true },
-      { label: 'Night Audit', icon: MoonIcon, soon: true },
+      { to: '/night-audit', label: 'Night Audit', icon: MoonIcon, show: isScheduler },
       { label: 'Financial Reports', icon: BankIcon, soon: true },
     ],
   },

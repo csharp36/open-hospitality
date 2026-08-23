@@ -972,6 +972,83 @@ export interface PropertyConfig {
   fiscal_calendar: FiscalConfig | null
 }
 
+export interface NightAuditSlot {
+  report_type: string
+  label: string
+  landed: boolean
+}
+
+export interface NightAuditCheckAdjust {
+  business_date: string
+  ledger_code: string
+  stored: string
+  suggested: string
+}
+
+export interface NightAuditCheck {
+  name: string
+  status: 'pass' | 'fail' | 'skipped'
+  detail: string
+  delta: string | null
+  adjust: NightAuditCheckAdjust | null
+}
+
+export interface NightAuditWindow {
+  open: boolean
+  hours: string
+  timezone: string
+  local_time: string
+}
+
+export interface NightAuditSegmentRow {
+  code: string
+  description: string
+  rooms: string
+  room_revenue: string
+}
+
+export interface NightAuditSegments {
+  status: 'pass' | 'fail' | 'skipped'
+  detail: string
+  rows: NightAuditSegmentRow[]
+  rooms_total: string | null
+  revenue_total: string | null
+  rooms_ref: string | null
+  revenue_ref: string | null
+  rooms_delta: string | null
+  revenue_delta: string | null
+  report_total_rooms: string | null
+  report_total_revenue: string | null
+}
+
+export interface NightAuditState {
+  property_id: string
+  pms_source: string
+  business_date: string
+  closed_through: string
+  upload_mode: 'reports' | 'pack'
+  pack_label: string | null
+  slots: NightAuditSlot[]
+  verification: NightAuditCheck[]
+  segments: NightAuditSegments | null
+  window: NightAuditWindow
+  all_reports_landed: boolean
+  can_roll: boolean
+  last_rolled_at: string | null
+}
+
+export interface NightAuditPackSection {
+  title: string
+  report_type: string | null
+  staged: number
+  mapped: number
+  skipped: boolean
+}
+
+export interface NightAuditUploadResult extends NightAuditState {
+  sections: NightAuditPackSection[]
+}
+
 export interface FiscalPeriod {
   key: string
   start: string
