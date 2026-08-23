@@ -60,3 +60,10 @@ punch-photos/
 # Face-matching ONNX models (F2): fetched sha256-pinned by
 # scripts/fetch_face_models.py, ~300MB of weights that never belong in git.
 models/
+
+# Per-developer Claude Code settings: permission grants and local tool config.
+# Personal to whoever is working in the tree, not team policy, and this is a
+# public repo -- an accidental `git add .` would publish one contributor's
+# allowlist as if it were project policy. `.claude/launch.json` IS tracked;
+# only the local overrides are ignored.
+.claude/settings.local.json
