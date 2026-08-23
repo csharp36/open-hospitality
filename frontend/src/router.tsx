@@ -27,6 +27,7 @@ import TimecardsPage from './pages/TimecardsPage'
 import PayRunsPage from './pages/PayRunsPage'
 import PayrollDashboardPage from './pages/PayrollDashboardPage'
 import SchedulePage from './pages/SchedulePage'
+import PreviewPage from './pages/PreviewPage'
 import SignupPage from './pages/SignupPage'
 import { CallbackPage, RootShell } from './RootShell'
 
@@ -200,6 +201,12 @@ const scheduleRoute = createRoute({
   component: SchedulePage,
 })
 
+const tryRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/try',
+  component: PreviewPage,
+})
+
 /**
  * The signup invite token lives in the URL: `/signup?token=…`. It is the whole
  * credential an invited owner arrives with (no session yet), so the page reads
@@ -234,6 +241,7 @@ const routeTree = rootRoute.addChildren([
   payrollRoute,
   payrollDashboardRoute,
   scheduleRoute,
+  tryRoute,
   signupRoute,
 ])
 

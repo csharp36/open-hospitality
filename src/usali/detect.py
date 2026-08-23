@@ -56,10 +56,21 @@ def load_registry(session: Session) -> list[dict[str, str]]:
     ]
 
 
+def detect_report_signature(words: list[Word]) -> tuple[str, str] | None:
+    """Match only the (pms_source, report_type) report signature from the header,
+    WITHOUT resolving a property. Returns None if no supported signature matches.
+
+    The anonymous preview uses this: it has no property registry, so it cannot
+    call detect() (which raises unless a registered property resolves).
+    """
+    header_text = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
+    return next((sig for phrase, sig in _REPORT_SIGNATURES if phrase in header_text), None)
+
+
 def detect(words: list[Word], registry: Sequence[Mapping[str, str]]) -> Detection:
     header_text = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
 
-    match = next((sig for phrase, sig in _REPORT_SIGNATURES if phrase in header_text), None)
+    match = detect_report_signature(words)
     if match is None:
         raise ValueError("could not detect report type from PDF header")
     pms_source, report_type = match

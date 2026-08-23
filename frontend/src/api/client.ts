@@ -69,6 +69,7 @@ import type {
   TemplateCreateBody,
   Timecard,
   TimecardSummary,
+  PreviewResponse,
 } from './types'
 import { getAccessToken, login } from '../auth/oidc'
 import { orgAliasesFromToken, resolveActiveOrg } from '../auth/activeOrg'
@@ -820,6 +821,26 @@ export async function postIngest(file: File): Promise<IngestResult> {
   }
   if (!res.ok) await raiseApiError(res)
   return res.json() as Promise<IngestResult>
+}
+
+// --- Public preview (anonymous front door, Part 1 backend) ------------------
+// POST /api/preview is the unauthenticated on-ramp: a visitor drops a PDF
+// before ever creating an account.
+
+/**
+ * PUBLIC preview — the anonymous front door. Posts the raw PDF body to the
+ * Part 1 endpoint. Deliberately does NOT attach the OIDC token (authHeaders)
+ * and does NOT redirect to login on a 4xx: an anonymous visitor must never be
+ * bounced to Keycloak. 413/415/429 surface as ApiError for a friendly message.
+ */
+export async function postPreview(file: File): Promise<PreviewResponse> {
+  const res = await fetch('/api/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/pdf' },
+    body: file, // a File is a Blob -> sent as the raw request body
+  })
+  if (!res.ok) await raiseApiError(res)
+  return (await res.json()) as PreviewResponse
 }
 
 // --- Face enrollment (Pillar F, operator session) -----------------------------

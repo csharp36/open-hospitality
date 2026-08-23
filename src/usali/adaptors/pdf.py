@@ -1,3 +1,4 @@
+import io
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,9 +12,11 @@ class Word:
     top: float
 
 
-def extract_words(pdf_path: str | Path) -> list[Word]:
+def extract_words_from_bytes(data: bytes, max_pages: int | None = None) -> list[Word]:
     words: list[Word] = []
-    with pdfplumber.open(pdf_path) as pdf:
+    with pdfplumber.open(io.BytesIO(data)) as pdf:
+        if max_pages is not None and len(pdf.pages) > max_pages:
+            raise ValueError("too many pages for preview")
         for i, page in enumerate(pdf.pages):
             page_offset = i * (page.height + 1000)
             for w in page.extract_words():
@@ -23,6 +26,14 @@ def extract_words(pdf_path: str | Path) -> list[Word]:
     return words
 
 
+# Path-based wrapper over the bytes reader above — same page-offset behaviour
+# the direct implementation had, so ingestion.py and cli.py are unaffected.
+def extract_words(pdf_path: str | Path) -> list[Word]:
+    return extract_words_from_bytes(Path(pdf_path).read_bytes())
+
+
+# Per-PAGE words, deliberately WITHOUT the offset flattening: split_pack needs
+# real page boundaries to cut a multi-section audit pack apart.
 def extract_pages(pdf_path: str | Path) -> list[list[Word]]:
     pages: list[list[Word]] = []
     with pdfplumber.open(pdf_path) as pdf:

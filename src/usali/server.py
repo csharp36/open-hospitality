@@ -1,14 +1,18 @@
 import threading
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import TypeVar
 
+import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 from starlette.types import Scope
 
+from usali.adaptors import autoclerk_transaction_summary, opera_trial_balance
+from usali.adaptors.pdf import extract_words_from_bytes
 from usali.adp_adapter import AdpAdapter
 from usali.auth import (
     TokenVerifier,
@@ -21,6 +25,7 @@ from usali.crm_api import router as crm_router
 from usali.crm_feed import CRM_PROVIDERS, CrmFeed
 from usali.db import make_engine, make_session_factory
 from usali.delphi_adapter import DelphiAdapter
+from usali.detect import detect_report_signature
 from usali.gusto_adapter import GustoAdapter
 from usali.ingestion import ProcessingError, process_file
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminClient
@@ -35,11 +40,14 @@ from usali.payroll_provider import PayrollProvider
 from usali.payroll_run_api import router as payroll_run_router
 from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
+from usali.preview import PreviewPayload, build_financial_preview
+from usali.ratelimit import RateLimiter
+from usali.recognition import recognize_vendor
+from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
 from usali.qbo_client import QboClient
-from usali.ratelimit import RateLimiter
 from usali.schedule_api import router as schedule_router
 from usali.signup_api import router as signup_router
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory, SessionFactory
@@ -56,6 +64,66 @@ _DEFAULT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 _MAX_PDF_BYTES = 25 * 1024 * 1024
 
 _T = TypeVar("_T")
+
+_MAX_PREVIEW_BYTES = 10 * 1024 * 1024
+_MAX_PREVIEW_PAGES = 80
+_PREVIEW_ADAPTERS = {
+    ("OPERA", "trial_balance"): (
+        opera_trial_balance.parse_trial_balance,
+        opera_trial_balance.extract_business_date,
+    ),
+    ("AUTOCLERK", "transaction_summary"): (
+        autoclerk_transaction_summary.parse_transaction_summary,
+        autoclerk_transaction_summary.extract_business_date,
+    ),
+}
+_UNREADABLE_HINTS = [
+    "Is it a night-audit / trial-balance report (not a single folio or a photo)?",
+    "Is it the original PDF your PMS emailed, not a scan?",
+]
+
+
+def _payload_json(p: PreviewPayload) -> dict[str, object]:
+    d = asdict(p)
+    d["business_date"] = p.business_date.isoformat()
+    # net_total is documented as never-a-balance-signal (D8) — it stays on the
+    # server-side PreviewPayload dataclass but is deliberately NOT serialized to
+    # the client, so nothing downstream can rebuild the dishonest signal from it.
+    d.pop("net_total", None)
+    for line in d["pnl_lines"]:
+        line["amount"] = str(line["amount"])
+    for kpi in d["kpis"]:
+        kpi["value"] = str(kpi["value"])
+    return d
+
+
+def _parse_preview_sync(data: bytes) -> dict[str, object]:
+    """Runs in a worker thread (anyio.to_thread) — all blocking CPU parse work
+    lives here so the async event loop is never held during a preview."""
+    try:
+        words = extract_words_from_bytes(data, max_pages=_MAX_PREVIEW_PAGES)
+    except Exception:
+        return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
+    sig = detect_report_signature(words)
+    if sig in _PREVIEW_ADAPTERS:
+        parse_fn, date_fn = _PREVIEW_ADAPTERS[sig]
+        try:
+            business_date = date_fn(words)
+            records = parse_fn(words, property_id="PREVIEW", business_date=business_date)
+        except Exception:
+            return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
+        payload = redact(
+            build_financial_preview(
+                source=sig[0], report_type=sig[1], business_date=business_date, records=records
+            )
+        )
+        return {"status": "ok", "payload": _payload_json(payload)}
+    if sig is not None:
+        return {"status": "unsupported", "vendor": sig[0].title(), "reason": "no_preview_for_report"}
+    vendor = recognize_vendor(words)
+    if vendor is not None:
+        return {"status": "unsupported", "vendor": vendor, "reason": "vendor_not_supported"}
+    return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
 
 
 def _qbo_client_from_settings() -> QboClient:
@@ -434,6 +502,71 @@ def create_app(
             "unmapped": r.unmapped,
             "skipped": r.skipped,
         }
+
+    app.state.preview_rate_limiter = RateLimiter(max_events=20, window_seconds=60.0)
+    # Hard ceiling across ALL callers, independent of the per-IP key: the global
+    # limiter is the cap that holds even if the per-IP host is spoofable.
+    app.state.preview_global_limiter = RateLimiter(max_events=300, window_seconds=60.0)
+
+    @app.post("/api/preview")  # PUBLIC: no operator_gates, no session, persists nothing
+    async def preview(request: Request) -> dict[str, object]:
+        # Per-IP limiter FIRST, then the global ceiling — so a single abusive IP
+        # is rejected on its own budget BEFORE it can consume a token from the
+        # shared 300/min global budget and 429 every other caller. Per-IP trusts
+        # request.client.host, which behind a proxy is only trustworthy if
+        # uvicorn's forwarded_allow_ips is restricted to the proxy CIDR (deploy-
+        # side follow-up, tracked); the global ceiling below is the hard cap that
+        # holds regardless of any per-IP spoofing.
+        limiter: RateLimiter = request.app.state.preview_rate_limiter
+        client_ip = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_ip):
+            raise HTTPException(
+                status_code=429,
+                detail="too many previews; try again shortly",
+                headers={"Retry-After": "60"},
+            )
+        # Hard ceiling across ALL callers — a single constant key caps total
+        # preview volume regardless of how many distinct (possibly spoofed)
+        # client IPs appear.
+        global_limiter: RateLimiter = request.app.state.preview_global_limiter
+        if not global_limiter.allow("global"):
+            raise HTTPException(
+                status_code=429,
+                detail="the preview is busy; try again shortly",
+                headers={"Retry-After": "60"},
+            )
+        if "application/pdf" not in request.headers.get("content-type", ""):
+            raise HTTPException(status_code=415, detail="please upload a PDF")
+        # Early Content-Length reject: refuse an over-large upload before we
+        # stream a single byte (the streamed cap below still enforces the true
+        # size, since Content-Length can lie or be absent under chunked).
+        cl = request.headers.get("content-length")
+        if cl and cl.isdigit() and int(cl) > _MAX_PREVIEW_BYTES:
+            raise HTTPException(status_code=413, detail="file too large")
+        # Stream the raw PDF body with a hard cap — never spool guest PII / card
+        # PANs to an on-disk SpooledTemporaryFile (which multipart would do).
+        # NOTE: this read is bounded in SIZE (10 MB) but not in TIME — a slow-
+        # trickle upload can hold the stream open. The pilot relies on the Cloud
+        # Run request timeout as the wall-clock bound; if we outgrow that, the
+        # alternative is an in-process concurrency semaphore around the
+        # stream+parse (deploy-side, no behavior change here).
+        buf = bytearray()
+        async for chunk in request.stream():
+            buf.extend(chunk)
+            if len(buf) > _MAX_PREVIEW_BYTES:
+                raise HTTPException(status_code=413, detail="file too large")
+        data = bytes(buf)
+        if data[:5] != b"%PDF-":
+            raise HTTPException(status_code=415, detail="please upload a PDF")
+        # The whole detect -> parse -> build -> redact phase is synchronous CPU
+        # work that would otherwise block the entire async event loop (stalling
+        # ALL routes) for the parse duration, anonymously triggerable. Run it in
+        # a worker thread so the loop stays free. Fail-closed to "unreadable" on
+        # an over-long PDF (page ceiling) lives inside the helper; a wall-clock/
+        # CPU timeout for a small-but-pathological (decompression-bomb) PDF is a
+        # documented residual for the pilot — bounded for now by the 10MB size
+        # cap + the page ceiling; tracked as a follow-up.
+        return await anyio.to_thread.run_sync(_parse_preview_sync, data)
 
     # Serve the built portal SPA when a frontend build exists. Mounted LAST so
     # the /api/* and /ingest routes above always win; without a build the app
