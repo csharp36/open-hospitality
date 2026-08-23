@@ -514,7 +514,12 @@ def serve_cmd(
     """Serve the local upload endpoint: curl -F file=@report.pdf http://127.0.0.1:8100/ingest"""
     import uvicorn
 
+    from usali.logging_setup import configure_logging
     from usali.server import create_app
+
+    # Emit the app's own usali.* logs (Cloud Run captures stdout). Without
+    # this the console notifier's OTP line is dropped below root's WARNING.
+    configure_logging(get_settings().log_level)
 
     uvicorn.run(
         create_app(), host=host, port=port,

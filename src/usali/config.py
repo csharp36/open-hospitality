@@ -147,6 +147,12 @@ class Settings(BaseSettings):
     # B1 (logs the link/code, no vendor); SMTP + one SMS vendor land in B2.
     notifier: str = "console"
 
+    # Serving-process log level (see logging_setup.configure_logging). INFO so
+    # the app's own usali.* records — including the console notifier's OTP line
+    # — reach stdout / Cloud Run; nothing configured logging before, so they
+    # were dropped below the root logger's WARNING default.
+    log_level: str = "INFO"
+
     # Public base URL the invite/signup links point at (usali invite CLI).
     public_base_url: str = "http://localhost:8100"
 

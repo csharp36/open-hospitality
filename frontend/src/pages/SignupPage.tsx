@@ -40,6 +40,34 @@ function slugify(name: string): string {
     .replace(/-+$/, '')
 }
 
+// The alias shape the backend enforces (signup_api.py `_ALIAS_RE`): lowercase
+// alphanumeric start, then 1–62 more of alphanumeric/hyphen (2–63 total).
+const ALIAS_RE = /^[a-z0-9][a-z0-9-]{1,62}$/
+
+// Mirror the backend CompleteRequest constraints so a bad field is caught inline
+// with a specific message, instead of bouncing off the server as an opaque 422
+// the page can only render as "Something didn't go through." Returns the first
+// problem in form (top-to-bottom) order, or null when every field is acceptable.
+function validateDetails(v: {
+  otp: string
+  workspaceName: string
+  alias: string
+  propertyName: string
+  pms: 'opera' | 'autoclerk' | 'other'
+  pmsOther: string
+  password: string
+}): string | null {
+  if (!v.otp.trim()) return 'Enter the verification code we sent you.'
+  if (!v.workspaceName.trim()) return 'Workspace name is required.'
+  if (!v.alias) return 'Workspace URL is required.'
+  if (!ALIAS_RE.test(v.alias))
+    return 'Workspace URL can only use lowercase letters, numbers, and hyphens (2–63 characters).'
+  if (!v.propertyName.trim()) return 'Property name is required.'
+  if (v.pms === 'other' && !v.pmsOther.trim()) return 'Enter the name of your PMS.'
+  if (v.password.length < 8) return 'Password must be at least 8 characters.'
+  return null
+}
+
 export default function SignupPage() {
   const { token } = routeApi.useSearch()
   const invite = useQuery({
@@ -216,8 +244,23 @@ function DetailsStep({
   const effectiveAlias = aliasEdited ? alias : slugify(workspaceName)
 
   async function submit() {
-    setBusy(true)
     setError(null)
+    // Catch what the backend would 422 on, BEFORE the request — a specific,
+    // fixable message beats the opaque catch-all, and we never burn a round-trip.
+    const clientError = validateDetails({
+      otp,
+      workspaceName,
+      alias: effectiveAlias,
+      propertyName,
+      pms,
+      pmsOther,
+      password,
+    })
+    if (clientError) {
+      setError(clientError)
+      return
+    }
+    setBusy(true)
     const payload: CompletePayload = {
       token,
       otp,
@@ -244,7 +287,9 @@ function DetailsStep({
           ? 'That code is incorrect or expired.'
           : e instanceof SignupError && e.status === 429
             ? 'Too many requests — please wait and try again.'
-            : 'Something didn’t go through. Check your details and try again.',
+            : e instanceof SignupError && e.status === 422
+              ? 'Some details weren’t accepted — please check your entries and try again.'
+              : 'Something didn’t go through. Check your details and try again.',
       )
     } finally {
       setBusy(false)
