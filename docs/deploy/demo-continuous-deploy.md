@@ -116,6 +116,7 @@ non-secret; use *Variables*, not *Secrets*):
 | `GCP_WIF_PROVIDER` | yes | the `projects/…/providers/github-oidc` string from step 2 |
 | `GCP_DEPLOY_SA` | yes | `$DEPLOY_SA_EMAIL` |
 | `DEMO_AUTH_HOST` | **yes, for this demo** | `auth.mandati.ai` — the public `deploy_app.sh` defaults `AUTH_HOST` to the `auth.example.com` placeholder (open-core scrubbing). This host is baked into the SPA's OIDC authority **and** the backend issuer, so if it is unset the deployed site points at the placeholder realm and login breaks. |
+| `DEMO_APP_HOST` | **yes, for self-service signup** | `demo.mandati.ai` — the public host the `/signup` invite links point at. The serving app derives its own absolute URLs from request headers, but the `usali invite` CLI (run by the `usali-invite` job) has no request context, so it needs this explicitly; unset → invite links point at the `app.example.com` placeholder. |
 | `GCP_REGION` | no | overrides the `us-west1` default |
 | `GCP_SQL_INSTANCE` | no | overrides the `usali-demo` default |
 | `GCP_AR_REPO` | no | overrides the `usali` default |
@@ -131,6 +132,50 @@ Actions → *Deploy demo* → *Run workflow* (from `main`). Watch the three phas
 in the log, then smoke it: `scripts/cloud/smoke_cloud.sh <project>`.
 
 ---
+
+## Minting self-service invites
+
+Invites stay CLI-only (D-B4 — no platform-admin HTTP surface). Each deploy
+defines an operator-triggered `usali-invite` Cloud Run job (repinned to the
+deploy's image). To invite an owner and get their signup link:
+
+```bash
+gcloud run jobs execute usali-invite \
+  --update-env-vars USALI_INVITE_EMAIL=owner@hotel.com --wait \
+  --region us-west1 --project <project>
+# then read the printed /signup?token= link from the execution logs:
+gcloud logging read \
+  'resource.type="cloud_run_job" resource.labels.job_name="usali-invite"' \
+  --project <project> --limit 10 --order desc --format 'value(textPayload)' \
+  | grep '/signup?token='
+```
+
+In the console notifier (B1), the SMS OTP the owner then requests is **logged,
+not sent** — read it from the serving service's logs to complete a facilitated
+demo (`… service_name="usali-app" AND textPayload:"SMS to="`). A real SMS
+vendor is the B2 follow-up.
+
+## Provisioner role (D-B7) — existing-environment migration
+
+`bootstrap.sh` now creates the least-privilege `usali_provisioner` role +
+`usali-provisioner-db-password` secret, and the serving revision mounts that
+secret (replacing config's dev default). `ensure_sql_user` is describe-or-create
+and will **not** rotate a role that already exists — so a demo where the role
+was created out-of-band (e.g. a hotfix with a placeholder password) needs a
+one-time rotation **before** the next deploy, or the serving app's provisioner
+session will fail to authenticate:
+
+```bash
+scripts/cloud/bootstrap.sh <project>   # creates the secret (role already exists → unchanged)
+gcloud sql users set-password usali_provisioner --instance usali-demo \
+  --password "$(gcloud secrets versions access latest \
+      --secret usali-provisioner-db-password --project <project>)" \
+  --project <project>
+# then: Actions → Deploy demo → Run workflow
+```
+
+A **fresh** environment needs none of this — `bootstrap.sh` creates the role
+straight from the generated secret.
 
 ## Notes
 

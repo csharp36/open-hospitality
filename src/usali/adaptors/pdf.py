@@ -26,8 +26,25 @@ def extract_words_from_bytes(data: bytes, max_pages: int | None = None) -> list[
     return words
 
 
+# Path-based wrapper over the bytes reader above — same page-offset behaviour
+# the direct implementation had, so ingestion.py and cli.py are unaffected.
 def extract_words(pdf_path: str | Path) -> list[Word]:
     return extract_words_from_bytes(Path(pdf_path).read_bytes())
+
+
+# Per-PAGE words, deliberately WITHOUT the offset flattening: split_pack needs
+# real page boundaries to cut a multi-section audit pack apart.
+def extract_pages(pdf_path: str | Path) -> list[list[Word]]:
+    pages: list[list[Word]] = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            pages.append(
+                [
+                    Word(text=w["text"], x0=float(w["x0"]), top=float(w["top"]))
+                    for w in page.extract_words()
+                ]
+            )
+    return pages
 
 
 def cluster_rows(words: list[Word], y_tol: float = 3.0) -> list[list[Word]]:

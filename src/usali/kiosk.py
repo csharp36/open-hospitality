@@ -90,6 +90,38 @@ def _device_session(request: Request) -> Session:
     return factory()
 
 
+def _property_business_date(session: Session, property_id: str) -> date:
+    """Today AT THE PROPERTY — never the server's date.
+
+    Every date-scoped question on this surface must be asked in the same frame
+    the punch is stamped in. A punch records `business_date_for(punched_at,
+    prop.timezone, cutoff_hour=...)`, so asking `in_effect_on` with
+    `date.today()` compares an assignment window against a DIFFERENT day.
+
+    `date.today()` is the container's local date, and nothing sets TZ, so it is
+    UTC. `Property.timezone` defaults to America/Los_Angeles. From 17:00 local
+    the server has already rolled to tomorrow while the punch is still stamped
+    today. `terminate_employee` sets `effective_to = last_day + 1` and `covers`
+    is half-open, so on an employee's FINAL day the evening shift is refused:
+    403 "employee out of kiosk scope", and the last shift goes unrecorded.
+
+    That is the same outcome `in_effect_on`'s docstring records having already
+    been fixed once — a terminated employee's final hours stranded, with no
+    error naming them. The predicate was right; the date handed to it was not.
+
+    ONE copy, like `covers` and `in_effect_on`, so a second call site cannot
+    reintroduce a second, subtly different notion of "today".
+    """
+    prop = session.get(Property, property_id)
+    if prop is None:  # pragma: no cover - the device's own property row
+        raise HTTPException(status_code=403, detail="unknown kiosk property")
+    return business_date_for(
+        datetime.now(UTC),
+        prop.timezone,
+        cutoff_hour=get_settings().punch_business_day_cutoff_hour,
+    )
+
+
 def mint_device_token() -> tuple[str, str]:
     """Return (plaintext_token, sha256_hash). The plaintext is shown ONCE."""
     token = secrets.token_urlsafe(32)
@@ -375,7 +407,8 @@ def kiosk_punch_state(
         if (
             employee is None
             or not employee_serves_property(
-                session, employee_id, device.property_id, date.today()
+                session, employee_id, device.property_id,
+                _property_business_date(session, device.property_id),
             )
             or employee.employment_status != "active"
         ):
@@ -398,7 +431,7 @@ def kiosk_roster(
         # Everyone ASSIGNED to this property — not just those whose paycheck it
         # issues. Someone working both hotels must appear on both rosters.
         serving = employee_ids_serving_property(
-            session, device.property_id, date.today()
+            session, device.property_id, _property_business_date(session, device.property_id)
         )
         employees = (
             session.execute(
@@ -460,7 +493,8 @@ def my_week(
         if (
             employee is None
             or not employee_serves_property(
-                session, employee_id, device.property_id, date.today()
+                session, employee_id, device.property_id,
+                _property_business_date(session, device.property_id),
             )
             or employee.employment_status != "active"
         ):
@@ -542,7 +576,8 @@ def punch(
         if (
             employee is None
             or not employee_serves_property(
-                session, employee_id, device.property_id, date.today()
+                session, employee_id, device.property_id,
+                _property_business_date(session, device.property_id),
             )
             or employee.employment_status != "active"
         ):
@@ -706,7 +741,7 @@ def kiosk_identify(
 
         try:
             serving = employee_ids_serving_property(
-                session, device.property_id, date.today()
+                session, device.property_id, _property_business_date(session, device.property_id)
             )
             rows = (
                 session.execute(
@@ -781,7 +816,7 @@ def kiosk_search(
     )
     with _device_session(request) as session:
         serving = employee_ids_serving_property(
-            session, device.property_id, date.today()
+            session, device.property_id, _property_business_date(session, device.property_id)
         )
         if not serving:
             return []

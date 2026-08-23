@@ -19,13 +19,19 @@ REGION="${REGION:-us-west1}"
 SQL_INSTANCE="${SQL_INSTANCE:-usali-demo}"
 AR_REPO="${AR_REPO:-usali}"
 AUTH_HOST="${AUTH_HOST:-auth.example.com}"
+# The public app host — what /signup invite links point at (D-B4). The
+# serving app builds its own absolute URLs from request headers
+# (--proxy-headers), but the invite CLI has no request context, so the
+# invite job needs this explicitly. Placeholder here; the deploy workflow
+# supplies the real host (DEMO_APP_HOST=demo.mandati.ai).
+APP_HOST="${APP_HOST:-app.example.com}"
 CLOUDSQL="${PROJECT}:${REGION}:${SQL_INSTANCE}"
 BUCKET="${PROJECT}-usali-demo-photos"
 APP_SA="usali-app@${PROJECT}.iam.gserviceaccount.com"
 SHA="$(git rev-parse --short HEAD)"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/usali-app:${SHA}"
 
-echo "== [1/4] image build + push"
+echo "== [1/5] image build + push"
 # Refresh the baked release notes from the FULL history of the ref being
 # deployed (the deploy workflow checks out with fetch-depth 0). A snapshot is
 # committed for local/CI builds without git; this keeps the deployed bundle's
@@ -72,8 +78,12 @@ SHARED_SECRETS+=",USALI_KC_ADMIN_CLIENT_SECRET=usali-admin-client-secret:latest"
 # USALI_DB_USER (owner default) + USALI_DB_PASSWORD.
 JOB_SECRETS="USALI_DB_PASSWORD=usali-db-password:latest,${SHARED_SECRETS}"
 APP_SECRETS="USALI_DB_PASSWORD=usali-app-db-password:latest,${SHARED_SECRETS}"
+# D-B7: the SERVING revision (not the job) opens the provisioner session
+# for signup /complete, so it alone mounts the provisioner password — a
+# strong secret in place of config.py's dev default.
+APP_SECRETS+=",USALI_PROVISIONER_DB_PASSWORD=usali-provisioner-db-password:latest"
 
-echo "== [2/4] migrate-seed job (migrate BEFORE deploy)"
+echo "== [2/5] migrate-seed job (migrate BEFORE deploy)"
 gcloud run jobs deploy usali-migrate-seed \
   --image "${IMAGE}" \
   --command "/app/scripts/cloud/job.sh" \
@@ -84,11 +94,11 @@ gcloud run jobs deploy usali-migrate-seed \
   --memory 2Gi --cpu 2 --task-timeout 25m --max-retries 0 \
   --project "${PROJECT}" --region "${REGION}"
 
-echo "== [3/4] executing the job"
+echo "== [3/5] executing the job"
 gcloud run jobs execute usali-migrate-seed --wait \
   --project "${PROJECT}" --region "${REGION}"
 
-echo "== [4/4] the serving revision"
+echo "== [4/5] the serving revision"
 gcloud run deploy usali-app \
   --image "${IMAGE}" \
   --allow-unauthenticated \
@@ -101,8 +111,27 @@ gcloud run deploy usali-app \
   --port 8080 \
   --project "${PROJECT}" --region "${REGION}"
 
+echo "== [5/5] invite job (operator-triggered; DEFINED here, not executed)"
+# Invite origination stays the `usali invite` CLI (D-B4 — no platform-admin
+# HTTP surface), wrapped in a job so it reaches Cloud SQL. Repinned to this
+# deploy's ${IMAGE} so links never come from a stale build. The owner role
+# (job default) can insert the invite row; USALI_PUBLIC_BASE_URL sets the
+# link host; USALI_INVITE_EMAIL is a placeholder overridden per execution:
+#   gcloud run jobs execute usali-invite \
+#     --update-env-vars USALI_INVITE_EMAIL=owner@hotel.com --wait ...
+gcloud run jobs deploy usali-invite \
+  --image "${IMAGE}" \
+  --command "/app/scripts/cloud/invite_job.sh" \
+  --set-cloudsql-instances "${CLOUDSQL}" \
+  --set-env-vars "${COMMON_ENV},USALI_PUBLIC_BASE_URL=https://${APP_HOST},USALI_INVITE_EMAIL=placeholder@example.com" \
+  --set-secrets "${JOB_SECRETS}" \
+  --service-account "${APP_SA}" \
+  --max-retries 0 \
+  --project "${PROJECT}" --region "${REGION}"
+
 URL="$(gcloud run services describe usali-app --project "${PROJECT}" \
   --region "${REGION}" --format='value(status.url)')"
 echo
 echo "Deployed: ${URL}"
+echo "Invite:   gcloud run jobs execute usali-invite --update-env-vars USALI_INVITE_EMAIL=<owner-email> --wait --project ${PROJECT} --region ${REGION}"
 echo "Smoke:    scripts/cloud/smoke_cloud.sh ${PROJECT}"
