@@ -32,13 +32,30 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v7
+      # ONE source of truth for the Node major: the Dockerfile's frontend build
+      # stage, which is what actually builds the shipped bundle. Pinning a
+      # literal here let the two drift — the image moved to node 26 while this
+      # job stayed on 22, so tests ran on a runtime production no longer used.
+      # Dependabot already bumps the Dockerfile, so CI now follows it for free.
+      #
+      # There is a FLOOR, not just a preference: Node 20's WebCrypto
+      # SubtleCrypto.importKey rejects the typed-array key material piiSeal.ts
+      # passes (cross-realm ArrayBuffer check), failing the HPKE seal tests and
+      # the EmployeesPage tests that render sealed values. Any bump must stay
+      # above that.
+      - name: Node major (derived from the Dockerfile)
+        id: node
+        working-directory: .
+        run: |
+          set -euo pipefail
+          version="$(grep -oE '^FROM node:[0-9]+' Dockerfile | head -1 | cut -d: -f2)"
+          [ -n "$version" ] || { echo "::error::no 'FROM node:<major>' in Dockerfile"; exit 1; }
+          [ "$version" -ge 22 ] || { echo "::error::Node $version is below the WebCrypto floor (22)"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "using Node $version (from Dockerfile)"
       - uses: actions/setup-node@v4
         with:
-          # Match the dev/test runtime. Node 20's WebCrypto SubtleCrypto.importKey
-          # rejects the typed-array key material piiSeal.ts passes (cross-realm
-          # ArrayBuffer check), failing the HPKE seal tests and the EmployeesPage
-          # tests that render sealed values. Node 22 (current LTS) accepts it.
-          node-version: '22'
+          node-version: ${{ steps.node.outputs.version }}
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
