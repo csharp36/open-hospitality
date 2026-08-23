@@ -1,5 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
-import { userManager, getAccessToken } from './oidc'
+import { login, userManager, getAccessToken } from './oidc'
+
+describe('login()', () => {
+  it('forwards an email as login_hint so the OIDC screen is prefilled', async () => {
+    const spy = vi.spyOn(userManager, 'signinRedirect').mockResolvedValue(undefined as never)
+    await login('owner@hotel.test')
+    expect(spy).toHaveBeenCalledWith({ login_hint: 'owner@hotel.test' })
+  })
+
+  it('with no hint calls signinRedirect with no args (unchanged behavior)', async () => {
+    const spy = vi.spyOn(userManager, 'signinRedirect').mockResolvedValue(undefined as never)
+    await login()
+    expect(spy).toHaveBeenCalledWith()
+  })
+})
 
 describe('getAccessToken', () => {
   it('returns the token for a live user', async () => {

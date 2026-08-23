@@ -51,3 +51,32 @@ def app_role_url(superuser_url: str) -> str:
     return make_url(superuser_url).set(
         username=APP_DB_ROLE, password=APP_ROLE_PASSWORD
     ).render_as_string(hide_password=False)
+
+
+PROVISIONER_ROLE = "usali_provisioner"
+PROVISIONER_PASSWORD = "usali-provisioner-test"
+
+
+def ensure_provisioner_role(url: str) -> None:
+    """Create the least-privilege provisioner role (idempotently) before
+    migrating. LOGIN only — no CREATEROLE/CREATEDB/BYPASSRLS."""
+    engine = create_engine(url)
+    try:
+        with engine.begin() as conn:
+            exists = conn.execute(
+                text("SELECT 1 FROM pg_roles WHERE rolname = :role"),
+                {"role": PROVISIONER_ROLE},
+            ).scalar()
+            if exists is None:
+                conn.execute(text(
+                    f"CREATE ROLE {PROVISIONER_ROLE} LOGIN "
+                    f"PASSWORD '{PROVISIONER_PASSWORD}'"
+                ))
+    finally:
+        engine.dispose()
+
+
+def provisioner_role_url(superuser_url: str) -> str:
+    return make_url(superuser_url).set(
+        username=PROVISIONER_ROLE, password=PROVISIONER_PASSWORD
+    ).render_as_string(hide_password=False)

@@ -102,9 +102,12 @@ def _seed(db_url: str, work_dir: Path, opener: "SoftwareOpener") -> None:
 
     # L2: the l2a0rlswall migration refuses without the app role (CREATE
     # ROLE is cluster-level) — create it first, as every environment does.
-    from tests.orgwall import ensure_app_role
+    # b1a0provrole (Track B/B1) refuses the same way without the provisioner
+    # role.
+    from tests.orgwall import ensure_app_role, ensure_provisioner_role
 
     ensure_app_role(db_url)
+    ensure_provisioner_role(db_url)
     cfg = Config(str(REPO_ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(REPO_ROOT / "migrations"))
     cfg.set_main_option("sqlalchemy.url", db_url)

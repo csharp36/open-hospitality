@@ -1,0 +1,416 @@
+// Public signup page (Track B/B1). Reached by an invited owner with no session,
+// so it renders unguarded (RootShell bare Outlet). It reads ?token= from the
+// URL, loads the invite on mount, and FAILS CLOSED: a missing or invalid token
+// shows a single generic refusal with NO form — never a signup surface.
+
+import { useQuery } from '@tanstack/react-query'
+import { getRouteApi } from '@tanstack/react-router'
+import { useState } from 'react'
+
+import {
+  completeSignup,
+  getInvite,
+  requestOtp,
+  SignupError,
+  type CompletePayload,
+} from '../api/signup'
+import { login } from '../auth/oidc'
+import { controlLargeClass } from '../components/ui'
+
+// getRouteApi avoids the router.tsx <-> SignupPage.tsx circular value import.
+const routeApi = getRouteApi('/signup')
+
+const SUPPORTED_PMS = [
+  { value: 'opera', label: 'Opera' },
+  { value: 'autoclerk', label: 'AutoClerk' },
+  { value: 'other', label: 'Other — my PMS isn’t listed' },
+] as const
+const JURISDICTIONS = ['US-CA', 'US-FL'] as const
+
+// Derive a URL-safe workspace alias from the workspace name: lowercase, collapse
+// non-alphanumerics to single hyphens, trim edge hyphens, cap at 63 chars. The
+// trailing-hyphen trim runs AFTER the length cap so a hyphen that lands at char
+// 63 isn't reintroduced.
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+/, '')
+    .slice(0, 63)
+    .replace(/-+$/, '')
+}
+
+// The alias shape the backend enforces (signup_api.py `_ALIAS_RE`): lowercase
+// alphanumeric start, then 1–62 more of alphanumeric/hyphen (2–63 total).
+const ALIAS_RE = /^[a-z0-9][a-z0-9-]{1,62}$/
+
+// Mirror the backend CompleteRequest constraints so a bad field is caught inline
+// with a specific message, instead of bouncing off the server as an opaque 422
+// the page can only render as "Something didn't go through." Returns the first
+// problem in form (top-to-bottom) order, or null when every field is acceptable.
+function validateDetails(v: {
+  otp: string
+  workspaceName: string
+  alias: string
+  propertyName: string
+  pms: 'opera' | 'autoclerk' | 'other'
+  pmsOther: string
+  password: string
+}): string | null {
+  if (!v.otp.trim()) return 'Enter the verification code we sent you.'
+  if (!v.workspaceName.trim()) return 'Workspace name is required.'
+  if (!v.alias) return 'Workspace URL is required.'
+  if (!ALIAS_RE.test(v.alias))
+    return 'Workspace URL can only use lowercase letters, numbers, and hyphens (2–63 characters).'
+  if (!v.propertyName.trim()) return 'Property name is required.'
+  if (v.pms === 'other' && !v.pmsOther.trim()) return 'Enter the name of your PMS.'
+  if (v.password.length < 8) return 'Password must be at least 8 characters.'
+  return null
+}
+
+export default function SignupPage() {
+  const { token } = routeApi.useSearch()
+  const invite = useQuery({
+    queryKey: ['signup-invite', token],
+    queryFn: () => getInvite(token as string),
+    enabled: Boolean(token),
+    retry: false,
+  })
+
+  // Fail closed: no token, or the invite lookup failed (404/expired/etc.) →
+  // one generic refusal, no form. We never distinguish the failure reason.
+  if (!token || invite.isError)
+    return (
+      <div className="mx-auto max-w-md p-8 text-center">
+        <p className="text-ink-muted">
+          This invite link isn&apos;t valid or has expired.
+        </p>
+      </div>
+    )
+  if (invite.isPending)
+    return <div className="mx-auto max-w-md p-8 text-center text-ink-muted">Loading…</div>
+
+  return <SignupFlow token={token} email={invite.data} />
+}
+
+function SignupFlow({ token, email }: { token: string; email: string }) {
+  // Step machine — cell → details → done. Task 4 drives cell → details.
+  const [step, setStep] = useState<'cell' | 'details' | 'done'>('cell')
+  const [cell, setCell] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  // Stashed for the success screen + OIDC handoff. pmsName is the user-facing
+  // PMS name (their typed "Other" value, else the selected label) for the
+  // unsupported copy.
+  const [result, setResult] = useState<{
+    supported: boolean
+    pmsName: string
+  } | null>(null)
+
+  async function sendCode() {
+    setBusy(true)
+    setError(null)
+    try {
+      await requestOtp(token, cell)
+      setStep('details')
+    } catch (e) {
+      // 429 -> back off; anything else collapses to the generic invalid-link
+      // copy so we never leak which failure occurred.
+      setError(
+        e instanceof SignupError && e.status === 429
+          ? 'Too many requests — please wait a minute and try again.'
+          : "This invite link isn't valid or has expired.",
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mx-auto max-w-md p-8">
+      <h1 className="text-xl font-semibold">Create your workspace</h1>
+      <p className="mt-1 text-sm text-ink-muted">Invited as {email}</p>
+      {error && (
+        <p role="alert" className="mt-4 text-sm text-danger-red">
+          {error}
+        </p>
+      )}
+      {step === 'cell' && (
+        <form
+          className="mt-6 space-y-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            void sendCode()
+          }}
+        >
+          <label className="block text-sm">
+            <span className="text-xs font-medium text-ink-muted">Mobile number</span>
+            <input
+              aria-label="Mobile number"
+              name="cell"
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={cell}
+              onChange={(e) => setCell(e.target.value)}
+              className={`mt-1 ${controlLargeClass}`}
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={busy || !cell}
+            className="w-full rounded-control bg-accent px-3 py-2 text-sm font-medium text-accent-contrast disabled:opacity-50"
+          >
+            Send code
+          </button>
+        </form>
+      )}
+      {step === 'details' && (
+        <DetailsStep
+          token={token}
+          cell={cell}
+          onDone={(r) => {
+            setResult(r)
+            setStep('done')
+          }}
+        />
+      )}
+      {step === 'done' && result && (
+        <DoneStep email={email} supported={result.supported} pmsName={result.pmsName} />
+      )}
+    </div>
+  )
+}
+
+// Success screen. Confirms the workspace is ready, tells an unsupported-PMS
+// owner their PMS is logged for later, and hands off to the OIDC login with the
+// invited email as login_hint so Keycloak pre-fills it.
+function DoneStep({
+  email,
+  supported,
+  pmsName,
+}: {
+  email: string
+  supported: boolean
+  pmsName: string
+}) {
+  return (
+    <div role="status" className="mt-6 space-y-4 text-center">
+      {supported ? (
+        <p className="text-sm text-ink">
+          Your workspace is ready — your property is set up too.
+        </p>
+      ) : (
+        <p className="text-sm text-ink">
+          Your workspace is ready. We don&apos;t support {pmsName} yet — we&apos;ve
+          logged it and will email {email} when it&apos;s live.
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={() => void login(email)}
+        className="w-full rounded-control bg-accent px-3 py-2 text-sm font-medium text-accent-contrast disabled:opacity-50"
+      >
+        Go to your workspace
+      </button>
+    </div>
+  )
+}
+
+// The details form: OTP + workspace/property fields, PMS select with an
+// "Other" reveal, jurisdiction, password, and the completing submit.
+function DetailsStep({
+  token,
+  cell,
+  onDone,
+}: {
+  token: string
+  cell: string
+  onDone: (r: { supported: boolean; pmsName: string }) => void
+}) {
+  const [otp, setOtp] = useState('')
+  const [workspaceName, setWorkspaceName] = useState('')
+  const [alias, setAlias] = useState('')
+  const [aliasEdited, setAliasEdited] = useState(false)
+  const [propertyName, setPropertyName] = useState('')
+  const [pms, setPms] = useState<'opera' | 'autoclerk' | 'other'>('opera')
+  const [pmsOther, setPmsOther] = useState('')
+  const [jurisdiction, setJurisdiction] = useState<string>('US-CA')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  // The alias tracks the workspace name until the user edits the URL field.
+  const effectiveAlias = aliasEdited ? alias : slugify(workspaceName)
+
+  async function submit() {
+    setError(null)
+    // Catch what the backend would 422 on, BEFORE the request — a specific,
+    // fixable message beats the opaque catch-all, and we never burn a round-trip.
+    const clientError = validateDetails({
+      otp,
+      workspaceName,
+      alias: effectiveAlias,
+      propertyName,
+      pms,
+      pmsOther,
+      password,
+    })
+    if (clientError) {
+      setError(clientError)
+      return
+    }
+    setBusy(true)
+    const payload: CompletePayload = {
+      token,
+      otp,
+      workspace_name: workspaceName,
+      workspace_alias: effectiveAlias,
+      property_name: propertyName,
+      pms_source: pms,
+      wage_jurisdiction: jurisdiction,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      cell,
+      password,
+      ...(pms === 'other' ? { pms_other_name: pmsOther } : {}),
+    }
+    try {
+      const res = await completeSignup(payload)
+      const pmsName =
+        pms === 'other'
+          ? pmsOther
+          : (SUPPORTED_PMS.find((o) => o.value === pms)?.label ?? pms)
+      onDone({ supported: res.pms_supported, pmsName })
+    } catch (e) {
+      setError(
+        e instanceof SignupError && e.status === 403
+          ? 'That code is incorrect or expired.'
+          : e instanceof SignupError && e.status === 429
+            ? 'Too many requests — please wait and try again.'
+            : e instanceof SignupError && e.status === 422
+              ? 'Some details weren’t accepted — please check your entries and try again.'
+              : 'Something didn’t go through. Check your details and try again.',
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form
+      className="mt-6 space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        void submit()
+      }}
+    >
+      {error && (
+        <p role="alert" className="text-sm text-danger-red">
+          {error}
+        </p>
+      )}
+      <Field
+        label="Verification code"
+        value={otp}
+        onChange={setOtp}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+      />
+      <Field label="Workspace name" value={workspaceName} onChange={setWorkspaceName} />
+      <Field
+        label="Workspace URL"
+        value={effectiveAlias}
+        onChange={(v) => {
+          setAliasEdited(true)
+          setAlias(v)
+        }}
+      />
+      <Field label="Property name" value={propertyName} onChange={setPropertyName} />
+      <label className="block text-sm">
+        <span className="text-xs font-medium text-ink-muted">PMS</span>
+        {/* NOTE for test authors: /pms/i also matches the "Which PMS do you use?"
+            reveal field, so once "Other" is selected, query this select by role
+            (getByRole('combobox', { name: 'PMS' })) to avoid an ambiguous match. */}
+        <select
+          aria-label="PMS"
+          value={pms}
+          onChange={(e) => setPms(e.target.value as typeof pms)}
+          className={`mt-1 ${controlLargeClass}`}
+        >
+          {SUPPORTED_PMS.map((o) => (
+            <option key={o.value} value={o.value}>
+              {o.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      {pms === 'other' && (
+        <Field label="Which PMS do you use?" value={pmsOther} onChange={setPmsOther} />
+      )}
+      <label className="block text-sm">
+        <span className="text-xs font-medium text-ink-muted">Jurisdiction</span>
+        <select
+          aria-label="Jurisdiction"
+          value={jurisdiction}
+          onChange={(e) => setJurisdiction(e.target.value)}
+          className={`mt-1 ${controlLargeClass}`}
+        >
+          {JURISDICTIONS.map((j) => (
+            <option key={j} value={j}>
+              {j}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="block text-sm">
+        <span className="text-xs font-medium text-ink-muted">Password</span>
+        <input
+          aria-label="Password"
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className={`mt-1 ${controlLargeClass}`}
+        />
+      </label>
+      <button
+        type="submit"
+        disabled={busy}
+        className="w-full rounded-control bg-accent px-3 py-2 text-sm font-medium text-accent-contrast disabled:opacity-50"
+      >
+        Create workspace
+      </button>
+    </form>
+  )
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  type,
+  inputMode,
+  autoComplete,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  type?: string
+  inputMode?: 'text' | 'numeric'
+  autoComplete?: string
+}) {
+  return (
+    <label className="block text-sm">
+      <span className="text-xs font-medium text-ink-muted">{label}</span>
+      <input
+        aria-label={label}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        type={type}
+        inputMode={inputMode}
+        autoComplete={autoComplete}
+        className={`mt-1 ${controlLargeClass}`}
+      />
+    </label>
+  )
+}

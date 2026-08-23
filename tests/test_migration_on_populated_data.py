@@ -30,7 +30,7 @@ os.environ.setdefault("TESTCONTAINERS_RYUK_DISABLED", "true")
 
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
-from tests.orgwall import ensure_app_role  # noqa: E402
+from tests.orgwall import ensure_app_role, ensure_provisioner_role  # noqa: E402
 
 # The revision immediately before E1 -- where a real pilot database would have
 # been sitting when this work started.
@@ -72,6 +72,7 @@ def _populate():
         # The RLS-bound app role, before any upgrade reaches l2a0rlswall
         # (which refuses without it — CREATE ROLE is cluster-level).
         ensure_app_role(url)
+        ensure_provisioner_role(url)   # b1a0provrole refuses without it too
         command.upgrade(_cfg(url), _PRE_E1)
 
         engine = create_engine(url)
@@ -1279,7 +1280,18 @@ def test_j3_downgrade_drops_the_column_with_data_present(populated_url):
 # The exclusion judgment, pinned (recorded in the l1a0orgid docstring):
 # platform-curated reference data with no org dimension. Everything else
 # in the public schema except alembic_version must carry org_id NOT NULL.
-_L1_ORG_INDEPENDENT = {"usali_schedule", "usali_mapping_dictionary"}
+# `invite` joins this set for a different reason (D-B3, Task 3 of the B1
+# plan): an invite precedes any tenant, so it is plain Base, not OrgScoped —
+# it carries no org_id at all, by design, not because it is reference data.
+# `otp_challenge` joins for the same reason (D-B6, Task 4): OTP gates signup,
+# before any tenant exists.
+# `pms_interest_request` joins for the same reason (Part-2): platform-level PMS
+# demand read across orgs — it stores the requesting workspace as an `org_alias`
+# STRING, deliberately carrying no org_id at all.
+_L1_ORG_INDEPENDENT = {
+    "usali_schedule", "usali_mapping_dictionary", "invite", "otp_challenge",
+    "pms_interest_request",
+}
 
 # Tables the pre-E1 population actually filled — the backfill must land
 # org 1 on real rows here, not just add an empty column.

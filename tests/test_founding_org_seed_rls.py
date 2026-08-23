@@ -19,7 +19,7 @@ from alembic.config import Config
 from sqlalchemy import select, text
 from testcontainers.postgres import PostgresContainer
 
-from tests.orgwall import app_role_url, ensure_app_role
+from tests.orgwall import app_role_url, ensure_app_role, ensure_provisioner_role
 from usali.db import make_engine, make_session_factory
 from usali.mapping.property_registry import ensure_default_org
 from usali.models import Organization
@@ -49,6 +49,7 @@ def test_founding_org_seeds_under_force_rls_as_the_app_role():
         with PostgresContainer("postgres:16", driver="psycopg") as pg:
             url = pg.get_connection_url()
             ensure_app_role(url)
+            ensure_provisioner_role(url)   # b1a0provrole refuses without it too
             command.upgrade(_cfg(url), "head")
 
             # Simulate the cloud state that broke autoincrement: the sequence's

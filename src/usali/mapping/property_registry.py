@@ -5,6 +5,8 @@
 `organization` / `property` / `property_detection_alias` tables.
 """
 
+import re
+import secrets
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,7 @@ import yaml
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from sqlalchemy import update
@@ -98,6 +101,47 @@ def ensure_default_org(session: Session) -> int:
         .on_conflict_do_nothing(index_elements=["org_id"])
     )
     return org_id
+
+
+def _slugify(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return (slug or "property")[:40]
+
+
+def create_first_property(
+    session: Session,
+    org_id: int,
+    *,
+    name: str,
+    pms_source: str,
+    wage_jurisdiction: str | None = None,
+    timezone: str | None = None,
+) -> str:
+    """Insert the workspace's first property under an ORG-BOUND session (the
+    caller must have called bind_org_context(session, org_id) first — the
+    provisioner role cannot write `property`, D-B7). Returns the generated,
+    globally-unique property_id. `timezone`/`wage_jurisdiction` fall back to the
+    column defaults / NULL when omitted. The caller commits."""
+    base = _slugify(name)
+    for _ in range(5):
+        property_id = f"{base}-{secrets.token_hex(2)}"
+        values: dict[str, object] = {
+            "property_id": property_id, "org_id": org_id,
+            "name": name, "pms_source": pms_source,
+        }
+        if wage_jurisdiction is not None:
+            values["wage_jurisdiction"] = wage_jurisdiction
+        if timezone is not None:
+            values["timezone"] = timezone
+        try:
+            with session.begin_nested():  # SAVEPOINT: a collision rolls back to
+                session.execute(insert(Property).values(**values))  # here only
+            return property_id
+        except IntegrityError:
+            continue  # astronomically rare 4-hex collision — try a new suffix
+    raise RuntimeError(
+        f"could not generate a unique property_id for {name!r} after 5 attempts"
+    )
 
 
 class PropertyEntry(BaseModel):

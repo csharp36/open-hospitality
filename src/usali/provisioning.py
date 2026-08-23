@@ -60,9 +60,17 @@ def provision_tenant(
     admin_username: str,
     admin_email: str,
     admin_full_name: str,
+    password: str | None = None,
 ) -> ProvisionResult:
     """Stand up (or reconcile) one tenant. See the module docstring for the
-    owner-session contract. The caller commits."""
+    owner-session contract. The caller commits.
+
+    ``password`` is optional and used ONLY by the self-service signup path
+    (Track B/B1): when provided, the chosen admin's Keycloak password is set
+    permanently (via `KeycloakAdmin.set_password`), clearing the
+    UPDATE_PASSWORD required action and marking the email verified. The
+    operator-provisioned path passes password=None (the default) and keeps
+    `create_user`'s UPDATE_PASSWORD / reset-on-first-login posture."""
     # Fail EARLY and legibly on the owner-session contract: an org-instrumented
     # session would refuse this function's cross-org Organization/grant writes
     # deep in the walls (OrgContextMismatch / RLS WITH CHECK). Say so up front.
@@ -109,6 +117,13 @@ def provision_tenant(
 
     # 3. Membership — idempotent (adding an existing member is a no-op).
     kc.add_member(kc_org_id, admin_subject)
+
+    # Self-service signup (Track B/B1): the owner chose a password and proved
+    # their email via the invite click. Set it here (idempotent — a re-run just
+    # re-sets the same password). Operator provisioning passes password=None and
+    # keeps the create_user UPDATE_PASSWORD/reset-on-first-login posture.
+    if password is not None:
+        kc.set_password(admin_subject, password)
 
     # 4. DB organization row — find-or-create on kc_org_alias, on the OWNER
     #    session (bypasses RLS; Organization is exempt from the write stamp by

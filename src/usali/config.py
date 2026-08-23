@@ -143,6 +143,34 @@ class Settings(BaseSettings):
     pii_hpke_key_id: str = "dev-1"
     pii_hpke_private_key: str = ""  # set by the test/dev bootstrap; empty in prod
 
+    # Notification/OTP delivery seam (Track B/B1, D-B6). Only "console" ships in
+    # B1 (logs the link/code, no vendor); SMTP + one SMS vendor land in B2.
+    notifier: str = "console"
+
+    # Serving-process log level (see logging_setup.configure_logging). INFO so
+    # the app's own usali.* records — including the console notifier's OTP line
+    # — reach stdout / Cloud Run; nothing configured logging before, so they
+    # were dropped below the root logger's WARNING default.
+    log_level: str = "INFO"
+
+    # Public base URL the invite/signup links point at (usali invite CLI).
+    public_base_url: str = "http://localhost:8100"
+
+    # Provisioner DB role (D-B7): the signup-completion path connects as this
+    # least-privilege role to write ONLY organization + role_assignment. In dev
+    # these match scripts/dev_pg_init.sql; prod overrides via USALI_PROVISIONER_*.
+    provisioner_db_role: str = "usali_provisioner"
+    provisioner_db_password: str = "usali_provisioner"
+
+    # Signup abuse guards (Track B/B1). Per-target OTP request ceiling and the
+    # per-invite completion attempt ceiling, each over the sliding window below.
+    signup_otp_max_per_window: int = 5
+    signup_rate_window_seconds: int = 3600
+
+    # Where unsupported-PMS demand requests are routed (Track B/B1 Part-2).
+    # Empty in dev -> the ConsoleNotifier just logs it; a real address in prod.
+    admin_notify_email: str = ""
+
     @property
     def is_production(self) -> bool:
         # Fail closed: anything not explicitly a known non-prod env is treated as
