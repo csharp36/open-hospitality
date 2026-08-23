@@ -34,13 +34,29 @@ BUSINESS_DATE = "6/21/2026"
 
 LABEL_X0 = 75.0
 LABEL_STEP = 40.0
+# Statistics labels sit further left and tighter than the journal's, because the
+# first value column is at x0 221.85 in a real export (vs 300 for the journal).
+# A 5-token label like "ADR for Total Occupied Rooms" has to clear that column.
+STATS_LABEL_X0 = 38.19
+STATS_LABEL_STEP = 30.0
 CODE_X0 = 250.0
 
 # 7 amount columns for the Hotel Journal Summary.
 JOURNAL_COLS = [300.0, 370.0, 440.0, 510.0, 580.0, 650.0, 720.0]
 
-# 5 value columns for the Hotel Statistics report.
-STATS_COLS = [300.0, 380.0, 460.0, 540.0, 620.0]
+# 5 value columns for the Hotel Statistics report, and the REAL header geometry
+# above them. These x0s are layout coordinates measured from a real Standard
+# Audit Pack -- no figures, names or codes from it appear here.
+#
+# A real header is not one fixed phrase. Every section repeats it, in two
+# variants that differ only by a "Current" prefix, at IDENTICAL column x0:
+#
+#   Room Statistics        <date>         PTD  Last Year PTD         YTD  Last YTD
+#   Performance Statistics <date> Current PTD  Last Year PTD Current YTD  Last YTD
+#
+# Values sit under the LAST token of each group. The fixture emits the "Current"
+# variant -- the harder of the two for a parser that keys off token positions.
+STATS_COLS = [246.0, 313.0, 384.0, 450.0, 522.0]
 
 # (label, transaction-code token, [7 amounts left-to-right]).
 JOURNAL_ROWS: list[tuple[str, str | None, list[str]]] = [
@@ -52,8 +68,17 @@ JOURNAL_ROWS: list[tuple[str, str | None, list[str]]] = [
     ("Today's Total:", None, ["0.00", "0.00", "0.00", "0.00", "0.00", "0.00", "0.00"]),
 ]
 
-# Clean single-word column anchors: ACTUAL / PTD / LY_PTD / YTD / LY_YTD.
-STATS_ANCHORS = ["PTD", "PTD1", "LYPTD", "YTD", "LYYTD"]
+# Header tokens as a real export lays them out: (text, x0). ``None`` text is the
+# business date, substituted at build time. The five columns are
+# ACTUAL / PTD / LY_PTD / YTD / LY_YTD, anchored on the last token of each group
+# (x0 221.85 / 317.61 / 388.10 / 459.67 / 531.65).
+STATS_HEADER: list[tuple[str | None, float]] = [
+    (None, 221.85),
+    ("Current", 289.00), ("PTD", 317.61),
+    ("Last", 352.69), ("Year", 370.04), ("PTD", 388.10),
+    ("Current", 431.00), ("YTD", 459.67),
+    ("Last", 514.30), ("YTD", 531.65),
+]
 
 # (label, [5 values left-to-right]).
 # Fully invented, internally-consistent block. The ACTUAL column ties by
@@ -90,11 +115,13 @@ def _header_words(top: float) -> list[dict[str, object]]:
     return words
 
 
-def _label_words(label: str, top: float) -> list[dict[str, object]]:
-    """Split a label into tokens laid out at x0=75, +40 each."""
+def _label_words(
+    label: str, top: float, x0: float = LABEL_X0, step: float = LABEL_STEP
+) -> list[dict[str, object]]:
+    """Split a label into tokens laid out left-to-right from `x0`, `step` apart."""
     words: list[dict[str, object]] = []
     for i, tok in enumerate(label.split(" ")):
-        words.append(_word(tok, LABEL_X0 + i * LABEL_STEP, top))
+        words.append(_word(tok, x0 + i * step, top))
     return words
 
 
@@ -120,12 +147,14 @@ def build_journal_words() -> list[dict[str, object]]:
 def build_statistics_words() -> list[dict[str, object]]:
     words: list[dict[str, object]] = []
     words.extend(_header_words(10.0))
-    # Column-anchor header row: clean single-word period tokens.
-    for anchor, x0 in zip(STATS_ANCHORS, STATS_COLS):
-        words.append(_word(anchor, x0, 50.0))
+    # Section + column header row, in the real multi-word shape.
+    words.append(_word("Room", 38.19, 50.0))
+    words.append(_word("Statistics", 61.25, 50.0))
+    for text, x0 in STATS_HEADER:
+        words.append(_word(text if text is not None else BUSINESS_DATE, x0, 50.0))
     top = 70.0
     for label, values in STATISTICS_ROWS:
-        words.extend(_label_words(label, top))
+        words.extend(_label_words(label, top, STATS_LABEL_X0, STATS_LABEL_STEP))
         for value, x0 in zip(values, STATS_COLS):
             words.append(_word(value, x0, top))
         top += 20.0
@@ -198,21 +227,43 @@ def build_pack_pdf(path: Path) -> None:
     c.setPageSize(land)
     draw_lines_at(land[1], journal_lines)
 
-    # Page 3 -- Hotel Statistics (same synthetic rows as the fixture). Kept as plain
-    # Courier text: this section is intentionally NOT ingested (deferred to a real-sample
-    # calibration), so its exact column geometry is immaterial to the pack pipeline.
-    c.setPageSize(letter)
+    # Page 3 -- Hotel Statistics. LANDSCAPE monospace, like page 2: now that this
+    # section IS ingested, its column geometry matters. Each header group is
+    # placed so its LAST token starts at its value column ("Current PTD" ->
+    # "PTD" over the PTD values), which is how a real export aligns them.
+    stats_label_w, stats_col_w = 30, 18
+    header_groups = [
+        (BUSINESS_DATE, ""),          # (last token, prefix)
+        ("PTD", "Current "),
+        ("PTD", "Last Year "),
+        ("YTD", "Current "),
+        ("YTD", "Last "),
+    ]
+    header = [" "] * (stats_label_w + stats_col_w * len(header_groups))
+    for i, (last, prefix) in enumerate(header_groups):
+        start = stats_label_w + i * stats_col_w - len(prefix)
+        for k, ch in enumerate(prefix + last):
+            header[start + k] = ch
     stats_lines = [
         "Hotel Statistics",
         "",
         f"Property Name: {PROPERTY_NAME}",
         f"Business Date: {BUSINESS_DATE} Property Code: {PROPERTY_CODE}",
         "",
-        f"{'':<32} " + " ".join(STATS_ANCHORS),
+        "Room Statistics".ljust(stats_label_w - 4) + "".join(header)[stats_label_w - 4 :],
     ]
     for label, values in STATISTICS_ROWS:
-        stats_lines.append(f"{label:<32} " + " ".join(values))
-    draw_page(stats_lines)
+        stats_lines.append(
+            label.ljust(stats_label_w) + "".join(v.ljust(stats_col_w) for v in values)
+        )
+    land = landscape(letter)
+    c.setPageSize(land)
+    c.setFont("Courier", 8)
+    y = land[1] - 60.0
+    for line in stats_lines:
+        c.drawString(left, y, line)
+        y -= line_h
+    c.showPage()
 
     c.save()
 
