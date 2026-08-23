@@ -60,21 +60,54 @@ def load_registry(session: Session) -> list[dict[str, str]]:
     ]
 
 
-def detect_report_signature(words: list[Word]) -> tuple[str, str] | None:
-    """Match only the (pms_source, report_type) report signature from the header,
-    WITHOUT resolving a property. Returns None if no supported signature matches.
+def detect_report_signature(
+    words: list[Word], title: str | None = None
+) -> tuple[str, str] | None:
+    """Match only the (pms_source, report_type) report signature, WITHOUT
+    resolving a property. Returns None if no supported signature matches.
 
     The anonymous preview uses this: it has no property registry, so it cannot
     call detect() (which raises unless a registered property resolves).
+
+    `title` is a pack section's title row, which `pack.split_pack` already
+    derives and groups pages by. When it is present, signatures are matched
+    against the TITLE ALONE -- never the header window.
+
+    That distinction is the whole point. A signature is a substring match, and
+    the header window spans 120 words, so it reaches well past any title and
+    into the table's COLUMN HEADINGS. Four unrelated SkyTouch reports print a
+    `Rate Plan` column (Cancellation List, Credit Check List, No Show Report,
+    Rate Discrepancy Report), so every one of them matched the bare AutoClerk
+    `RATE PLAN` signature and was routed to that adapter -- either raising, or
+    silently reading values out of columns that mean something else and filing
+    them under the wrong PMS. A column heading is evidence about a report's
+    COLUMNS; only its title is evidence about its IDENTITY.
+
+    The trade is recall: a section whose top row is NOT its report title (a
+    property banner, say) now goes unrecognised where the header window might
+    have guessed it. That fails safely -- `process_pack` skips the section, and
+    a pack with no recognised section is quarantined loudly -- whereas the
+    behaviour it replaces attributed real figures to the wrong report type.
+
+    A standalone single-report file is not a pack section and has no title, so
+    it keeps the header-window behaviour unchanged.
     """
+    if title is not None and title.strip():
+        haystack = title.upper()
+    else:
+        haystack = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
+    return next((sig for phrase, sig in _REPORT_SIGNATURES if phrase in haystack), None)
+
+
+def detect(
+    words: list[Word], registry: Sequence[Mapping[str, str]], title: str | None = None
+) -> Detection:
+    # The PROPERTY is resolved from the header window either way: a registry
+    # alias is a property name or code, which prints in the page header, not in
+    # the report title. Only the report SIGNATURE moves to the title.
     header_text = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
-    return next((sig for phrase, sig in _REPORT_SIGNATURES if phrase in header_text), None)
 
-
-def detect(words: list[Word], registry: Sequence[Mapping[str, str]]) -> Detection:
-    header_text = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
-
-    match = detect_report_signature(words)
+    match = detect_report_signature(words, title)
     if match is None:
         raise ValueError("could not detect report type from PDF header")
     pms_source, report_type = match

@@ -339,7 +339,11 @@ def process_pack(
         results: list[ProcessResult] = []
         for section in sections:
             try:
-                det = detect(section.words, registry)
+                # Pass the section TITLE: it, not the 120-word header window,
+                # decides the report signature. Several SkyTouch reports print a
+                # `Rate Plan` COLUMN, which the window matched against the
+                # AutoClerk `rate_plan` signature (issue #78).
+                det = detect(section.words, registry, section.title)
             except ValueError:
                 continue  # unknown report or unresolved property (housekeeping/filler)
             if (det.pms_source, det.report_type) not in _PIPELINES:
