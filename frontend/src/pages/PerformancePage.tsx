@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { Badge, Card, PageHeader, controlClass } from '../components/ui'
-import { ApiError, getPerformance } from '../api/client'
+import { getNightAudit, ApiError, getPerformance } from '../api/client'
 import type { CoreMetrics, PerformanceResponse } from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
@@ -66,13 +66,27 @@ export default function PerformancePage() {
   // survive re-renders (react-query may hand back a fresh `selected` object
   // with the same id on refetch).
   const defaultedFor = useRef<string | undefined>(undefined)
+  // Night-audit state: dashboards default to data through the last CLOSED
+  // business day (`closed_through`) — the current date's audit is still
+  // arriving, so a today-inclusive default would under-report it.
+  const nightAudit = useQuery({
+    queryKey: ['night-audit', property],
+    queryFn: () => getNightAudit(property!),
+    enabled: property !== undefined,
+  })
   useEffect(() => {
     if (selected === undefined || defaultedFor.current === selected.property_id) return
+    if (nightAudit.data === undefined && !nightAudit.isError) return // wait to clamp
     defaultedFor.current = selected.property_id
-    const monthStart = `${selected.last_date.slice(0, 7)}-01`
-    setTo(selected.last_date)
+    const closedThrough = nightAudit.data?.closed_through
+    const end =
+      closedThrough !== undefined && closedThrough < selected.last_date
+        ? closedThrough
+        : selected.last_date
+    const monthStart = `${end.slice(0, 7)}-01`
+    setTo(end)
     setFrom(selected.first_date > monthStart ? selected.first_date : monthStart)
-  }, [selected])
+  }, [selected, nightAudit.data, nightAudit.isError])
 
   const perf = useQuery({
     queryKey: ['performance', property, from, to],
