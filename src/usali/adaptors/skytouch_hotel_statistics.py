@@ -1,13 +1,21 @@
 """Parse the SkyTouch "Hotel Statistics" report into per-period StatisticRecords.
 
-CALIBRATED TO THE SYNTHETIC MOCK FIXTURE. The column anchors are located by
-matching five CLEAN single-word tokens (``PTD PTD1 LYPTD YTD LYYTD``) sitting at the
-five value-column x0 positions. A REAL SkyTouch "Hotel Statistics" header instead
-wraps MULTI-WORD labels ("Last Year PTD", "Last YTD"), which will not equal these
-single tokens. Consequently ``_column_anchors`` will raise ``ValueError`` on a real
-sample until it is re-calibrated against a real (de-identified) file. That failure is
-deliberate and loud so a future real-sample failure is understood rather than
-mysterious: the fix is to re-derive the anchor tokens from an actual header.
+Column anchors are located POSITIONALLY, not by matching a fixed token sequence,
+because a real SkyTouch header is not a stable phrase. Each section repeats the
+header, in two variants that differ by a "Current" prefix::
+
+    Room Statistics       6/21/2026         PTD  Last Year PTD         YTD  Last YTD
+    Performance Statistics 6/21/2026 Current PTD  Last Year PTD Current YTD  Last YTD
+
+The five value columns sit at IDENTICAL x0 in both, under the LAST token of each
+group. So the rule is: in a row carrying one M/D/YYYY date, exactly two ``PTD``
+tokens and exactly two ``YTD`` tokens, the anchors are that date and each pair in
+x0 order -- today, PTD, last-year PTD, YTD, last-year YTD. That is invariant to
+the "Current"/"Last Year" wording around them.
+
+(An earlier revision matched five synthetic single tokens emitted by the mock
+generator and raised on any real file. Recalibrated against a real Standard Audit
+Pack; the generator now emits the real header shape.)
 """
 
 import re
@@ -20,7 +28,6 @@ from usali.schemas import StatisticRecord
 
 _NUM_RE = re.compile(r"^-?[\d,]+(\.\d+)?$")
 _PERIODS = ["ACTUAL", "PTD", "LY_PTD", "YTD", "LY_YTD"]
-_ANCHOR_TOKENS = ["PTD", "PTD1", "LYPTD", "YTD", "LYYTD"]
 _DATE_RE = re.compile(r"^\d{1,2}/\d{1,2}/\d{4}$")
 
 
@@ -32,14 +39,28 @@ def extract_business_date(words: list[Word]) -> date:
 
 
 def _column_anchors(rows: list[list[Word]]) -> list[float]:
+    """The five value-column x0s, taken from the repeated section header row.
+
+    Identified by SHAPE rather than wording: one business date, two ``PTD`` and
+    two ``YTD``. Values sit under the last token of each group, which is exactly
+    what these five positions are.
+    """
     for row in rows:
         cells = sorted(row, key=lambda w: w.x0)
-        texts = [w.text for w in cells]
-        for j in range(len(texts) - 4):
-            if texts[j : j + 5] == _ANCHOR_TOKENS:
-                return [cells[j + k].x0 for k in range(5)]
+        dates = [w for w in cells if _DATE_RE.match(w.text)]
+        ptds = [w for w in cells if w.text == "PTD"]
+        ytds = [w for w in cells if w.text == "YTD"]
+        if len(dates) != 1 or len(ptds) != 2 or len(ytds) != 2:
+            continue
+        anchors = [dates[0].x0, ptds[0].x0, ptds[1].x0, ytds[0].x0, ytds[1].x0]
+        # A header whose columns are not left-to-right is not a header we
+        # understand; keep looking rather than mis-assign every period.
+        if all(a < b for a, b in zip(anchors, anchors[1:])):
+            return anchors
     raise ValueError(
-        "SkyTouch Hotel Statistics column header (PTD PTD1 LYPTD YTD LYYTD) not found"
+        "SkyTouch Hotel Statistics column header not found: expected a row with "
+        "one M/D/YYYY business date, two 'PTD' and two 'YTD' tokens in ascending "
+        "column order"
     )
 
 

@@ -33,6 +33,7 @@ from usali.adaptors import opera_manager_flash as flash
 from usali.adaptors import opera_market_stats as market_stats
 from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors import skytouch_hotel_journal as sky_journal
+from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
 from usali.adaptors.pdf import Word, extract_pages, extract_words
 from usali.detect import Detection, detect, load_registry
@@ -187,10 +188,20 @@ def _run_skytouch_hotel_journal(
     return batch, business_date, _Counts(len(records), r.mapped, r.unmapped, r.skipped)
 
 
-# NOTE: SkyTouch "Hotel Statistics" is intentionally NOT wired here (and is un-registered
-# in detect._REPORT_SIGNATURES). Its adapter (skytouch_hotel_statistics) and unit tests are
-# retained for a future real-sample recalibration; until then the section is skipped by the
-# pack pipeline so the financial Hotel Journal still ingests.
+def _run_skytouch_hotel_statistics(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> tuple[IngestBatch, date, _Counts]:
+    business_date = sky_stats.extract_business_date(words)
+    records = sky_stats.parse_hotel_statistics(
+        words, property_id=det.property_id, business_date=business_date
+    )
+    batch = stage_statistics(session, records, source_file=path.name, file_hash=file_hash)
+    r = promote_statistics(
+        session, "mapping/statistics.yaml", source=det.pms_source, business_date=business_date
+    )
+    return batch, business_date, _Counts(len(records), r.promoted, 0, r.skipped)
+
+
 _PIPELINES: dict[tuple[str, str], _Handler] = {
     ("OPERA", "trial_balance"): _run_opera_trial_balance,
     ("AUTOCLERK", "transaction_summary"): _run_autoclerk_transaction_summary,
@@ -199,6 +210,7 @@ _PIPELINES: dict[tuple[str, str], _Handler] = {
     ("OPERA", "market_stats"): _run_opera_market_stats,
     ("AUTOCLERK", "rate_plan"): _run_autoclerk_rate_plan,
     ("SKYTOUCH", "hotel_journal"): _run_skytouch_hotel_journal,
+    ("SKYTOUCH", "hotel_statistics"): _run_skytouch_hotel_statistics,
 }
 
 

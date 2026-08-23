@@ -29,14 +29,14 @@ def test_skytouch_pack_end_to_end(db_session, tmp_path):
 
     kinds = {(r.pms_source, r.report_type) for r in results}
     assert ("SKYTOUCH", "hotel_journal") in kinds
-    # Hotel Statistics is un-registered (deferred to a real-sample calibration), so it is
-    # skipped, not ingested.
-    assert ("SKYTOUCH", "hotel_statistics") not in kinds
+    # Hotel Statistics ingests now that its adapter is calibrated against a real
+    # export's header shape; it used to be un-registered and skipped.
+    assert ("SKYTOUCH", "hotel_statistics") in kinds
     assert all(r.property_id == "STDEMO" for r in results)
-    # The pack has 3 sections (A/R Aging + Hotel Journal + Hotel Statistics). Exactly 1
-    # result proves the unknown A/R Aging filler AND the un-registered Hotel Statistics
-    # section were both dropped, and nothing extra leaked.
-    assert len(results) == 1
+    # The pack has 3 sections (A/R Aging + Hotel Journal + Hotel Statistics). Exactly 2
+    # results prove BOTH recognised sections ingested and the unknown A/R Aging filler
+    # was dropped, with nothing extra leaking.
+    assert len(results) == 2
     # The source file was filed to processed_dir, and every result's destination was
     # fixed up to point at the filed location (the dataclasses.replace after the move).
     assert (tmp_path / "done" / SAMPLE.name).exists()
@@ -75,8 +75,8 @@ def test_pack_section_failure_rolls_back_and_quarantines(
     db_session, tmp_path, monkeypatch
 ):
     # Everything seeded, so the SkyTouch Hotel Journal section would normally succeed.
-    # (Hotel Statistics is now un-registered and skipped, so the journal is the pack's
-    # only recognized section.) Blow up the journal handler to exercise the pack failure
+    # (Hotel Statistics is recognised too, but blowing up the journal handler is
+    # enough to fail the whole pack.) Blow up the journal handler to exercise the pack failure
     # path: any staged work must roll back with the transaction, and the file is
     # quarantined rather than filed. Patch the _PIPELINES entry itself (not the module
     # attribute): the dict captured the handler reference at import, so _process_section

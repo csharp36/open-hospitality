@@ -16,10 +16,14 @@ _REPORT_SIGNATURES: list[tuple[str, tuple[str, str]]] = [
     ("MARKET CODE STATISTICS", ("OPERA", "market_stats")),
     ("RATE PLAN", ("AUTOCLERK", "rate_plan")),
     ("HOTEL JOURNAL SUMMARY", ("SKYTOUCH", "hotel_journal")),
-    # SkyTouch "Hotel Statistics" is deliberately UN-registered: its adapter is calibrated
-    # to the synthetic mock's single-word column anchors and raises on a real header, so
-    # registering it would quarantine the whole pack (including the correct financial
-    # section). Deferred until a real-sample recalibration; the section is simply skipped.
+    # Registered once the statistics adapter was recalibrated against a real
+    # Standard Audit Pack. It previously matched five synthetic single-word
+    # anchors emitted by the mock generator and raised on any real header, so
+    # registering it would have quarantined the whole pack -- including the
+    # financial section that parsed correctly. It now locates columns by SHAPE
+    # (one business date, two PTD, two YTD), which holds for both header
+    # variants a real export uses.
+    ("HOTEL STATISTICS", ("SKYTOUCH", "hotel_statistics")),
 ]
 # Only the header area is needed; scanning a bounded prefix keeps false positives out
 # of table bodies further down the page.
