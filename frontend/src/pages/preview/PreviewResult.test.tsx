@@ -38,6 +38,43 @@ describe('PreviewResult', () => {
     expect(within(region).queryByText(/ties out/i)).not.toBeInTheDocument()
   })
 
+  it('leads with what the hotel sold, not with whatever sorts first alphabetically', () => {
+    // The API returns lines sorted alphabetically by major, which puts
+    // "Miscellaneous Income" (Parking) above "Operated Departments" (Room
+    // Revenue). On a page whose headline promises a P&L, that reads like a
+    // database dump.
+    render(
+      <PreviewResult
+        payload={{
+          ...payload,
+          pnl_lines: [
+            { major: 'Miscellaneous Income', sub: 'Parking', line_item: 'Parking', amount: '485.00' },
+            { major: 'Settlements', sub: 'Credit Card', line_item: 'Visa', amount: '-9850.00' },
+            { major: 'Operated Departments', sub: 'Other Operated Departments', line_item: 'Gift Shop Revenue', amount: '312.50' },
+            { major: 'Operated Departments', sub: 'Rooms', line_item: 'Room Revenue', amount: '14820.00' },
+          ],
+        }}
+      />,
+    )
+    const region = screen.getByRole('region', { name: 'Preview result' })
+    const headings = within(region)
+      .getAllByRole('columnheader')
+      .map((h) => h.textContent)
+    expect(headings).toEqual([
+      'Operated Departments',
+      'Miscellaneous Income',
+      'Settlements',
+    ])
+    // Rooms first inside the department — the one line every owner looks for.
+    const rows = within(region).getAllByRole('row').map((r) => r.textContent ?? '')
+    const rooms = rows.findIndex((t) => t.includes('Room Revenue'))
+    const shop = rows.findIndex((t) => t.includes('Gift Shop'))
+    expect(rooms).toBeLessThan(shop)
+    // A department with more than one line gets a subtotal.
+    expect(within(region).getByText('Total Operated Departments')).toBeInTheDocument()
+    expect(within(region).getByText('15,132.50')).toBeInTheDocument()
+  })
+
   it('names the source and report in words an owner would use, not pipeline identifiers', () => {
     render(<PreviewResult payload={payload} />)
     const region = screen.getByRole('region', { name: 'Preview result' })

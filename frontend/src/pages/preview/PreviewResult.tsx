@@ -14,7 +14,7 @@
 // a <button> with no onClick at all — an affordance that looked live and did
 // nothing, on the page we send to strangers.
 
-import { useState } from 'react'
+import { Fragment, useMemo, useState } from 'react'
 
 import type { PreviewPayload } from '../../api/types'
 import RequestAccess from './RequestAccess'
@@ -35,11 +35,38 @@ function label(map: Record<string, string>, key: string): string {
   return map[key] ?? key.replace(/_/g, ' ')
 }
 
+// The order the server returns is alphabetical by (major, sub, line_item) —
+// which puts Parking above Room Revenue and reads like a database dump, not a
+// P&L. A statement leads with what the hotel sold, then the taxes it is only
+// collecting, then how any of it was paid for. Sorting is a PRESENTATION
+// decision, so it lives here rather than changing what the API returns.
+const MAJOR_ORDER = [
+  'Operated Departments',
+  'Miscellaneous Income',
+  'Non-Operating',
+  'Taxes (Pass-Through)',
+  'Settlements',
+]
+
+function majorRank(major: string): number {
+  const i = MAJOR_ORDER.indexOf(major)
+  // An unrecognised major sorts after the known ones rather than silently
+  // taking Operated Departments' place at the top.
+  return i === -1 ? MAJOR_ORDER.length : i
+}
+
+// Within a department, rooms come first — it is the one line every owner looks
+// for. Everything else keeps the server's alphabetical order, which a stable
+// sort preserves.
+function subRank(sub: string): number {
+  return sub === 'Rooms' ? 0 : 1
+}
+
 // The API sends amounts as plain decimal strings. Group them and put negatives
 // in parentheses, which is how they read on the report the visitor just dropped.
-function money(amount: string): string {
+function money(amount: string | number): string {
   const value = Number(amount)
-  if (!Number.isFinite(value)) return amount
+  if (!Number.isFinite(value)) return String(amount)
   const shown = Math.abs(value).toLocaleString(undefined, {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -51,6 +78,25 @@ export default function PreviewResult({ payload }: { payload: PreviewPayload }) 
   const [explain, setExplain] = useState(false)
   const source = label(SOURCE_LABELS, payload.pms_source)
   const report = label(REPORT_LABELS, payload.report_type)
+
+  // Group under the major headings a statement uses, so the department name is
+  // said once instead of trailing every row. The subtotal is arithmetic on the
+  // lines above it — it is NOT a reconciliation signal, and nothing here claims
+  // the report ties out.
+  const groups = useMemo(() => {
+    const ordered = [...payload.pnl_lines].sort(
+      (a, b) => majorRank(a.major) - majorRank(b.major) || subRank(a.sub) - subRank(b.sub),
+    )
+    const out: { major: string; lines: typeof ordered; total: number }[] = []
+    for (const line of ordered) {
+      const last = out[out.length - 1]
+      if (last && last.major === line.major) last.lines.push(line)
+      else out.push({ major: line.major, lines: [line], total: 0 })
+    }
+    for (const group of out)
+      group.total = group.lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0)
+    return out
+  }, [payload.pnl_lines])
 
   return (
     <section role="region" aria-label="Preview result" className="space-y-4">
@@ -82,14 +128,37 @@ export default function PreviewResult({ payload }: { payload: PreviewPayload }) 
 
       <table className="w-full text-sm">
         <tbody>
-          {payload.pnl_lines.map((l, i) => (
-            <tr key={`${l.major}-${l.sub}-${l.line_item}-${i}`} className="border-b border-brand-line">
-              <td className="py-1.5 text-brand-ink">
-                {l.line_item}
-                <span className="text-brand-ink-muted"> · {l.major}</span>
-              </td>
-              <td className="py-1.5 text-right font-mono text-brand-ink">{money(l.amount)}</td>
-            </tr>
+          {groups.map((group) => (
+            <Fragment key={group.major}>
+              <tr>
+                <th
+                  colSpan={2}
+                  scope="colgroup"
+                  className="pt-4 pb-1 text-left font-display text-base font-normal text-brand-ink"
+                >
+                  {group.major}
+                </th>
+              </tr>
+              {group.lines.map((l, i) => (
+                <tr key={`${l.sub}-${l.line_item}-${i}`} className="border-b border-brand-line">
+                  <td className="py-1.5 pl-4 text-brand-ink">
+                    {l.line_item}
+                    {l.sub && l.sub !== l.line_item && (
+                      <span className="text-brand-ink-muted"> · {l.sub}</span>
+                    )}
+                  </td>
+                  <td className="py-1.5 text-right font-mono text-brand-ink">{money(l.amount)}</td>
+                </tr>
+              ))}
+              {group.lines.length > 1 && (
+                <tr className="border-b-2 border-brand-line">
+                  <td className="py-1.5 pl-4 text-brand-ink-muted">Total {group.major}</td>
+                  <td className="py-1.5 text-right font-mono text-brand-ink">
+                    {money(group.total)}
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           ))}
         </tbody>
       </table>
