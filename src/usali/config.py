@@ -143,9 +143,26 @@ class Settings(BaseSettings):
     pii_hpke_key_id: str = "dev-1"
     pii_hpke_private_key: str = ""  # set by the test/dev bootstrap; empty in prod
 
-    # Notification/OTP delivery seam (Track B/B1, D-B6). Only "console" ships in
-    # B1 (logs the link/code, no vendor); SMTP + one SMS vendor land in B2.
+    # Notification/OTP delivery seam (Track B/B1, D-B6). "console" logs the
+    # link/code and sends nothing (dev default); "smtp" is the B2 email adapter
+    # that makes self-serve signup actually reachable by a stranger. There is
+    # still NO SMS vendor -- SmtpNotifier.send_sms raises rather than pretend.
     notifier: str = "console"
+
+    # SMTP delivery (notifier="smtp"). Deliberately vendor-neutral: SendGrid,
+    # Mailgun, Postmark, SES and a self-hosted MTA all speak this, so the vendor
+    # choice is a deploy-time credential, not a code change. `smtp_from` is the
+    # envelope/header From and must be an address the relay is allowed to send
+    # for (SPF/DKIM), which is why a blank one fails fast instead of bouncing
+    # silently. Username/password may be empty for a network-authorised relay.
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    # STARTTLS on the standard submission port. Off only for a local test relay.
+    smtp_starttls: bool = True
+    smtp_timeout_seconds: float = 15.0
 
     # Serving-process log level (see logging_setup.configure_logging). INFO so
     # the app's own usali.* records — including the console notifier's OTP line
