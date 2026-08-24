@@ -135,7 +135,7 @@ def test_ledger_checks_pass_and_fail(db_session):
           on=date(2026, 8, 17))
     db_session.commit()
 
-    checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day)}
+    checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day, "OPERA")}
     assert checks["balance_identity"].status == "pass"
     assert checks["ar_rollforward"].status == "pass"  # 200 + 15 - 5 == 210
 
@@ -147,13 +147,13 @@ def test_ledger_checks_pass_and_fail(db_session):
         .values(amount=Decimal("999"))
     )
     db_session.commit()
-    checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day)}
+    checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day, "OPERA")}
     assert checks["balance_identity"].status == "fail"
 
 
 def test_ledger_checks_skip_without_data(db_session):
     _org_and_property(db_session, pid="SSSJ", pms_source="AUTOCLERK")
-    checks = ledger_checks(db_session, "SSSJ", date(2026, 8, 18))
+    checks = ledger_checks(db_session, "SSSJ", date(2026, 8, 18), "AUTOCLERK")
     assert [c.status for c in checks] == ["skipped"]
 
 
@@ -623,3 +623,72 @@ def test_segments_save_updates_stage_and_repromotes(db_session, db_engine, tmp_p
         json={"rows": [{"code": "NOPE", "rooms": "1", "room_revenue": "1"}]},
     )
     assert r.status_code == 422
+
+
+# --- registry drift guards (review follow-ups) -------------------------------
+
+
+def test_every_required_report_has_a_business_date_extractor():
+    """REQUIRED_REPORTS and _DATE_FNS are two dicts, in two modules, that must
+    agree. The upload endpoint's core guarantee is "business date == the current
+    business date"; it can only check that if the report type has an extractor.
+
+    Adding a report type to REQUIRED_REPORTS without one used to drop that check
+    SILENTLY for the new type. The endpoint now refuses instead, and this test is
+    what keeps that refusal unreachable.
+    """
+    from usali.night_audit import REQUIRED_REPORTS
+    from usali.night_audit_api import _DATE_FNS
+
+    missing = [
+        (source, report_type)
+        for source, reports in REQUIRED_REPORTS.items()
+        for report_type, _label in reports
+        if (source, report_type) not in _DATE_FNS
+    ]
+    assert not missing, f"no _DATE_FNS business-date extractor for: {missing}"
+
+
+def test_ledger_reads_are_keyed_by_pms_source(db_session):
+    """A property-day can hold ledger facts from two sources: the fact table's
+    uniqueness is (property_id, pms_source, business_date, ledger_code), so a PMS
+    migration or an /ingest backfill produces exactly that.
+
+    Unfiltered, `_balances` kept whichever row the database returned last, and
+    `ledger_checks` gates the ROLL on the result. Plant a decoy from a second
+    source whose AR close would BREAK the identity if it were read, and prove the
+    property's own source is the one that counts.
+    """
+    from usali.models import IngestBatch, PmsLedgerBalanceStage, UsaliLedgerBalanceFact
+    from usali.night_audit import _balances
+
+    _org_and_property(db_session)
+    day = date(2026, 8, 18)
+
+    def _fact(source: str, code: str, amount: Decimal) -> None:
+        batch = IngestBatch(pms_source=source, report_type="trial_balance",
+                            source_file=f"{source}-{code}.pdf", file_hash=f"h-{source}-{code}")
+        db_session.add(batch)
+        db_session.flush()
+        stage = PmsLedgerBalanceStage(
+            property_id="HISJ", pms_source=source, report_type="trial_balance",
+            business_date=day, ledger_label=code, kind="balance", amount=amount,
+            source_file=f"{source}.pdf", row_hash=f"r-{source}-{code}",
+            ingest_batch_id=batch.batch_id,
+        )
+        db_session.add(stage)
+        db_session.flush()
+        db_session.add(UsaliLedgerBalanceFact(
+            property_id="HISJ", pms_source=source, business_date=day,
+            ledger_code=code, ledger_name=code, kind="balance", amount=amount,
+            ingest_batch_id=batch.batch_id, ledger_stage_id=stage.ledger_stage_id,
+        ))
+
+    _fact("OPERA", "AR_LEDGER", Decimal("210"))
+    # Same property, same day, same ledger — a different source. Permitted by
+    # the unique constraint, and the value a collapsed read might pick up.
+    _fact("AUTOCLERK", "AR_LEDGER", Decimal("999999"))
+    db_session.flush()
+
+    assert _balances(db_session, "HISJ", day, "OPERA")["AR_LEDGER"] == Decimal("210")
+    assert _balances(db_session, "HISJ", day, "AUTOCLERK")["AR_LEDGER"] == Decimal("999999")
