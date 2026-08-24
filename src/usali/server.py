@@ -299,6 +299,7 @@ def create_app(
     notifier: Notifier | None = None,
     provisioner_session_factory: SessionFactory | None = None,
     admin_notify_email: str | None = None,
+    public_base_url: str | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # Fail fast on a misconfigured provider NAME (cheap string check — the
@@ -365,6 +366,13 @@ def create_app(
     app.state.admin_notify_email = (
         admin_notify_email if admin_notify_email is not None
         else settings.admin_notify_email
+    )
+    # Where the self-serve signup link points (POST /api/signup/request). The
+    # request has no trustworthy origin behind a proxy, so the public host is
+    # configured, never derived from the request -- an attacker-controlled Host
+    # header would otherwise put its own domain in an email we sent.
+    app.state.public_base_url = (
+        public_base_url if public_base_url is not None else settings.public_base_url
     )
     # Provisioner seam (D-B7): the confined signup-completion path's ONLY
     # elevated credential. Tests inject a factory on the provisioner role; the

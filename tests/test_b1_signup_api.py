@@ -3,6 +3,8 @@ role + provisioner role, fail-closed refusals, and the confinement pin — the
 only elevated session the endpoint opens is the provisioner one, only in
 completion."""
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -18,7 +20,8 @@ from usali.photo_store import InMemoryPhotoStore
 from usali.server import create_app
 
 
-def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None, admin_email: str = ""):
+def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None, admin_email: str = "",
+                   public_base_url: str = "http://testserver"):
     """A serving app whose PUBLIC surfaces run as usali_app and whose
     provisioner seam runs as usali_provisioner. `spy` wraps the provisioner
     factory so a test can assert it is (or is not) opened."""
@@ -37,6 +40,7 @@ def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None, admin_email: str
         photo_store=InMemoryPhotoStore(),
         notifier=notifier,
         admin_notify_email=admin_email,
+        public_base_url=public_base_url,
     )
     return TestClient(app)
 
@@ -46,6 +50,15 @@ def _founding_committed(db_session):
     from usali.mapping.property_registry import ensure_default_org
     ensure_default_org(db_session)
     db_session.commit()
+
+
+def _last_code(notifier) -> str:
+    """The 6-digit code from the most recent OTP email. The body is prose now
+    (an owner reads it), so the tests extract rather than assume it IS the code."""
+    body = notifier.emails[-1]["body"]
+    match = re.search(r"\b(\d{6})\b", body)
+    assert match is not None, f"no 6-digit code in OTP email: {body!r}"
+    return match.group(1)
 
 
 def _make_invite(db_url, email):
@@ -71,16 +84,48 @@ def test_get_invite_refuses_unknown_token_without_oracle(db_url, tmp_path, _foun
     assert r.status_code == 404
 
 
-def test_otp_requires_a_valid_invite_and_sends_the_sms(db_url, tmp_path, _founding_committed):
+def test_otp_goes_to_the_invited_email_not_the_typed_cell(
+    db_url, tmp_path, _founding_committed
+):
+    """The code is delivered to the address the invite was issued to, and NEVER
+    to the cell the caller typed. Two reasons, and both matter:
+
+    there is no SMS vendor (SmtpNotifier.send_sms raises), so an SMS code would
+    reach nobody; and the cell is caller-supplied, so keying delivery on it
+    would let anyone holding a leaked invite link redirect the code to a number
+    they control. The invited email is the one channel already proven to belong
+    to the invitee — they clicked a link sent to it."""
     raw = _make_invite(db_url, "owner@example.test")
     notifier = CapturingNotifier()
     client = _signup_client(db_url, tmp_path, notifier=notifier,
                             kc=InMemoryKeycloakAdmin())
     ok = client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
     assert ok.status_code == 204
-    assert len(notifier.smses) == 1 and notifier.smses[0]["to"] == "+15550000000"
+    assert notifier.smses == []
+    assert len(notifier.emails) == 1 and notifier.emails[0]["to"] == "owner@example.test"
+    assert _last_code(notifier)
     bad = client.post("/api/signup/otp", json={"token": "nope", "cell": "+15550000000"})
     assert bad.status_code == 404
+
+
+def test_otp_ceiling_is_keyed_on_the_invite_not_the_caller_typed_cell(
+    db_url, tmp_path, _founding_committed
+):
+    """Rotating the cell must not buy a fresh budget. The old key was the typed
+    cell, so a caller could mint unlimited codes for one invite (and one
+    mailbox) just by changing a digit. The invite token is the thing being
+    spent, so it is the thing that is counted."""
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin())
+    # settings.signup_otp_max_per_window defaults to 5.
+    for i in range(5):
+        assert client.post("/api/signup/otp",
+                           json={"token": raw, "cell": f"+1555000000{i}"}).status_code == 204
+    blocked = client.post("/api/signup/otp", json={"token": raw, "cell": "+15559999999"})
+    assert blocked.status_code == 429
+    assert len(notifier.emails) == 5
 
 
 def test_happy_path_provisions_a_second_tenant_and_consumes_the_invite(
@@ -93,7 +138,7 @@ def test_happy_path_provisions_a_second_tenant_and_consumes_the_invite(
 
     assert client.post("/api/signup/otp",
                        json={"token": raw, "cell": "+15550000000"}).status_code == 204
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
 
     done = client.post("/api/signup/complete", json={
         "token": raw, "otp": code,
@@ -160,7 +205,7 @@ def test_complete_reverts_claim_when_provisioning_fails(
     notifier = CapturingNotifier()
     client = _signup_client(db_url, tmp_path, notifier=notifier, kc=_BoomKc())
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
 
     with pytest.raises(KeycloakAdminError):
         client.post("/api/signup/complete", json={
@@ -198,7 +243,7 @@ def test_the_endpoint_opens_the_provisioner_session_only_in_completion(
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
     assert opened == []  # provisioner untouched by the read + otp paths
 
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
     client.post("/api/signup/complete", json={
         "token": raw, "otp": code, "workspace_name": "Only Once Group",
         "workspace_alias": "only-once-group", "property_name": "H",
@@ -219,7 +264,7 @@ def test_malformed_alias_is_422_and_does_not_burn_the_invite(
     client = _signup_client(db_url, tmp_path, notifier=notifier,
                             kc=InMemoryKeycloakAdmin())
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
     r = client.post("/api/signup/complete", json={
         "token": raw, "otp": code, "workspace_name": "Typo Group",
         "workspace_alias": "Bad Alias!!",  # spaces + caps + punctuation
@@ -239,7 +284,7 @@ def test_complete_rejects_other_pms_without_a_name(db_url, tmp_path, _founding_c
     client = _signup_client(db_url, tmp_path, notifier=notifier,
                             kc=InMemoryKeycloakAdmin())
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
     r = client.post("/api/signup/complete", json={
         "token": raw, "otp": code, "workspace_name": "W", "workspace_alias": "w-x",
         "property_name": "P", "pms_source": "other",  # no pms_other_name
@@ -254,7 +299,7 @@ def test_complete_rejects_unknown_pms_source(db_url, tmp_path, _founding_committ
     client = _signup_client(db_url, tmp_path, notifier=notifier,
                             kc=InMemoryKeycloakAdmin())
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
     r = client.post("/api/signup/complete", json={
         "token": raw, "otp": code, "workspace_name": "W", "workspace_alias": "w-y",
         "property_name": "P", "pms_source": "sabre-x",  # not a member of the set
@@ -274,7 +319,7 @@ def test_complete_creates_the_first_property(db_url, tmp_path, _founding_committ
     kc = InMemoryKeycloakAdmin()
     client = _signup_client(db_url, tmp_path, notifier=notifier, kc=kc)
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
 
     done = client.post("/api/signup/complete", json={
         "token": raw, "otp": code,
@@ -310,7 +355,7 @@ def test_complete_other_pms_records_interest_and_notifies_admin(
     client = _signup_client(db_url, tmp_path, notifier=notifier,
                             kc=InMemoryKeycloakAdmin(), admin_email="ops@example.test")
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
 
     # HotelKey, not SkyTouch: SkyTouch is a SUPPORTED source now, so using it as
     # the example of an unsupported one would assert nothing.
@@ -360,7 +405,7 @@ def test_complete_skytouch_pms_creates_a_property(db_url, tmp_path, _founding_co
     client = _signup_client(db_url, tmp_path, notifier=notifier,
                             kc=InMemoryKeycloakAdmin(), admin_email="ops@example.test")
     client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
-    code = notifier.smses[-1]["body"]
+    code = _last_code(notifier)
 
     done = client.post("/api/signup/complete", json={
         "token": raw, "otp": code,
@@ -383,7 +428,10 @@ def test_complete_skytouch_pms_creates_a_property(db_url, tmp_path, _founding_co
         # A supported source records NO interest row and emails no admin.
         assert s.execute(select(PmsInterestRequest).where(
             PmsInterestRequest.org_alias == "redstone-group")).scalar_one_or_none() is None
-    assert not notifier.emails
+    # Nothing was routed to the admin. (The OTP email to the OWNER is expected —
+    # that is the verification channel now, so the assertion names the admin
+    # address rather than "no email at all".)
+    assert [e for e in notifier.emails if e["to"] == "ops@example.test"] == []
 
 
 def test_signup_literal_tracks_the_detection_registry():
@@ -403,3 +451,98 @@ def test_signup_literal_tracks_the_detection_registry():
 
     offered = set(get_args(CompleteRequest.model_fields["pms_source"].annotation))
     assert offered == supported_pms_sources() | {"other"}
+
+
+# --- POST /api/signup/request: the self-serve front door --------------------
+# Until now an invite could only be minted by an operator running the CLI. That
+# is why "Save & automate" on /try had nowhere to go. This endpoint lets a
+# stranger ask for one and be emailed the link, with the same no-oracle posture
+# as every other public refusal here.
+
+
+def _requests_client(db_url, tmp_path, *, notifier, base_url="https://demo.example.test"):
+    return _signup_client(
+        db_url, tmp_path, notifier=notifier, kc=InMemoryKeycloakAdmin(),
+        public_base_url=base_url,
+    )
+
+
+def _link_from(notifier) -> str:
+    body = notifier.emails[-1]["body"]
+    match = re.search(r"https?://\S+", body)
+    assert match is not None, f"no signup link in invite email: {body!r}"
+    return match.group(0)
+
+
+def test_request_emails_a_working_signup_link(db_url, tmp_path, _founding_committed):
+    notifier = CapturingNotifier()
+    client = _requests_client(db_url, tmp_path, notifier=notifier)
+
+    r = client.post("/api/signup/request", json={"email": "owner@example.test"})
+    assert r.status_code == 202
+
+    assert len(notifier.emails) == 1 and notifier.emails[0]["to"] == "owner@example.test"
+    link = _link_from(notifier)
+    assert link.startswith("https://demo.example.test/signup?token=")
+    # The end-to-end pin: the emailed token is one the signup surface accepts.
+    token = link.split("token=", 1)[1]
+    invite = client.get(f"/api/signup/invite/{token}")
+    assert invite.status_code == 200 and invite.json()["email"] == "owner@example.test"
+
+
+def test_request_is_accepted_identically_for_an_address_that_already_has_an_invite(
+    db_url, tmp_path, _founding_committed
+):
+    """No existence oracle. A second ask for the same address answers exactly as
+    the first did, so the endpoint cannot be used to enumerate who has already
+    signed up. The rate limiter, not a distinguishable refusal, is what stops
+    abuse."""
+    notifier = CapturingNotifier()
+    client = _requests_client(db_url, tmp_path, notifier=notifier)
+    first = client.post("/api/signup/request", json={"email": "owner@example.test"})
+    second = client.post("/api/signup/request", json={"email": "owner@example.test"})
+    assert (first.status_code, first.json()) == (second.status_code, second.json())
+
+
+def test_request_rate_limits_per_address(db_url, tmp_path, _founding_committed):
+    notifier = CapturingNotifier()
+    client = _requests_client(db_url, tmp_path, notifier=notifier)
+    for _ in range(5):  # signup_otp_max_per_window default
+        assert client.post("/api/signup/request",
+                           json={"email": "owner@example.test"}).status_code == 202
+    blocked = client.post("/api/signup/request", json={"email": "owner@example.test"})
+    assert blocked.status_code == 429
+    assert len(notifier.emails) == 5
+
+
+def test_request_rejects_a_malformed_address_before_minting_anything(
+    db_url, tmp_path, _founding_committed
+):
+    notifier = CapturingNotifier()
+    client = _requests_client(db_url, tmp_path, notifier=notifier)
+    r = client.post("/api/signup/request", json={"email": "not-an-address"})
+    assert r.status_code == 422
+    assert notifier.emails == []
+
+
+def test_request_does_not_leave_a_usable_invite_when_the_email_cannot_be_sent(
+    db_url, tmp_path, _founding_committed
+):
+    """A relay outage must not mint a live invite nobody can reach. The token
+    only ever existed in the undelivered message, so a pending row for it is an
+    unreachable credential sitting in the database — revoke it and tell the
+    caller it failed, rather than answering 202 and stranding them."""
+    class _BrokenNotifier(CapturingNotifier):
+        def send_email(self, *, to: str, subject: str, body: str) -> None:
+            raise RuntimeError("relay refused")
+
+    notifier = _BrokenNotifier()
+    client = _requests_client(db_url, tmp_path, notifier=notifier)
+    r = client.post("/api/signup/request", json={"email": "owner@example.test"})
+    assert r.status_code == 502
+
+    from usali.models import Invite
+    factory = make_session_factory(make_engine(app_role_url(db_url)))
+    with factory() as s:
+        statuses = list(s.execute(select(Invite.status)).scalars())
+    assert "pending" not in statuses
