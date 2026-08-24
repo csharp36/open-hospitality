@@ -77,6 +77,14 @@ jobs:
           AR_REPO: ${{ vars.GCP_AR_REPO }}
           AUTH_HOST: ${{ vars.DEMO_AUTH_HOST }}
           APP_HOST: ${{ vars.DEMO_APP_HOST }}
+          # Email delivery (B2). Unset -> the deploy keeps the console notifier
+          # and says so: nothing breaks, but self-serve signup answers 502 and
+          # invite links reach only the Cloud Run logs. Set SMTP_HOST (plus the
+          # usali-smtp-password secret in Secret Manager) to turn it on.
+          SMTP_HOST: ${{ vars.DEMO_SMTP_HOST }}
+          SMTP_PORT: ${{ vars.DEMO_SMTP_PORT }}
+          SMTP_USERNAME: ${{ vars.DEMO_SMTP_USERNAME }}
+          SMTP_FROM: ${{ vars.DEMO_SMTP_FROM }}
         run: |
           set -euo pipefail
           project="${{ vars.GCP_PROJECT }}"
