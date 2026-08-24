@@ -75,6 +75,11 @@ router = APIRouter(prefix="/api/properties")
 
 _MAX_PDF_BYTES = 25 * 1024 * 1024
 
+
+def _safe_component(value: str) -> str:
+    """Reduce request-controlled text to something safe to splice into a path."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", value)
+
 # (pms_source, report_type) -> the adaptor's own business-date extractor, for
 # the pre-ingest date check. Mirrors ingestion._PIPELINES' date derivation.
 _DATE_FNS = {
@@ -104,7 +109,7 @@ def _state_payload(session: Session, prop: Property) -> dict[str, object]:
     state = get_or_init_state(session, prop)
     day = state.current_business_date
     slots = slot_status(session, prop.property_id, day, prop.pms_source)
-    checks = ledger_checks(session, prop.property_id, day)
+    checks = ledger_checks(session, prop.property_id, day, prop.pms_source)
     window = roll_window(prop)
     segments = segment_reconciliation(session, prop.property_id, day, prop.pms_source)
     all_landed = bool(slots) and all(bool(s["landed"]) for s in slots)
@@ -174,7 +179,15 @@ async def upload_night_audit_report(
         inbox.mkdir(parents=True, exist_ok=True)
         # Prefix with the property + date so a night's re-send can't collide
         # with another property's same-named export.
-        dest = inbox / f"night-audit-{property_id}-{re.sub(r'[^A-Za-z0-9._-]', '_', upload_name)}"
+        # BOTH components are scrubbed. property_id is gated by the Property
+        # lookup above so it cannot be arbitrary today, but it is still
+        # request-controlled text being spliced into a filesystem path, and the
+        # asymmetry (scrub one, trust the other) invites relaxing that gate
+        # later. _safe_component is the single rule for both.
+        dest = inbox / (
+            f"night-audit-{_safe_component(property_id)}"
+            f"-{_safe_component(upload_name)}"
+        )
         try:
             with dest.open("xb") as staged:
                 staged.write(payload)
@@ -208,19 +221,32 @@ async def upload_night_audit_report(
                 f"{det.report_type} is not part of this property's night audit "
                 f"({prop.pms_source} requires: {', '.join(sorted(required))})",
             )
+        # "business date == the current date" is this endpoint's whole point, so
+        # a missing extractor REFUSES rather than skipping the check. Skipping
+        # would silently drop the guarantee the moment a report type is added to
+        # REQUIRED_REPORTS without a matching _DATE_FNS entry -- two dicts that
+        # must agree, in different modules. test_night_audit pins them together,
+        # so this branch is unreachable while that test passes; it is the belt to
+        # that test's braces, and it fails LOUD.
         date_fn = _DATE_FNS.get((det.pms_source, det.report_type))
-        if date_fn is not None:
-            try:
-                report_date = date_fn(words)
-            except Exception as exc:
-                raise _refuse(422, f"could not read the report's business date: {exc}") from exc
-            if report_date != state.current_business_date:
-                raise _refuse(
-                    422,
-                    f"report is for {report_date.isoformat()} but the current "
-                    f"business date is {state.current_business_date.isoformat()} — "
-                    "use the Upload page for backfills",
-                )
+        if date_fn is None:
+            raise _refuse(
+                500,
+                f"no business-date extractor is registered for {det.pms_source}/"
+                f"{det.report_type}, so this upload cannot be checked against the "
+                "current business date — refusing rather than staging it unverified",
+            )
+        try:
+            report_date = date_fn(words)
+        except Exception as exc:
+            raise _refuse(422, f"could not read the report's business date: {exc}") from exc
+        if report_date != state.current_business_date:
+            raise _refuse(
+                422,
+                f"report is for {report_date.isoformat()} but the current "
+                f"business date is {state.current_business_date.isoformat()} — "
+                "use the Upload page for backfills",
+            )
 
         try:
             r = process_file(session, dest, processed_dir=processed, failed_dir=failed)
@@ -344,9 +370,15 @@ def adjust_prior_close(
         state = get_or_init_state(session, prop)
         prior_day = state.current_business_date - timedelta(days=1)
 
+        # Keyed by pms_source like the fact table itself
+        # (property_id, pms_source, business_date, ledger_code). Unfiltered,
+        # a property holding rows from two sources -- a PMS migration, or a
+        # backfill through the unrestricted /ingest path -- raises
+        # MultipleResultsFound out of scalar_one_or_none() as an unhandled 500.
         fact = session.execute(
             select(UsaliLedgerBalanceFact).where(
                 UsaliLedgerBalanceFact.property_id == property_id,
+                UsaliLedgerBalanceFact.pms_source == prop.pms_source,
                 UsaliLedgerBalanceFact.business_date == prior_day,
                 UsaliLedgerBalanceFact.ledger_code == "AR_LEDGER",
                 UsaliLedgerBalanceFact.kind == "balance",
@@ -421,9 +453,14 @@ def save_segment_rows(
         state = get_or_init_state(session, prop)
         day = state.current_business_date
 
+        # Scoped to the property's own pms_source: the delete + promote below
+        # are, so editing rows from another source would leave corrections the
+        # rebuild never covers -- the exact drift this endpoint promises to
+        # prevent.
         stage_rows = session.execute(
             select(PmsDailySegmentStage).where(
                 PmsDailySegmentStage.property_id == property_id,
+                PmsDailySegmentStage.pms_source == prop.pms_source,
                 PmsDailySegmentStage.business_date == day,
                 PmsDailySegmentStage.period_label == "DAY",
             )
@@ -525,7 +562,10 @@ def roll_night_audit(
                 status_code=409,
                 detail=f"cannot roll: still awaiting {', '.join(missing)} for {day.isoformat()}",
             )
-        failed = [c for c in ledger_checks(session, property_id, day) if c.status == "fail"]
+        failed = [
+            c for c in ledger_checks(session, property_id, day, prop.pms_source)
+            if c.status == "fail"
+        ]
         if failed:
             raise HTTPException(
                 status_code=409,

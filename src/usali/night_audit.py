@@ -132,17 +132,32 @@ def slot_status(
     ]
 
 
-def _balances(session: Session, property_id: str, day: date) -> dict[str, Decimal]:
+def _balances(
+    session: Session, property_id: str, day: date, pms_source: str
+) -> dict[str, Decimal]:
+    """The day's ledger closes, keyed by ledger_code.
+
+    FILTERED BY pms_source, because the fact table is: its uniqueness is
+    (property_id, pms_source, business_date, ledger_code), so one property-day
+    may legitimately hold two AR_LEDGER rows from different sources -- a
+    property that migrated PMS, or a backfill through the unrestricted /ingest
+    path. Without the filter this dict comprehension keeps whichever row the
+    database happened to return last, silently, and `ledger_checks` gates the
+    roll on the result.
+    """
     rows = session.execute(
         select(UsaliLedgerBalanceFact.ledger_code, UsaliLedgerBalanceFact.amount).where(
             UsaliLedgerBalanceFact.property_id == property_id,
+            UsaliLedgerBalanceFact.pms_source == pms_source,
             UsaliLedgerBalanceFact.business_date == day,
         )
     ).all()
     return {code: Decimal(str(amount)) for code, amount in rows}
 
 
-def ledger_checks(session: Session, property_id: str, day: date) -> list[LedgerCheck]:
+def ledger_checks(
+    session: Session, property_id: str, day: date, pms_source: str
+) -> list[LedgerCheck]:
     """The 'balances are zero as per the last' verification, from the trial
     balance's ledger block. Two zero-checks, each honest about absent data
     (AutoClerk reports carry no ledger block; a first night has no prior close):
@@ -151,7 +166,7 @@ def ledger_checks(session: Session, property_id: str, day: date) -> list[LedgerC
     * AR roll-forward — prior AR close + today's charges − payments − today's
       AR close == 0.
     """
-    today = _balances(session, property_id, day)
+    today = _balances(session, property_id, day, pms_source)
     checks: list[LedgerCheck] = []
 
     if not today:
@@ -183,7 +198,7 @@ def ledger_checks(session: Session, property_id: str, day: date) -> list[LedgerC
             )
         )
 
-    prior = _balances(session, property_id, day - timedelta(days=1))
+    prior = _balances(session, property_id, day - timedelta(days=1), pms_source)
     if "AR_LEDGER" in prior and "AR_LEDGER" in today:
         charges = today.get("AR_CHARGES", Decimal("0"))
         payments = today.get("AR_PAYMENTS", Decimal("0"))
