@@ -93,8 +93,8 @@ export default function PreviewPage() {
           <p className="mt-3 text-brand-ink-muted">
             Drop in the night-audit report your front desk already prints. We read it, sort
             every charge the way a hotel accountant would, and show you the result —
-            <span className="text-brand-ink"> in about ten seconds, with no account, and
-            without keeping your file.</span>
+            <span className="text-brand-ink"> with no account, and without keeping your
+            file.</span>
           </p>
         </div>
 
@@ -156,8 +156,9 @@ function HowItWorks() {
         <h2 className="font-display text-lg">It tells you what it wasn’t sure about</h2>
         <p className="mt-1 text-sm text-brand-ink-muted">
           Every property has house codes nobody else uses. Rather than guess at one and
-          quietly file it in the wrong place, the result names the codes that still need a
-          person to confirm them.
+          quietly file it in the wrong place, the result tells you how many are still
+          waiting on a person — this preview counts them; a workspace is where you settle
+          them.
         </p>
       </div>
       <div>
