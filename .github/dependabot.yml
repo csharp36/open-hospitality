@@ -49,6 +49,22 @@ updates:
       timezone: America/New_York
     open-pull-requests-limit: 5
 
+  # Grouped into ONE PR, like pip and npm above. Not merely to keep the queue
+  # short: an ungrouped ecosystem cannot express that some actions must move in
+  # LOCKSTEP, and CodeQL does.
+  #
+  # On 2026-08-24 dependabot opened #89 (github/codeql-action/init 4.37.7 ->
+  # 4.37.8) and #87 (github/codeql-action/analyze, same bump) as separate PRs.
+  # Each ran one half of the pair against the other half's old version, so both
+  # failed with "Loaded a configuration file for version '4.37.8', but running
+  # version '4.37.7'". Neither could go green alone, and merging either one on
+  # its own would have left CodeQL BROKEN ON MAIN until the other landed. These
+  # two bump together every CodeQL release, so this would have recurred monthly.
+  #
+  # The trade this accepts is the one pip and npm already accept: a single
+  # broken bump holds up the rest of the group until it is dropped or fixed.
+  # That is the cheaper failure -- it fails in a PR, where a red check is the
+  # whole point, rather than on main.
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -57,3 +73,7 @@ updates:
       time: "09:45"
       timezone: America/New_York
     open-pull-requests-limit: 5
+    groups:
+      github-actions:
+        patterns:
+          - "*"
