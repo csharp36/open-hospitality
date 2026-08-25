@@ -17,7 +17,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "watchdog>=6.0.0",
     "fastapi>=0.141.1",
-    "uvicorn>=0.52.2",
+    "uvicorn>=0.52.4",
     "python-multipart>=0.0.32",
     "httpx>=0.28.1",
     "pyjwt[crypto]>=2.13.0",
@@ -31,15 +31,15 @@ dependencies = [
 # Face matching (Pillar F): heavy, optional, dark-flagged. The core install
 # never pays for onnxruntime; the engine imports lazily and fails loudly.
 face = [
-    "onnxruntime>=1.28.0",
+    "onnxruntime>=1.29.0",
     "numpy>=2.5.2",
     "pillow>=12.3.0",
 ]
 dev = [
     "pytest>=9.1.1",
     "testcontainers[postgres]>=4.15.0",
-    "ruff>=0.16.2",
-    "mypy>=2.3.0",
+    "ruff>=0.16.4",
+    "mypy>=2.3.1",
     "types-PyYAML",
     "types-defusedxml",
 ]
@@ -86,5 +86,5 @@ strict = true
 
 [dependency-groups]
 dev = [
-    "reportlab>=5.0.0",
+    "reportlab>=5.0.1",
 ]
