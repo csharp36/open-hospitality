@@ -119,7 +119,8 @@ non-secret; use *Variables*, not *Secrets*):
 | `DEMO_APP_HOST` | **yes, for self-service signup** | `demo.mandati.ai` — the public host the `/signup` invite links point at. The serving app derives its own absolute URLs from request headers, but the `usali invite` CLI (run by the `usali-invite` job) has no request context, so it needs this explicitly; unset → invite links point at the `app.example.com` placeholder. |
 | `DEMO_SMTP_HOST` | **yes, for a public front door** | e.g. `smtp.sendgrid.net`. Unset → the deploy keeps the console notifier and prints a NOTE saying so: `POST /api/signup/request` answers 502, and invite links and verification codes reach only the Cloud Run logs. That is fine for an operator-run pilot and useless for anyone you send `/try` to. See *Email delivery* below. |
 | `DEMO_SMTP_PORT` | no | overrides the `587` (STARTTLS submission) default |
-| `DEMO_SMTP_USERNAME` | no | overrides the `apikey` default. Leave the password secret unset **and** this empty only for a relay that authorises by network, not credentials. |
+| `DEMO_SMTP_USERNAME` | no | overrides the `apikey` default. Leave the password secret unset **and** this empty only for a relay that authorises by network, not credentials. **Do not put a secret here** — Variables are plaintext and are echoed into the deploy log; see `DEMO_SMTP_USERNAME_FROM_SECRET`. |
+| `DEMO_SMTP_USERNAME_FROM_SECRET` | **yes, for Postmark** | `true` when the relay's username IS the API token. Postmark uses its Server API Token as both SMTP username and password; SendGrid/Resend/Mailgun use a fixed non-secret username, so they leave this unset. |
 | `DEMO_SMTP_FROM` | no | overrides `Open Hospitality <no-reply@$APP_HOST>`. Must be an address the relay is authorised to send for. |
 | `GCP_REGION` | no | overrides the `us-west1` default |
 | `GCP_SQL_INSTANCE` | no | overrides the `usali-demo` default |
@@ -143,6 +144,13 @@ gcloud secrets add-iam-policy-binding usali-smtp-password \
   --member "serviceAccount:usali-app@${PROJECT}.iam.gserviceaccount.com" \
   --role roles/secretmanager.secretAccessor --project "$PROJECT"
 ```
+
+**If the relay's username is itself a secret** (Postmark), set
+`DEMO_SMTP_USERNAME_FROM_SECRET=true` and leave `DEMO_SMTP_USERNAME` unset. The
+deploy then mounts the SAME `usali-smtp-password` secret into both
+`USALI_SMTP_USERNAME` and `USALI_SMTP_PASSWORD` — one secret, two env vars, and
+the token never becomes a repo Variable or a `--set-env-vars` line in the log.
+No second secret to create.
 
 Two things fail loudly rather than quietly, on purpose:
 

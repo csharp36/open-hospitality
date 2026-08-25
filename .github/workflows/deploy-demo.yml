@@ -84,6 +84,10 @@ jobs:
           SMTP_HOST: ${{ vars.DEMO_SMTP_HOST }}
           SMTP_PORT: ${{ vars.DEMO_SMTP_PORT }}
           SMTP_USERNAME: ${{ vars.DEMO_SMTP_USERNAME }}
+          # true for a relay whose username IS the API token (Postmark). The
+          # token then rides the Secret Manager secret into both env vars and
+          # never becomes a plaintext Variable.
+          SMTP_USERNAME_FROM_SECRET: ${{ vars.DEMO_SMTP_USERNAME_FROM_SECRET }}
           SMTP_FROM: ${{ vars.DEMO_SMTP_FROM }}
         run: |
           set -euo pipefail
