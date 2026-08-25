@@ -40,7 +40,9 @@ describe('SignupPage — invite load', () => {
   it('shows the invited email when the token is valid', async () => {
     vi.mocked(getInvite).mockResolvedValue('owner@hotel.test')
     renderSignup()
-    expect(await screen.findByText(/owner@hotel\.test/)).toBeInTheDocument()
+    // findAll: the address is shown twice now — "Invited as ..." and the line
+    // saying where the verification code is going.
+    expect((await screen.findAllByText(/owner@hotel\.test/)).length).toBeGreaterThan(0)
     // The cell step is available (a mobile field), not a refusal.
     expect(screen.getByLabelText(/mobile/i)).toBeInTheDocument()
   })
@@ -380,5 +382,19 @@ describe('SignupPage — server 422 is not the opaque error', () => {
     await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
     expect(screen.getByText(/some details weren.t accepted/i)).toBeInTheDocument()
     expect(screen.queryByText(/something didn.t go through/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('SignupPage — where the code actually goes', () => {
+  it('tells the owner the code is emailed, not texted', async () => {
+    // The step collects a mobile number but the OTP goes to the invited email
+    // (there is no SMS vendor, and a caller-supplied number is not a channel we
+    // can trust). A page that asks for a phone and then says "we sent your
+    // code" points someone at the wrong device.
+    vi.mocked(getInvite).mockResolvedValue('owner@hotel.test')
+    renderSignup()
+    expect(await screen.findByText(/email your verification code to owner@hotel\.test/i))
+      .toBeInTheDocument()
+    expect(screen.getByText(/won’t text you a code|won't text you a code/i)).toBeInTheDocument()
   })
 })

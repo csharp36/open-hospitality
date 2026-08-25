@@ -117,9 +117,52 @@ non-secret; use *Variables*, not *Secrets*):
 | `GCP_DEPLOY_SA` | yes | `$DEPLOY_SA_EMAIL` |
 | `DEMO_AUTH_HOST` | **yes, for this demo** | `auth.mandati.ai` — the public `deploy_app.sh` defaults `AUTH_HOST` to the `auth.example.com` placeholder (open-core scrubbing). This host is baked into the SPA's OIDC authority **and** the backend issuer, so if it is unset the deployed site points at the placeholder realm and login breaks. |
 | `DEMO_APP_HOST` | **yes, for self-service signup** | `demo.mandati.ai` — the public host the `/signup` invite links point at. The serving app derives its own absolute URLs from request headers, but the `usali invite` CLI (run by the `usali-invite` job) has no request context, so it needs this explicitly; unset → invite links point at the `app.example.com` placeholder. |
+| `DEMO_SMTP_HOST` | **yes, for a public front door** | e.g. `smtp.sendgrid.net`. Unset → the deploy keeps the console notifier and prints a NOTE saying so: `POST /api/signup/request` answers 502, and invite links and verification codes reach only the Cloud Run logs. That is fine for an operator-run pilot and useless for anyone you send `/try` to. See *Email delivery* below. |
+| `DEMO_SMTP_PORT` | no | overrides the `587` (STARTTLS submission) default |
+| `DEMO_SMTP_USERNAME` | no | overrides the `apikey` default. Leave the password secret unset **and** this empty only for a relay that authorises by network, not credentials. |
+| `DEMO_SMTP_FROM` | no | overrides `Open Hospitality <no-reply@$APP_HOST>`. Must be an address the relay is authorised to send for. |
 | `GCP_REGION` | no | overrides the `us-west1` default |
 | `GCP_SQL_INSTANCE` | no | overrides the `usali-demo` default |
 | `GCP_AR_REPO` | no | overrides the `usali` default |
+
+#### Email delivery
+
+Self-serve signup is only reachable by someone you have never met if the invite
+link and the verification code can actually be sent. Both go out through the
+`Notifier` seam, which ships two adapters: `console` (logs, sends nothing) and
+`smtp`.
+
+The SMTP adapter is deliberately vendor-neutral — SendGrid, Mailgun, Postmark,
+SES and a self-hosted MTA all speak submission — so choosing one is these
+variables plus one secret, never a code change:
+
+```bash
+printf '%s' "$SMTP_API_KEY" | gcloud secrets create usali-smtp-password \
+  --data-file=- --project "$PROJECT"
+gcloud secrets add-iam-policy-binding usali-smtp-password \
+  --member "serviceAccount:usali-app@${PROJECT}.iam.gserviceaccount.com" \
+  --role roles/secretmanager.secretAccessor --project "$PROJECT"
+```
+
+Two things fail loudly rather than quietly, on purpose:
+
+- Selecting `smtp` without a host or a From address raises when the notifier is
+  **built**, so a half-set deploy dies at startup instead of on the first owner
+  who asks for a link.
+- There is still no SMS vendor. `SmtpNotifier.send_sms` raises rather than drop
+  a code the caller believes was delivered, which is why the signup OTP goes to
+  the invited email address.
+
+Verify delivery after a deploy by requesting a link for an address you control:
+
+```bash
+curl -sS -X POST "https://${DEMO_APP_HOST}/api/signup/request" \
+  -H 'content-type: application/json' -d '{"email":"you@example.com"}' -i | head -1
+```
+
+`202` means the mail was handed to the relay; `502` means the send failed and
+the invite was revoked rather than left pending as a credential nobody can
+reach. A `202` is **not** proof the message arrived — check the inbox.
 
 **Settings → Environments → New environment → `demo`** (matches the workflow's
 `environment:`). Optionally add *Required reviewers* / a *Wait timer* here to
