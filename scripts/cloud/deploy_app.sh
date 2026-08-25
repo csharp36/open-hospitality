@@ -38,6 +38,14 @@ APP_HOST="${APP_HOST:-app.example.com}"
 SMTP_HOST="${SMTP_HOST:-}"
 SMTP_PORT="${SMTP_PORT:-587}"
 SMTP_USERNAME="${SMTP_USERNAME:-apikey}"
+# Some relays use ONE credential for both SMTP fields -- Postmark's Server API
+# Token is the username as well as the password. For those, the username is a
+# secret, and a plaintext repo Variable (echoed into the deploy log by
+# --set-env-vars) is the wrong home for it. Set this true and the SAME Secret
+# Manager secret is mounted into both env vars instead, so the token never
+# leaves GCP. Leave it unset for SendGrid-shaped relays, whose username is a
+# fixed non-secret string.
+SMTP_USERNAME_FROM_SECRET="${SMTP_USERNAME_FROM_SECRET:-}"
 # The From address. Must be one the relay is authorised to send for (SPF/DKIM),
 # or the mail is accepted here and silently dropped or junked downstream.
 SMTP_FROM="${SMTP_FROM:-Open Hospitality <no-reply@${APP_HOST}>}"
@@ -91,9 +99,15 @@ if [[ -n "${SMTP_HOST}" ]]; then
   COMMON_ENV+=",USALI_NOTIFIER=smtp"
   COMMON_ENV+=",USALI_SMTP_HOST=${SMTP_HOST}"
   COMMON_ENV+=",USALI_SMTP_PORT=${SMTP_PORT}"
-  COMMON_ENV+=",USALI_SMTP_USERNAME=${SMTP_USERNAME}"
   COMMON_ENV+=",USALI_SMTP_FROM=${SMTP_FROM}"
   SMTP_SECRET=",USALI_SMTP_PASSWORD=usali-smtp-password:latest"
+  if [[ "${SMTP_USERNAME_FROM_SECRET}" == "true" ]]; then
+    # One credential, two fields. Cloud Run mounts a single secret into as many
+    # env vars as you name, so this needs no second secret and no new value.
+    SMTP_SECRET+=",USALI_SMTP_USERNAME=usali-smtp-password:latest"
+  else
+    COMMON_ENV+=",USALI_SMTP_USERNAME=${SMTP_USERNAME}"
+  fi
 else
   echo "NOTE: SMTP_HOST unset -- deploying with the console notifier."
   echo "      Self-serve signup will 502 and invite links will only reach the logs."
