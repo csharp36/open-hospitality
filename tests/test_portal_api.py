@@ -363,6 +363,53 @@ def test_spa_mounted_when_dist_exists(db_engine, db_session, founding_org, tmp_p
     assert client.get("/api/properties").status_code == 200
     # Unknown API paths are real 404s — the fallback never shadows /api/*.
     assert client.get("/api/nope").status_code == 404
+
+
+def test_missing_file_paths_404_instead_of_returning_the_spa(
+    db_engine, db_session, founding_org, tmp_path
+):
+    """A request that NAMES A FILE and finds none is a 404, not the SPA.
+
+    Serving index.html with a 200 for `/wp-config.php` is not a vulnerability,
+    but it is a lie: every automated scanner records the probe as a hit, so a
+    scan report reads as a list of successful PHP exploits against a site that
+    runs no PHP. Observed live on 2026-08-26 — `/wp-content/plugins/hellopress/
+    wp_filemanager.php` and `/this_is_a_new_hello_world.php` both came back 200.
+
+    The rule is a dot in the LAST path segment. Client-side routes never have
+    one (`/coverage`, `/night-audit`, `/kiosk-devices`), and real assets like
+    `/assets/index-abc.js` exist on disk so they never reach the fallback at
+    all. A future route with a dot in it would 404 on refresh — hence this test,
+    which says why the constraint exists.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    (dist / "index.html").write_text("<html><body>usali portal</body></html>")
+    (dist / "app.js").write_text("console.log('bundle')")
+    client = _make_spa_client(db_engine, tmp_path, dist)
+
+    for probe in (
+        "/wp-content/plugins/hellopress/wp_filemanager.php",
+        "/this_is_a_new_hello_world.php",
+        "/vpn.php",
+        "/.env",
+        "/backup.sql",
+        # Dot-prefixed DIRECTORY, ordinary filename. The first implementation
+        # checked only the last segment and let these through — and `.git/HEAD`
+        # is among the most-probed paths on the internet.
+        "/.git/HEAD",
+        "/.ssh/id_rsa",
+        "/.aws/credentials",
+        "/nested/deep/.git/HEAD",
+    ):
+        assert client.get(probe).status_code == 404, probe
+
+    # The fallback still does its actual job for client-side routes...
+    for deep_link in ("/coverage", "/night-audit", "/kiosk-devices", "/coverage/nested"):
+        r = client.get(deep_link)
+        assert r.status_code == 200 and "usali portal" in r.text, deep_link
+    # ...and a real asset that EXISTS is still served as itself.
+    assert "bundle" in client.get("/app.js").text
     r = client.post("/ingest", files={"file": ("junk.pdf", b"garbage", "application/pdf")})
     assert r.status_code == 422  # routed to the ingest handler, not the SPA
 
