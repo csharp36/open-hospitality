@@ -974,9 +974,9 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.141.1" },
     { name = "google-cloud-storage", specifier = ">=3.13.1" },
     { name = "httpx", specifier = ">=0.28.1" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.0" },
+    { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3.1" },
     { name = "numpy", marker = "extra == 'face'", specifier = ">=2.5.2" },
-    { name = "onnxruntime", marker = "extra == 'face'", specifier = ">=1.28.0" },
+    { name = "onnxruntime", marker = "extra == 'face'", specifier = ">=1.29.0" },
     { name = "pdfplumber", specifier = ">=0.11.10" },
     { name = "pillow", marker = "extra == 'face'", specifier = ">=12.3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.3.4" },
@@ -987,19 +987,19 @@ requires-dist = [
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.1.1" },
     { name = "python-multipart", specifier = ">=0.0.32" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.2" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.16.4" },
     { name = "sqlalchemy", specifier = ">=2.0.52" },
     { name = "testcontainers", extras = ["postgres"], marker = "extra == 'dev'", specifier = ">=4.15.0" },
     { name = "typer", specifier = ">=0.27.1" },
     { name = "types-defusedxml", marker = "extra == 'dev'" },
     { name = "types-pyyaml", marker = "extra == 'dev'" },
-    { name = "uvicorn", specifier = ">=0.52.2" },
+    { name = "uvicorn", specifier = ">=0.52.4" },
     { name = "watchdog", specifier = ">=6.0.0" },
 ]
 provides-extras = ["face", "dev"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "reportlab", specifier = ">=5.0.0" }]
+dev = [{ name = "reportlab", specifier = ">=5.0.1" }]
 
 [[package]]
 name = "packaging"
@@ -1510,15 +1510,15 @@ wheels = [
 
 [[package]]
 name = "reportlab"
-version = "5.0.0"
+version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "charset-normalizer" },
     { name = "pillow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/41/d6/4b7b0cf56880eb96533e607967be6a939e344675601e033d113a0bfa1f4e/reportlab-5.0.0.tar.gz", hash = "sha256:e4494a0c6623ae213bb856fba523171b2b54a7bf629fda02d5e525a7b899a784", size = 3701928, upload-time = "2026-06-18T11:34:31.145Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4a/51/dbe28534ae12c852f61be91f039f343305fd1f34f1c66b8de75afae7a525/reportlab-5.0.1.tar.gz", hash = "sha256:ebd13154be1c8515e665de70bd2d303ae9ddc3ef47e44afd5116441ca0283a26", size = 3945711, upload-time = "2026-08-20T13:48:16.461Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/a3/07/70085c17a369605f15e301d10ab902115019b1126c7253d964afc230c7d6/reportlab-5.0.0-py3-none-any.whl", hash = "sha256:9d5a3affa84919e1111ede580031266a570e93b1ce388219621347965ff1d93c", size = 1956710, upload-time = "2026-06-18T11:34:29.07Z" },
+    { url = "https://files.pythonhosted.org/packages/db/cb/dacbc268cb68d0428ea2cbd85266195a9ab3e677449589ddae59bd7542ac/reportlab-5.0.1-py3-none-any.whl", hash = "sha256:1c36e6bb0e71780c72331eba60da7f602e8d4389a8723825af71342e49d791e8", size = 1957258, upload-time = "2026-08-20T13:48:14.026Z" },
 ]
 
 [[package]]

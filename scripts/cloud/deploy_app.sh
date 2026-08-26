@@ -25,6 +25,34 @@ AUTH_HOST="${AUTH_HOST:-auth.example.com}"
 # invite job needs this explicitly. Placeholder here; the deploy workflow
 # supplies the real host (DEMO_APP_HOST=demo.mandati.ai).
 APP_HOST="${APP_HOST:-app.example.com}"
+
+# The *.example.com defaults are what an open-core repo can commit -- they are
+# NOT something that can be deployed. Refuse rather than default into them.
+#
+# Unset, AUTH_HOST silently becomes Keycloak's own hostname, so the realm issues
+# tokens for https://auth.example.com and EVERY login breaks: oidc-client follows
+# the DISCOVERY DOCUMENT, not its configured authority, so the SPA redirects to a
+# domain nobody owns. Meanwhile the app still validates USALI_OIDC_ISSUER against
+# the real host, so even a reachable login would fail token validation.
+#
+# What made this expensive on 2026-08-25 is where it surfaced: the only visible
+# signal was a domain-mapping error in the LAST step, long after the damage, and
+# it reads as cosmetic. Fail at the top instead, naming the fix.
+_refuse_placeholder_host() {
+  local name="$1" value="$2"
+  if [[ "${value}" == *.example.com ]]; then
+    echo "ERROR: ${name} is still the ${value} placeholder." >&2
+    echo "  Deploying with it configures a host nobody owns and breaks every login." >&2
+    # No ${name,,} here: lowercase expansion is bash 4+, and macOS ships 3.2 --
+    # it would fail INSIDE the error path and mangle the one message that helps.
+    echo "  Re-run with the real host:  ${name}=<your-host> $0 <project-id>" >&2
+    exit 2
+  fi
+}
+# Both matter here: AUTH_HOST is baked into the SPA bundle as VITE_OIDC_AUTHORITY
+# and into USALI_OIDC_ISSUER; APP_HOST is the host every signup link points at.
+_refuse_placeholder_host AUTH_HOST "${AUTH_HOST}"
+_refuse_placeholder_host APP_HOST "${APP_HOST}"
 # Email delivery (B2). Self-serve signup is only reachable by a stranger if the
 # invite link and the verification code can actually be sent, so this is what
 # turns POST /api/signup/request from a 502 into a working front door.
