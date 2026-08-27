@@ -200,3 +200,25 @@ def test_fake_add_member_is_idempotent():
     assert fake.organizations[org_id]["members"] == {"sub-1"}
     with pytest.raises(KeycloakAdminError, match="unknown organization"):
         fake.add_member("no-such-org", "sub-1")
+
+
+def test_read_timeout_absorbs_a_keycloak_cold_start():
+    """The read timeout must outlast a scale-to-zero Keycloak cold start.
+
+    Measured on the demo 2026-08-27: a request that woke `usali-auth` from
+    minScale=0 reached the startup probe ~18s later (11.8s of Quarkus JVM boot,
+    behind a cloud-sql-proxy sidecar that starts first). Cloud Run queues the
+    caller for that whole window, so a flat `timeout=10` made EVERY signup that
+    landed on a cold instance fail in `_token()` — the first stranger after any
+    quiet spell, which is the worst possible way to distribute a failure.
+
+    Connect stays short on purpose: the Google front end accepts the connection
+    immediately even while the container boots, so a slow CONNECT is a real
+    fault and should still fail fast.
+    """
+    c, _ = _client()
+    timeout = c._http.timeout
+    assert timeout.read is not None and timeout.read >= 45, (
+        "read timeout must clear the ~18s cold start with margin"
+    )
+    assert timeout.connect is not None and timeout.connect <= 15
