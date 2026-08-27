@@ -98,3 +98,89 @@ def test_founding_org_seeds_under_force_rls_as_the_app_role():
             os.environ.pop("USALI_DB_URL", None)
         else:
             os.environ["USALI_DB_URL"] = previous
+
+
+def test_reseed_does_not_regress_the_sequence_past_provisioned_tenants():
+    """A RE-seed must never hand the next tenant an id that already exists.
+
+    `ensure_default_org` advances the sequence past the explicit founding id,
+    but it computed that target from `max(org_id) FROM organization` — a SELECT
+    the `org_wall` policy filters, because `organization` carries FORCE RLS and
+    the cloud seed runs as a non-superuser owner that does NOT bypass it. The
+    seed session is bound to the founding org, so it sees org 1 and nothing
+    else: `GREATEST(1, 1)` = 1, and the next `nextval` yields 2 — an id a
+    self-serve signup already took.
+
+    `job.sh` re-seeds on EVERY deploy, so this regressed the sequence every
+    time, and `POST /api/signup/complete` 500'd on `organization_pkey` for the
+    next stranger through the door. Live failure 2026-08-27.
+
+    Every other test in the suite runs as the testcontainers SUPERUSER, which
+    bypasses RLS, sees the true max, and passes — which is why only Cloud SQL
+    ever showed this. This test connects as the RLS-bound app role to reproduce
+    the cloud shape.
+    """
+    previous = os.environ.get("USALI_DB_URL")
+    try:
+        with PostgresContainer("postgres:16", driver="psycopg") as pg:
+            url = pg.get_connection_url()
+            ensure_app_role(url)
+            ensure_provisioner_role(url)
+            command.upgrade(_cfg(url), "head")
+
+            owner = make_engine(url)
+            with owner.begin() as conn:
+                seq = conn.execute(text(
+                    "SELECT pg_get_serial_sequence('organization','org_id')"
+                )).scalar_one()
+                conn.execute(text(f"GRANT UPDATE ON SEQUENCE {seq} TO usali_app"))
+            owner.dispose()
+
+            def reseed() -> None:
+                """One deploy's worth of seeding, in the cloud's RLS shape."""
+                app_engine = make_engine(app_role_url(url))
+                session = bind_org_context(
+                    make_session_factory(app_engine)(), FOUNDING_ORG_ID
+                )
+                try:
+                    ensure_default_org(session)
+                    session.commit()
+                finally:
+                    session.close()
+                    app_engine.dispose()
+
+            reseed()  # first deploy: founding org lands as id 1
+
+            # A stranger signs up. provision_tenant inserts with the
+            # AUTOINCREMENT (no explicit id), as the superuser here since the
+            # provisioner path is not what is under test.
+            owner = make_engine(url)
+            with owner.begin() as conn:
+                tenant_id = conn.execute(text(
+                    "INSERT INTO organization (name, kc_org_alias) "
+                    "VALUES ('Tenant Two', 'tenant-two') RETURNING org_id"
+                )).scalar_one()
+            owner.dispose()
+            assert tenant_id == FOUNDING_ORG_ID + 1, "tenant should follow the founding org"
+
+            reseed()  # the NEXT deploy re-runs the same seed
+
+            # The invariant: whatever the seed does, the sequence must still be
+            # ahead of every id in the table. Before the fix this handed back
+            # `tenant_id` itself and the next signup died on organization_pkey.
+            owner = make_engine(url)
+            with owner.connect() as conn:
+                true_max = conn.execute(
+                    text("SELECT max(org_id) FROM organization")
+                ).scalar_one()
+                nxt = conn.execute(text(f"SELECT nextval('{seq}')")).scalar_one()
+            owner.dispose()
+            assert nxt > true_max, (
+                f"re-seed regressed the sequence: next id {nxt} collides with "
+                f"an existing org (max {true_max})"
+            )
+    finally:
+        if previous is None:
+            os.environ.pop("USALI_DB_URL", None)
+        else:
+            os.environ["USALI_DB_URL"] = previous
