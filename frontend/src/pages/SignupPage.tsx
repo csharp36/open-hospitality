@@ -256,6 +256,30 @@ function DetailsStep({
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  // Set when a refusal arrived AFTER the code was verified and therefore
+  // consumed. The owner's typed details are all still here and still valid —
+  // the only thing they are missing is a live code — so the fix is offered in
+  // place rather than by sending them back to the first step, which would
+  // unmount this component and discard everything they entered.
+  const [codeSpent, setCodeSpent] = useState(false)
+
+  async function resendCode() {
+    setBusy(true)
+    setError(null)
+    try {
+      await requestOtp(token, cell)
+      setCodeSpent(false)
+      setError('A new code is on its way — check your email.')
+    } catch (e) {
+      setError(
+        e instanceof SignupError && e.status === 429
+          ? 'Too many attempts — please wait a minute and try again.'
+          : 'We could not send a new code just now. Please try again in a moment.',
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // The alias tracks the workspace name until the user edits the URL field.
   const effectiveAlias = aliasEdited ? alias : slugify(workspaceName)
@@ -299,15 +323,37 @@ function DetailsStep({
           : (SUPPORTED_PMS.find((o) => o.value === pms)?.label ?? pms)
       onDone({ supported: res.pms_supported, pmsName })
     } catch (e) {
+      const status = e instanceof SignupError ? e.status : 0
+      // The code is single-use and `otp.verify` DELETES it the moment it
+      // matches (usali/otp.py). Every refusal raised after that point therefore
+      // leaves the owner holding a spent code: resubmitting the same form can
+      // only ever come back 403, however correct their details are. So the
+      // failures below split on one question — is the code still good? — and
+      // the ones that burned it say so and offer a fresh one.
+      const burnedTheCode = status === 422 || status >= 500 || status === 0
       setError(
-        e instanceof SignupError && e.status === 403
-          ? 'That code is incorrect or expired.'
-          : e instanceof SignupError && e.status === 429
-            ? 'Too many requests — please wait and try again.'
-            : e instanceof SignupError && e.status === 422
-              ? 'Some details weren’t accepted — please check your entries and try again.'
-              : 'Something didn’t go through. Check your details and try again.',
+        status === 403
+          ? // Verified BEFORE the delete, so this code is still live: retype it.
+            'That code is incorrect or expired.'
+          : status === 429
+            ? 'Too many attempts — please wait a minute and try again.'
+            : status === 404
+              ? // The invite itself is gone (expired, or already used to create
+                // a workspace). A new code cannot revive it; only a new link.
+                'This invite link has already been used or has expired. Request a new one to continue.'
+              : status === 422
+                ? 'Some details weren’t accepted. Check your entries, then request a new code and try again.'
+                : // Ours, not theirs. Their details reached the server and
+                  // passed the same checks the client applies, so blaming them
+                  // sends the owner hunting a problem that is not in the form —
+                  // which is exactly what a Keycloak read timeout and a database
+                  // sequence collision both did here, wearing this same message.
+                  'Something went wrong on our end — no workspace was created. Request a new code and try again in a moment.',
       )
+      if (burnedTheCode) {
+        setOtp('')
+        setCodeSpent(true)
+      }
     } finally {
       setBusy(false)
     }
@@ -325,6 +371,16 @@ function DetailsStep({
         <p role="alert" className="text-sm text-danger-red">
           {error}
         </p>
+      )}
+      {codeSpent && (
+        <button
+          type="button"
+          onClick={() => void resendCode()}
+          disabled={busy}
+          className="text-sm underline underline-offset-2 disabled:opacity-50"
+        >
+          Send me a new code
+        </button>
       )}
       <Field
         label="Verification code"

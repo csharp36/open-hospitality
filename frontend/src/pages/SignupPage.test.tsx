@@ -398,3 +398,70 @@ describe('SignupPage — where the code actually goes', () => {
     expect(screen.getByText(/won’t text you a code|won't text you a code/i)).toBeInTheDocument()
   })
 })
+
+describe('SignupPage — a server fault is not the owner’s fault', () => {
+  // Three distinct backend faults reached a real owner wearing the identical
+  // "Check your details and try again" copy: a Keycloak admin read timeout, a
+  // duplicate-key collision on the organization id sequence, and a Keycloak
+  // 409 on a duplicate email. The details were correct every time, and the
+  // message sent them hunting a problem that was never in the form.
+  it('maps a 500 to an our-end message that does not blame the details', async () => {
+    const { SignupError } = await import('../api/signup')
+    vi.mocked(completeSignup).mockRejectedValue(new SignupError(500))
+    await toDetails()
+    await fillValidDetails()
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    expect(screen.getByText(/went wrong on our end/i)).toBeInTheDocument()
+    expect(screen.getByText(/no workspace was created/i)).toBeInTheDocument()
+    expect(screen.queryByText(/check your details/i)).not.toBeInTheDocument()
+  })
+
+  it('distinguishes a dead invite (404) from a server fault', async () => {
+    const { SignupError } = await import('../api/signup')
+    vi.mocked(completeSignup).mockRejectedValue(new SignupError(404))
+    await toDetails()
+    await fillValidDetails()
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    expect(screen.getByText(/already been used or has expired/i)).toBeInTheDocument()
+    // A fresh code cannot revive a consumed invite, so it must NOT be offered.
+    expect(screen.queryByRole('button', { name: /send me a new code/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('SignupPage — a burned code is replaceable in place', () => {
+  // `otp.verify` DELETES the challenge the moment it matches, so any refusal
+  // raised after that leaves the owner holding a spent code. Resubmitting the
+  // same form can then only ever return 403, however correct their details.
+  it('offers a new code after a server fault and keeps the typed details', async () => {
+    const { SignupError } = await import('../api/signup')
+    vi.mocked(completeSignup).mockRejectedValue(new SignupError(500))
+    await toDetails()
+    await fillValidDetails({ workspaceName: 'Harbour View' })
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+
+    const resend = screen.getByRole('button', { name: /send me a new code/i })
+    vi.mocked(requestOtp).mockClear()
+    await userEvent.click(resend)
+    await waitFor(() => expect(requestOtp).toHaveBeenCalledTimes(1))
+
+    // Still on the details step with the work intact — the whole point of
+    // resending in place rather than returning to the first step.
+    expect(screen.getByDisplayValue('Harbour View')).toBeInTheDocument()
+    expect(screen.getByText(/new code is on its way/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /send me a new code/i })).not.toBeInTheDocument()
+  })
+
+  it('does not offer a new code on a 403 — that code is still live', async () => {
+    const { SignupError } = await import('../api/signup')
+    vi.mocked(completeSignup).mockRejectedValue(new SignupError(403))
+    await toDetails()
+    await fillValidDetails()
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    expect(screen.getByText(/code is incorrect or expired/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /send me a new code/i })).not.toBeInTheDocument()
+  })
+})
