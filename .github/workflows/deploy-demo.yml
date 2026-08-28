@@ -57,13 +57,13 @@ jobs:
       # vars.GCP_WIF_PROVIDER; exports Application Default Credentials for the
       # gcloud + docker steps that follow. No key material touches the runner.
       - name: Authenticate to Google Cloud (WIF)
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
           service_account: ${{ vars.GCP_DEPLOY_SA }}
 
       - name: Set up gcloud
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@v3
 
       # deploy_app.sh reads the environment-specific knobs from env with
       # defaults (REGION=us-west1, SQL_INSTANCE=usali-demo, AR_REPO=usali,
@@ -77,6 +77,18 @@ jobs:
           AR_REPO: ${{ vars.GCP_AR_REPO }}
           AUTH_HOST: ${{ vars.DEMO_AUTH_HOST }}
           APP_HOST: ${{ vars.DEMO_APP_HOST }}
+          # Email delivery (B2). Unset -> the deploy keeps the console notifier
+          # and says so: nothing breaks, but self-serve signup answers 502 and
+          # invite links reach only the Cloud Run logs. Set SMTP_HOST (plus the
+          # usali-smtp-password secret in Secret Manager) to turn it on.
+          SMTP_HOST: ${{ vars.DEMO_SMTP_HOST }}
+          SMTP_PORT: ${{ vars.DEMO_SMTP_PORT }}
+          SMTP_USERNAME: ${{ vars.DEMO_SMTP_USERNAME }}
+          # true for a relay whose username IS the API token (Postmark). The
+          # token then rides the Secret Manager secret into both env vars and
+          # never becomes a plaintext Variable.
+          SMTP_USERNAME_FROM_SECRET: ${{ vars.DEMO_SMTP_USERNAME_FROM_SECRET }}
+          SMTP_FROM: ${{ vars.DEMO_SMTP_FROM }}
         run: |
           set -euo pipefail
           project="${{ vars.GCP_PROJECT }}"

@@ -30,6 +30,18 @@ _REPORT_SIGNATURES: list[tuple[str, tuple[str, str]]] = [
 _HEADER_WORD_LIMIT = 120
 
 
+def supported_pms_sources() -> frozenset[str]:
+    """The PMS sources with a registered ingestion pipeline, lowercased.
+
+    Derived from `_REPORT_SIGNATURES` so there is ONE source of truth: signup
+    offers exactly the sources this repo can actually detect and parse. A
+    hand-maintained parallel list drifts the moment an adapter is registered (or
+    un-registered), and the failure is silent -- either a source is advertised
+    whose pack quarantines on ingest, or a working one is never offered.
+    """
+    return frozenset(source.lower() for _, (source, _) in _REPORT_SIGNATURES)
+
+
 @dataclass(frozen=True)
 class Detection:
     pms_source: str

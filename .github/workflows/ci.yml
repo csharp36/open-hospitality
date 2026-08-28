@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
       - name: Sync (dev + face extras)
         # `face` pulls numpy + onnxruntime. The engine imports them lazily
         # (face_match.py guards them behind TYPE_CHECKING / try-except), but
@@ -53,7 +53,7 @@ jobs:
           [ "$version" -ge 22 ] || { echo "::error::Node $version is below the WebCrypto floor (22)"; exit 1; }
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "using Node $version (from Dockerfile)"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: ${{ steps.node.outputs.version }}
           cache: 'npm'

@@ -14,6 +14,25 @@ import httpx
 from usali.config import Settings
 
 
+# The demo runs Keycloak at minScale=0, so the FIRST admin call after an idle
+# period pays a cold start: ~18s measured from request to startup probe on
+# 2026-08-27 (11.8s of Quarkus JVM boot, behind a cloud-sql-proxy sidecar that
+# has to come up first). Cloud Run QUEUES the caller for that whole window, so
+# it is the read timeout, not the connect timeout, that has to absorb it.
+#
+# The old flat `timeout=10` could not: it expired ~5s before Keycloak began
+# listening, so every signup landing on a cold instance died in `_token()` and
+# reached the visitor as a generic failure. That is the worst possible way to
+# distribute a fault — it hits precisely the first stranger to arrive after a
+# quiet spell, and never the operator testing against a warm instance.
+#
+# 60s gives ~3x margin over the measured start while staying well inside the
+# serving revision's own 300s request timeout. Connect stays short: the Google
+# front end accepts immediately even while the container boots, so a slow
+# CONNECT is a genuine fault and should still fail fast.
+_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
+
+
 class KeycloakAdminError(Exception):
     """An admin-API call failed (non-2xx or missing Location)."""
 
@@ -119,7 +138,9 @@ class KeycloakAdminClient:
         self._realm = realm
         self._client_id = client_id
         self._client_secret = client_secret
-        self._http = httpx.Client(base_url=base_url.rstrip("/"), transport=transport, timeout=10)
+        self._http = httpx.Client(
+            base_url=base_url.rstrip("/"), transport=transport, timeout=_TIMEOUT
+        )
 
     @classmethod
     def from_settings(cls, settings: Settings) -> "KeycloakAdminClient":

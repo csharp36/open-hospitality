@@ -21,6 +21,31 @@ REGION="${REGION:-us-west1}"
 SQL_INSTANCE="${SQL_INSTANCE:-usali-demo}"
 AR_REPO="${AR_REPO:-usali}"
 AUTH_HOST="${AUTH_HOST:-auth.example.com}"
+
+# The *.example.com defaults are what an open-core repo can commit -- they are
+# NOT something that can be deployed. Refuse rather than default into them.
+#
+# Unset, AUTH_HOST silently becomes Keycloak's own hostname, so the realm issues
+# tokens for https://auth.example.com and EVERY login breaks: oidc-client follows
+# the DISCOVERY DOCUMENT, not its configured authority, so the SPA redirects to a
+# domain nobody owns. Meanwhile the app still validates USALI_OIDC_ISSUER against
+# the real host, so even a reachable login would fail token validation.
+#
+# What made this expensive on 2026-08-25 is where it surfaced: the only visible
+# signal was a domain-mapping error in the LAST step, long after the damage, and
+# it reads as cosmetic. Fail at the top instead, naming the fix.
+_refuse_placeholder_host() {
+  local name="$1" value="$2"
+  if [[ "${value}" == *.example.com ]]; then
+    echo "ERROR: ${name} is still the ${value} placeholder." >&2
+    echo "  Deploying with it configures a host nobody owns and breaks every login." >&2
+    # No ${name,,} here: lowercase expansion is bash 4+, and macOS ships 3.2 --
+    # it would fail INSIDE the error path and mangle the one message that helps.
+    echo "  Re-run with the real host:  ${name}=<your-host> $0 <project-id>" >&2
+    exit 2
+  fi
+}
+_refuse_placeholder_host AUTH_HOST "${AUTH_HOST}"
 APP_HOST="${APP_HOST:-demo.example.com}"
 IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/usali-auth:$(git rev-parse --short HEAD)"
 

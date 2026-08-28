@@ -24,6 +24,40 @@ import urllib.parse
 
 import httpx
 
+# Realm-management roles the usali-admin SERVICE ACCOUNT needs at RUNTIME
+# (issue #69). This script does its own org/user setup with the MASTER admin
+# token, so the service account was never granted anything -- and self-service
+# signup (provision_tenant) is the FIRST thing to drive the usali-admin client
+# against the admin API. Without these it 403s on `GET /organizations` and no
+# tenant is ever created.
+#
+# `manage-realm` is what authorises the ORGANIZATIONS endpoints. That is not
+# obvious, and it was measured on throwaway containers against BOTH the
+# deployed 26.0.8 and 26.3.5:
+#
+#     manage-realm alone .................... GET 200 / POST 201
+#     manage-realm + view-realm ............. GET 200 / POST 201
+#     manage-users view-users query-users ... GET 403 / POST 403
+#     view-realm alone ...................... GET 403 / POST 403
+#     no roles .............................. GET 403 / POST 403
+#
+# Do NOT reach for `manage-organizations` / `view-organizations`. Those roles
+# DO NOT EXIST on realm-management in 26.0.8, and creating a realm with
+# `organizationsEnabled=true` seeds zero org roles on 26.3.5 either -- so a
+# version bump does not produce them. Keycloak authorises the org endpoints on
+# its own seeded permissions, never on a same-named role, which is why
+# hand-creating one still 403s.
+#
+# `manage-realm` is broader than we would like (it carries realm-configuration
+# rights), but Keycloak offers nothing finer for organizations here. It is
+# still far narrower than `realm-admin`, which also works and grants
+# everything. The user roles are the rest of what provision_tenant does:
+# create the workspace's first admin user and assign its roles.
+_RUNTIME_RM_ROLES = ("manage-realm", "manage-users", "view-users", "query-users")
+# Fail loudly if the realm cannot satisfy the two that carry the flow, rather
+# than granting a partial set and 403-ing later at signup.
+_RUNTIME_RM_REQUIRED = {"manage-realm", "manage-users"}
+
 
 def _secret(project: str, name: str) -> str:
     return subprocess.run(
@@ -85,6 +119,43 @@ def main() -> None:
     _request("PUT", f"{base}/admin/realms/usali/clients/{client['id']}",
              token=token, body=client)
     print("usali-admin client secret: set")
+
+    # Grant that client's service account the runtime roles (see
+    # _RUNTIME_RM_ROLES above for what each is for and why manage-realm).
+    sa_user = json.loads(_request(
+        "GET",
+        f"{base}/admin/realms/usali/clients/{client['id']}/service-account-user",
+        token=token,
+    ))
+    rm_clients = json.loads(_request(
+        "GET", f"{base}/admin/realms/usali/clients?clientId=realm-management",
+        token=token,
+    ))
+    if len(rm_clients) != 1:
+        raise SystemExit("ERROR: expected exactly one realm-management client")
+    rm_id = str(rm_clients[0]["id"])
+    rm_roles = {
+        str(r["name"]): r
+        for r in json.loads(_request(
+            "GET", f"{base}/admin/realms/usali/clients/{rm_id}/roles",
+            token=token,
+        ))
+    }
+    if not _RUNTIME_RM_REQUIRED.issubset(rm_roles):
+        raise SystemExit(
+            "ERROR: realm-management is missing roles that signup needs: "
+            f"{sorted(_RUNTIME_RM_REQUIRED - rm_roles.keys())}"
+        )
+    # Idempotent: re-POSTing already-assigned client roles is a 204 no-op.
+    _request(
+        "POST",
+        f"{base}/admin/realms/usali/users/{sa_user['id']}"
+        f"/role-mappings/clients/{rm_id}",
+        token=token,
+        body=[rm_roles[name] for name in _RUNTIME_RM_ROLES if name in rm_roles],
+    )
+    granted = ", ".join(n for n in _RUNTIME_RM_ROLES if n in rm_roles)
+    print(f"usali-admin service account: realm-management roles granted ({granted})")
 
     personas = json.loads(
         _secret(args.project, "usali-demo-persona-passwords")

@@ -40,7 +40,9 @@ describe('SignupPage — invite load', () => {
   it('shows the invited email when the token is valid', async () => {
     vi.mocked(getInvite).mockResolvedValue('owner@hotel.test')
     renderSignup()
-    expect(await screen.findByText(/owner@hotel\.test/)).toBeInTheDocument()
+    // findAll: the address is shown twice now — "Invited as ..." and the line
+    // saying where the verification code is going.
+    expect((await screen.findAllByText(/owner@hotel\.test/)).length).toBeGreaterThan(0)
     // The cell step is available (a mobile field), not a refusal.
     expect(screen.getByLabelText(/mobile/i)).toBeInTheDocument()
   })
@@ -122,6 +124,34 @@ describe('SignupPage — details step', () => {
     expect(screen.getByLabelText(/which pms/i)).toBeInTheDocument()
   })
 
+  it('offers SkyTouch as a selectable source, with no "which PMS" follow-up', async () => {
+    // Held out of the list while its Hotel Statistics adapter was un-registered;
+    // both its reports parse now. Selecting it must NOT reveal the free-text
+    // field, which is what marks a source as unsupported.
+    await toDetails()
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'skytouch')
+    expect(screen.queryByLabelText(/which pms/i)).not.toBeInTheDocument()
+  })
+
+  it('submits skytouch as the pms_source', async () => {
+    vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'redstone', pms_supported: true })
+    await toDetails()
+    await userEvent.type(screen.getByLabelText(/verification code/i), '123456')
+    await userEvent.type(screen.getByLabelText(/workspace name/i), 'Redstone Group')
+    await userEvent.type(screen.getByLabelText(/property name/i), 'Redstone Inn')
+    await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'skytouch')
+    await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
+    await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
+    await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
+    await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
+    const payload = vi.mocked(completeSignup).mock.calls[0]![0]
+    expect(payload).toMatchObject({ pms_source: 'skytouch' })
+    expect(payload).not.toHaveProperty('pms_other_name')
+    // The success screen must not apologise for an unsupported PMS.
+    expect(await screen.findByText(/ready/i)).toBeInTheDocument()
+    expect(screen.queryByText(/don.t support/i)).not.toBeInTheDocument()
+  })
+
   it('submits the full payload and advances on 201', async () => {
     vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'sunset-group', pms_supported: true })
     await toDetails()
@@ -152,13 +182,13 @@ describe('SignupPage — details step', () => {
     await userEvent.type(screen.getByLabelText(/workspace name/i), 'X Group')
     await userEvent.type(screen.getByLabelText(/property name/i), 'X Inn')
     await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'other')
-    await userEvent.type(screen.getByLabelText(/which pms/i), 'SkyTouch')
+    await userEvent.type(screen.getByLabelText(/which pms/i), 'HotelKey')
     await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
     await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
     await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
     await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
     const payload = vi.mocked(completeSignup).mock.calls[0]![0]
-    expect(payload).toMatchObject({ pms_source: 'other', pms_other_name: 'SkyTouch' })
+    expect(payload).toMatchObject({ pms_source: 'other', pms_other_name: 'HotelKey' })
   })
 
   it('stops auto-slugging the workspace URL once the user edits it', async () => {
@@ -352,5 +382,19 @@ describe('SignupPage — server 422 is not the opaque error', () => {
     await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
     expect(screen.getByText(/some details weren.t accepted/i)).toBeInTheDocument()
     expect(screen.queryByText(/something didn.t go through/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('SignupPage — where the code actually goes', () => {
+  it('tells the owner the code is emailed, not texted', async () => {
+    // The step collects a mobile number but the OTP goes to the invited email
+    // (there is no SMS vendor, and a caller-supplied number is not a channel we
+    // can trust). A page that asks for a phone and then says "we sent your
+    // code" points someone at the wrong device.
+    vi.mocked(getInvite).mockResolvedValue('owner@hotel.test')
+    renderSignup()
+    expect(await screen.findByText(/email your verification code to owner@hotel\.test/i))
+      .toBeInTheDocument()
+    expect(screen.getByText(/won’t text you a code|won't text you a code/i)).toBeInTheDocument()
   })
 })

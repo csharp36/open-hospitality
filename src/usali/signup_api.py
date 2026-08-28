@@ -7,20 +7,46 @@ stay on the APP-role session so the provisioner holds NO grant on `invite`."""
 
 import re
 from typing import Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field, model_validator
 
 from usali import invites, pms_interest
+from usali.detect import supported_pms_sources
 from usali.mapping.property_registry import create_first_property
+from usali.models import Invite as _Invite
 from usali.otp import OtpService
 from usali.provisioning import provision_tenant
 from usali.tenancy import bind_org_context
 
 router = APIRouter(prefix="/api/signup")
 
-_OTP_PURPOSE = "signup_cell"
+# The OTP is delivered to the INVITED EMAIL, never to the cell the caller typed.
+# Two independent reasons: there is no SMS vendor (SmtpNotifier.send_sms raises),
+# and the cell is caller-supplied -- keying delivery on it would let anyone
+# holding a leaked invite link redirect the code to a number they control. The
+# invited address is the one channel already proven to belong to the invitee:
+# they got here by clicking a link sent to it. The cell is still collected, as
+# workspace contact data; it is simply not a verification channel.
+_OTP_PURPOSE = "signup_email"
+# Derived from the detection registry, never hand-listed: signup offers exactly
+# what this repo can detect and parse. Everything else routes to pms_interest.
+# `test_signup_literal_tracks_the_detection_registry` pins the Literal above to
+# this set, so registering an adapter without offering it (or the reverse) fails
+# a test rather than shipping silently.
+_SUPPORTED_PMS = supported_pms_sources()
 _ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9-]{1,62}$")
+
+
+class InviteRequest(BaseModel):
+    # A shape check, not an RFC parser: refuse the obvious typo BEFORE an invite
+    # row is minted, so a malformed address never leaves an unreachable
+    # credential behind. Whether the address is REAL is settled by the send
+    # itself, which is the only test that means anything; pulling in
+    # pydantic[email] to be stricter here would buy nothing that matters.
+    # 254 is the RFC 5321 address ceiling.
+    email: str = Field(min_length=3, max_length=254, pattern=r"^[^@\s]+@[^@\s.]+(\.[^@\s.]+)+$")
 
 
 class OtpRequest(BaseModel):
@@ -37,7 +63,12 @@ class CompleteRequest(BaseModel):
     # that precedence). The Field bound is only a coarse length ceiling.
     workspace_alias: str = Field(min_length=1, max_length=63)
     property_name: str = Field(min_length=1, max_length=200)
-    pms_source: Literal["opera", "autoclerk", "other"]
+    # SkyTouch was deliberately absent while its Hotel Statistics adapter was
+    # un-registered: advertising a source whose night-audit pack would quarantine
+    # on ingest is worse than not offering it. Both SkyTouch reports parse now,
+    # so it is offered. Keep this set and `_SUPPORTED_PMS` in step -- a member
+    # that is not supported silently takes the pms_interest branch instead.
+    pms_source: Literal["opera", "autoclerk", "skytouch", "other"]
     pms_other_name: str | None = Field(default=None, min_length=1, max_length=60)
     wage_jurisdiction: str = Field(min_length=1, max_length=10)
     timezone: str | None = Field(default=None, min_length=1, max_length=50)
@@ -59,6 +90,65 @@ def _refuse() -> HTTPException:
     return HTTPException(status_code=404, detail="not found")
 
 
+@router.post("/request", status_code=202)
+def request_invite(payload: InviteRequest, request: Request) -> dict[str, str]:
+    """Self-serve: mint an invite for `email` and send the signup link.
+
+    This is what makes the /try front door honest. Before it, invites existed
+    only where an operator ran the CLI, so a stranger who asked to save their
+    preview had nowhere to go.
+
+    NO EXISTENCE ORACLE: an address that already has an invite, or already owns
+    a workspace, gets the identical 202. Distinguishing them would turn this
+    into a "who has signed up?" lookup for anyone on the internet. Abuse is
+    bounded by the rate limiter, not by a distinguishable refusal.
+
+    A second ask mints a SECOND invite rather than resending the first: the raw
+    token is stored only as a SHA-256, so the original link is unrecoverable by
+    construction. Both remain valid until one is claimed -- signup is one invite,
+    one tenant (`invites.claim`), so the extra pending row cannot become a
+    second workspace.
+    """
+    email = payload.email.strip()
+    limiter = request.app.state.signup_rate_limiter
+    if not limiter.allow(f"request:{email.lower()}"):
+        raise HTTPException(status_code=429, detail="too many requests")
+    factory = request.app.state.db_session_factory
+    notifier = request.app.state.notifier
+    base = str(request.app.state.public_base_url).rstrip("/")
+
+    with factory() as session:
+        invite, raw_token = invites.create_invite(session, email)
+        invite_id = invite.invite_id
+        session.commit()
+    link = f"{base}/signup?token={quote(raw_token, safe='')}"
+    try:
+        notifier.send_email(
+            to=email,
+            subject="Set up your Open Hospitality workspace",
+            body=(
+                "You asked to save your night-audit preview and automate it.\n\n"
+                f"Open this link to finish setting up your workspace:\n{link}\n\n"
+                "The link works once and expires in 7 days. If this wasn't you, "
+                "ignore this email -- nothing was created."
+            ),
+        )
+    except Exception:
+        # The token existed ONLY inside the message that failed to send, so a
+        # pending row for it is an unreachable credential. Revoke it and tell the
+        # caller the send failed -- a 202 here would strand them waiting for an
+        # email that is never coming.
+        with factory() as session:
+            row = session.get(_Invite, invite_id)
+            if row is not None:
+                invites.revoke(session, row)
+            session.commit()
+        raise HTTPException(
+            status_code=502, detail="could not send the email; please try again"
+        ) from None
+    return {"status": "sent"}
+
+
 @router.get("/invite/{token}")
 def get_invite(token: str, request: Request) -> dict[str, str]:
     factory = request.app.state.db_session_factory
@@ -71,8 +161,11 @@ def get_invite(token: str, request: Request) -> dict[str, str]:
 
 @router.post("/otp", status_code=204)
 def send_otp(payload: OtpRequest, request: Request) -> None:
+    # Counted against the INVITE, not the typed cell. Keying the ceiling on
+    # caller-supplied input meant rotating one digit bought a fresh budget --
+    # unlimited codes for one invite, and unlimited mail to one address.
     limiter = request.app.state.signup_rate_limiter
-    if not limiter.allow(f"otp:{payload.cell}"):
+    if not limiter.allow(f"otp:{payload.token}"):
         raise HTTPException(status_code=429, detail="too many requests")
     factory = request.app.state.db_session_factory
     otp: OtpService = request.app.state.otp_service
@@ -81,10 +174,15 @@ def send_otp(payload: OtpRequest, request: Request) -> None:
         invite = invites.validate(session, payload.token)
         if invite is None:
             raise _refuse()
-        code = otp.issue(session, purpose=_OTP_PURPOSE, target=payload.cell)
+        target = invite.email
+        code = otp.issue(session, purpose=_OTP_PURPOSE, target=target)
         session.commit()
     # Send AFTER commit so a delivered code always has a stored challenge.
-    notifier.send_sms(to=payload.cell, body=code)
+    notifier.send_email(
+        to=target,
+        subject="Your Open Hospitality verification code",
+        body=f"Your verification code is {code}\n\nIt expires in 10 minutes.",
+    )
 
 
 @router.post("/complete", status_code=201)
@@ -108,8 +206,11 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str | bool
         if invite is None:
             raise _refuse()
         invite_email = invite.email
+        # Verified against the INVITED EMAIL — the same target send_otp issued
+        # for. Verifying against payload.cell would let a caller who never
+        # received the code choose the target it is checked against.
         verified = otp.verify(
-            session, purpose=_OTP_PURPOSE, target=payload.cell, code=payload.otp
+            session, purpose=_OTP_PURPOSE, target=invite_email, code=payload.otp
         )
         if not verified:
             session.commit()  # persist the OTP attempt increment
@@ -153,7 +254,7 @@ def complete(payload: CompleteRequest, request: Request) -> dict[str, str | bool
     # provisioner role cannot write `property` (D-B7), so this is a fresh
     # app-role session bound to result.org_id. Supported PMS only; "other" is
     # handled separately (Task 6).
-    pms_supported = payload.pms_source in ("opera", "autoclerk")
+    pms_supported = payload.pms_source in _SUPPORTED_PMS
     if pms_supported:
         with factory() as session:
             bind_org_context(session, result.org_id)

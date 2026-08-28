@@ -66,14 +66,32 @@ def ensure_default_org(session: Session) -> int:
     )
     # An EXPLICIT id does not advance the identity sequence (no nextval was
     # called), so a later provisioned org's autoincrement would collide on the
-    # founding id. Advance it past the current max. Runs on the owner/superuser
-    # seed/provision session (which owns the sequence); GREATEST(..) keeps it
-    # monotonic — under RLS the visible max is the bound org's own rows, which
-    # for the single-founding-org seed is exactly FOUNDING_ORG_ID.
+    # founding id. Advance it past the current max.
+    #
+    # `max(org_id) FROM organization` CANNOT be that max. `organization` carries
+    # FORCE RLS (l2a0rlswall) and the cloud seed runs as a non-superuser owner,
+    # which does not bypass it; the seed session is founding-bound, so the
+    # visible max is FOUNDING_ORG_ID no matter how many tenants exist. Reading
+    # it made every re-seed RESET the sequence to 1 — and job.sh re-seeds on
+    # EVERY deploy, so the next stranger to sign up got an id a tenant already
+    # held and `POST /api/signup/complete` 500'd on organization_pkey. The
+    # test/dev superuser bypasses RLS and sees the true max, which is why this
+    # only ever surfaced in Cloud SQL.
+    #
+    # The sequence's OWN last_value is not policy-filtered, so it cannot be
+    # hidden by the session's binding: taking it as a floor makes this
+    # monotonic by construction — a re-seed can only ever advance. The filtered
+    # max stays in the GREATEST because it can only raise the floor, never
+    # lower it, and it still covers a sequence that somehow trails its table.
+    # NULL (a sequence never yet called) is ignored by GREATEST.
     session.execute(
         text(
             "SELECT setval(pg_get_serial_sequence('organization', 'org_id'), "
-            "GREATEST((SELECT max(org_id) FROM organization), :founding))"
+            "GREATEST("
+            "pg_sequence_last_value("
+            "pg_get_serial_sequence('organization', 'org_id')::regclass), "
+            "(SELECT max(org_id) FROM organization), "
+            ":founding))"
         ),
         {"founding": FOUNDING_ORG_ID},
     )

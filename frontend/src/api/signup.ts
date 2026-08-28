@@ -14,13 +14,17 @@ export class SignupError extends Error {
   }
 }
 
+/** Mirrors the `pms_source` Literal on the backend's CompleteRequest. Sources
+ *  other than 'other' must have an ingestion pipeline behind them. */
+export type PmsSource = 'opera' | 'autoclerk' | 'skytouch' | 'other'
+
 export interface CompletePayload {
   token: string
   otp: string
   workspace_name: string
   workspace_alias: string
   property_name: string
-  pms_source: 'opera' | 'autoclerk' | 'other'
+  pms_source: PmsSource
   pms_other_name?: string
   wage_jurisdiction: string
   timezone?: string
@@ -34,6 +38,26 @@ export interface CompleteResult {
 }
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' }
+
+/**
+ * Ask for a workspace setup link (POST /api/signup/request).
+ *
+ * This is the anonymous front door's only write. The server answers 202 for
+ * ANY well-formed address — one that already has an invite, one that already
+ * owns a workspace, one that has never been seen — because distinguishing them
+ * would turn this into a "who has signed up?" lookup for anyone on the
+ * internet. So there is nothing here to branch on: a success means "if that
+ * address can receive mail, a link is on its way", and the UI must say exactly
+ * that rather than confirm the address exists.
+ */
+export async function requestInvite(email: string): Promise<void> {
+  const res = await fetch('/api/signup/request', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ email }),
+  })
+  if (!res.ok) throw new SignupError(res.status)
+}
 
 export async function getInvite(token: string): Promise<string> {
   const res = await fetch(`/api/signup/invite/${encodeURIComponent(token)}`, {

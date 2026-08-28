@@ -13,6 +13,7 @@ import {
   requestOtp,
   SignupError,
   type CompletePayload,
+  type PmsSource,
 } from '../api/signup'
 import { login } from '../auth/oidc'
 import { controlLargeClass } from '../components/ui'
@@ -20,11 +21,15 @@ import { controlLargeClass } from '../components/ui'
 // getRouteApi avoids the router.tsx <-> SignupPage.tsx circular value import.
 const routeApi = getRouteApi('/signup')
 
+// SkyTouch was held back while its Hotel Statistics adapter was un-registered:
+// offering a source whose night-audit pack would quarantine on ingest is worse
+// than not listing it. Both its reports parse now.
 const SUPPORTED_PMS = [
   { value: 'opera', label: 'Opera' },
   { value: 'autoclerk', label: 'AutoClerk' },
+  { value: 'skytouch', label: 'SkyTouch' },
   { value: 'other', label: 'Other — my PMS isn’t listed' },
-] as const
+] as const satisfies readonly { value: PmsSource; label: string }[]
 const JURISDICTIONS = ['US-CA', 'US-FL'] as const
 
 // Derive a URL-safe workspace alias from the workspace name: lowercase, collapse
@@ -53,11 +58,11 @@ function validateDetails(v: {
   workspaceName: string
   alias: string
   propertyName: string
-  pms: 'opera' | 'autoclerk' | 'other'
+  pms: PmsSource
   pmsOther: string
   password: string
 }): string | null {
-  if (!v.otp.trim()) return 'Enter the verification code we sent you.'
+  if (!v.otp.trim()) return 'Enter the verification code we emailed you.'
   if (!v.workspaceName.trim()) return 'Workspace name is required.'
   if (!v.alias) return 'Workspace URL is required.'
   if (!ALIAS_RE.test(v.alias))
@@ -95,6 +100,14 @@ export default function SignupPage() {
 
 function SignupFlow({ token, email }: { token: string; email: string }) {
   // Step machine — cell → details → done. Task 4 drives cell → details.
+  //
+  // The step is still called "cell" and still collects one, but the code goes
+  // to the INVITED EMAIL (signup_api `_OTP_PURPOSE`). There is no SMS vendor,
+  // and the cell is caller-supplied — keying delivery on it would let anyone
+  // holding a leaked invite link send the code to a number they control. The
+  // copy below says where the code is actually going, because a page that asks
+  // for a phone number and then says "we sent your code" is telling someone to
+  // watch the wrong device.
   const [step, setStep] = useState<'cell' | 'details' | 'done'>('cell')
   const [cell, setCell] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -143,6 +156,10 @@ function SignupFlow({ token, email }: { token: string; email: string }) {
             void sendCode()
           }}
         >
+          <p className="text-sm text-ink-muted">
+            We&apos;ll email your verification code to {email}. The mobile number is how we
+            reach you about the property — we won&apos;t text you a code.
+          </p>
           <label className="block text-sm">
             <span className="text-xs font-medium text-ink-muted">Mobile number</span>
             <input
@@ -233,7 +250,7 @@ function DetailsStep({
   const [alias, setAlias] = useState('')
   const [aliasEdited, setAliasEdited] = useState(false)
   const [propertyName, setPropertyName] = useState('')
-  const [pms, setPms] = useState<'opera' | 'autoclerk' | 'other'>('opera')
+  const [pms, setPms] = useState<PmsSource>('opera')
   const [pmsOther, setPmsOther] = useState('')
   const [jurisdiction, setJurisdiction] = useState<string>('US-CA')
   const [password, setPassword] = useState('')

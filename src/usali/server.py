@@ -259,10 +259,18 @@ class _SpaStaticFiles(StaticFiles):
 
     Client-side routes (`/coverage`, `/upload`, ...) have no file on disk, so a
     browser refresh or bookmark would 404 under plain `StaticFiles(html=True)`.
-    Any 404 for a non-API path serves `index.html` instead and lets the router
-    in the SPA take over. API paths (`api/...`, `ingest`) keep their real 404s —
+    A 404 for a non-API path serves `index.html` instead and lets the router in
+    the SPA take over. API paths (`api/...`, `ingest`) keep their real 404s —
     matched API routes never reach this mount anyway (it is registered last),
     but *unknown* API paths must not be shadowed by the fallback.
+
+    A path that NAMES A FILE is also excluded, and gets its real 404. Answering
+    `/wp-config.php` with a 200 and a page of HTML is not a vulnerability, but
+    it is a lie: every automated scanner records the probe as a hit, so a scan
+    report reads as a list of successful PHP exploits against a service that
+    runs no PHP. Seen live on 2026-08-26, when a scanner got 200s for
+    `/wp-content/plugins/hellopress/wp_filemanager.php` and
+    `/this_is_a_new_hello_world.php`.
     """
 
     @staticmethod
@@ -270,14 +278,41 @@ class _SpaStaticFiles(StaticFiles):
         # `path` is relative to the mount root (no leading slash).
         return path in ("api", "ingest") or path.startswith("api/")
 
+    @staticmethod
+    def _names_a_file(path: str) -> bool:
+        """True when the path looks like it is asking for a file on disk.
+
+        Two shapes, because scanners use both:
+
+        * a dot in the LAST segment -- `vpn.php`, `backup.sql`, `.env`;
+        * a dot-prefixed SEGMENT anywhere -- `.git/HEAD`, `.ssh/id_rsa`,
+          `.aws/credentials`, where the filename itself is perfectly ordinary.
+          The first version of this checked only the last segment and let
+          `/.git/HEAD` through, which is one of the most probed paths there is.
+
+        CONSTRAINT THIS PLACES ON ROUTING: no client-side route may contain a
+        dot in its final segment or a dot-prefixed segment, or a refresh of it
+        will 404 instead of reaching the router. Every route today is dot-free
+        (`/coverage`, `/night-audit`, `/kiosk-devices`), and search params live
+        in the query string, which never reaches here. Real assets
+        (`/assets/index-abc.js`) DO have a dot, but they exist on disk and are
+        served before the fallback is consulted -- only a MISSING file-shaped
+        path lands here.
+        """
+        segments = path.split("/")
+        return "." in segments[-1] or any(seg.startswith(".") for seg in segments)
+
+    def _should_fall_back(self, path: str) -> bool:
+        return not self._is_api_path(path) and not self._names_a_file(path)
+
     async def get_response(self, path: str, scope: Scope) -> Response:
         try:
             response = await super().get_response(path, scope)
         except StarletteHTTPException as exc:
-            if exc.status_code != 404 or self._is_api_path(path):
+            if exc.status_code != 404 or not self._should_fall_back(path):
                 raise
             return await super().get_response("index.html", scope)
-        if response.status_code == 404 and not self._is_api_path(path):
+        if response.status_code == 404 and self._should_fall_back(path):
             return await super().get_response("index.html", scope)
         return response
 
@@ -300,6 +335,7 @@ def create_app(
     notifier: Notifier | None = None,
     provisioner_session_factory: SessionFactory | None = None,
     admin_notify_email: str | None = None,
+    public_base_url: str | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # Fail fast on a misconfigured provider NAME (cheap string check — the
@@ -369,6 +405,13 @@ def create_app(
     app.state.admin_notify_email = (
         admin_notify_email if admin_notify_email is not None
         else settings.admin_notify_email
+    )
+    # Where the self-serve signup link points (POST /api/signup/request). The
+    # request has no trustworthy origin behind a proxy, so the public host is
+    # configured, never derived from the request -- an attacker-controlled Host
+    # header would otherwise put its own domain in an email we sent.
+    app.state.public_base_url = (
+        public_base_url if public_base_url is not None else settings.public_base_url
     )
     # Provisioner seam (D-B7): the confined signup-completion path's ONLY
     # elevated credential. Tests inject a factory on the provisioner role; the
