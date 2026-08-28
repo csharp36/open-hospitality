@@ -91,23 +91,48 @@ def provision_tenant(
 
     # 2. First admin user — look before creating (create_user is a
     #    non-transactional side effect: reusing an existing account is what
-    #    makes a partial failure recoverable). A username already held by a
-    #    DIFFERENT person is refused, not silently reused (the onboarding
-    #    KeycloakAdminConflict argument).
-    existing = kc.find_user_by_username(admin_username)
+    #    makes a partial failure recoverable).
+    #
+    #    Look up by EMAIL, not username. The realm sets
+    #    duplicateEmailsAllowed=false, so email is the key Keycloak actually
+    #    enforces uniqueness on; `admin_username` is the WORKSPACE ALIAS, which
+    #    the owner retypes freely on the signup form. Keyed on username, the
+    #    recovery above only fires when they happen to reuse the same alias —
+    #    and when they do not, `create_user` hits Keycloak's email 409 with
+    #    nothing to catch it. That dead-ended a real owner on 2026-08-27: a run
+    #    that died after Keycloak but before the DB insert left an account
+    #    holding their email, and every retry under a new alias 500'd.
+    #
+    #    Email is also the stronger claim to identity: it is proven by the
+    #    invite OTP, while the alias is free text naming a workspace.
+    existing = kc.find_user_by_email(admin_email)
     if existing is not None:
-        admin_subject, existing_email = existing
-        if existing_email.lower() != admin_email.lower():
-            raise KeycloakAdminConflict(
-                f"realm username {admin_username!r} already belongs to a "
-                f"different person; {admin_email!r} would silently inherit "
-                "their identity and roles. Give one of them a distinct username."
-            )
+        admin_subject, _existing_username = existing
+        # No different-person check is needed on this branch: matching on the
+        # invite-proven email IS the identity match. The account keeps whatever
+        # username it already has — the org join key is kc_org_alias, never the
+        # username, and the realm allows login by email.
         # Re-apply the coarse role mapping on adoption (idempotent): a prior
         # run that created the user but died before create_user's mapping step
         # would otherwise leave this admin without the org_admin operator role.
         kc.assign_realm_roles(admin_subject, [ORG_ADMIN])
     else:
+        # Nobody holds this email, so this is a new person. The username can
+        # still be taken — by construction it is the workspace alias, and two
+        # owners can want the same one. Refuse EXPLICITLY rather than letting
+        # create_user return Keycloak's raw 409: this preserves the onboarding
+        # rule that two people sharing a username must never collapse into one
+        # account (dana@hotel-a.com / dana@hotel-b.com), which the username
+        # lookup used to enforce on the branch above.
+        clash = kc.find_user_by_username(admin_username)
+        if clash is not None:
+            _clash_subject, clash_email = clash
+            raise KeycloakAdminConflict(
+                f"realm username {admin_username!r} already belongs to a "
+                f"different person ({clash_email!r}); {admin_email!r} would "
+                "silently inherit their identity and roles. Choose a different "
+                "workspace name."
+            )
         admin_subject = kc.create_user(
             username=admin_username,
             email=admin_email,
