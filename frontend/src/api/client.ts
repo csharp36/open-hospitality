@@ -4,6 +4,8 @@
 
 import type {
   AdrRoomBasis,
+  NightAuditState,
+  NightAuditUploadResult,
   Department,
   AvailabilityNote,
   CoverageReport,
@@ -841,6 +843,81 @@ export async function postPreview(file: File): Promise<PreviewResponse> {
   })
   if (!res.ok) await raiseApiError(res)
   return (await res.json()) as PreviewResponse
+}
+
+// --- Night audit (explicit business date + roll) -----------------------------
+// org_admin | property_gm on the server for upload/roll; reads gate on property
+// readability. The upload validates property/report/date BEFORE staging. For a
+// pack-based PMS (SkyTouch) ONE pack upload fills every slot it contains.
+
+export function getNightAudit(propertyId: string): Promise<NightAuditState> {
+  return getJson(`/api/properties/${propertyId}/night-audit`)
+}
+
+export async function postNightAuditUpload(
+  propertyId: string,
+  file: File,
+): Promise<NightAuditUploadResult> {
+  const form = new FormData()
+  form.append('file', file, file.name)
+  const res = await fetch(`/api/properties/${propertyId}/night-audit/upload`, {
+    method: 'POST',
+    headers: await authHeaders(),
+    body: form,
+  })
+  if (res.status === 401) {
+    redirectToLogin()
+    await raiseApiError(res)
+  }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<NightAuditUploadResult>
+}
+
+export async function postNightAuditAdjust(
+  propertyId: string,
+  body: { corrected_amount: string; reason: string },
+): Promise<NightAuditState> {
+  const res = await fetch(`/api/properties/${propertyId}/night-audit/adjust`, {
+    method: 'POST',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) {
+    redirectToLogin()
+    await raiseApiError(res)
+  }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<NightAuditState>
+}
+
+export async function postNightAuditSegments(
+  propertyId: string,
+  rows: { code: string; rooms: string; room_revenue: string }[],
+): Promise<NightAuditState> {
+  const res = await fetch(`/api/properties/${propertyId}/night-audit/segments`, {
+    method: 'POST',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ rows }),
+  })
+  if (res.status === 401) {
+    redirectToLogin()
+    await raiseApiError(res)
+  }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<NightAuditState>
+}
+
+export async function postNightAuditRoll(propertyId: string): Promise<NightAuditState> {
+  const res = await fetch(`/api/properties/${propertyId}/night-audit/roll`, {
+    method: 'POST',
+    headers: await authHeaders(),
+  })
+  if (res.status === 401) {
+    redirectToLogin()
+    await raiseApiError(res)
+  }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<NightAuditState>
 }
 
 // --- Face enrollment (Pillar F, operator session) -----------------------------

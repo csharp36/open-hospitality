@@ -178,6 +178,8 @@ def test_l1_round_trips_on_an_empty_database():
                 "ix_room_inventory_org_id",
                 "ix_out_of_order_room_org_id",
                 "ix_fiscal_calendar_org_id",
+                "ix_night_audit_state_org_id",
+                "ix_night_audit_adjustment_org_id",
                 # m2a0perffoundations (#9): two more org-scoped tables, each
                 # with its own org_id index.
                 "ix_property_stat_config_org_id",

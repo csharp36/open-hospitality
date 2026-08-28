@@ -444,7 +444,7 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     # m2a0perffoundations's two performance-foundation tables.
     expected = set(_l2.RLS_TABLES) | {
         "org_settings", "room_inventory", "out_of_order_room", "fiscal_calendar",
-        "property_stat_config", "ingestion_coverage",
+        "property_stat_config", "ingestion_coverage", "night_audit_state", "night_audit_adjustment",
     }
     with db_engine.connect() as conn:
         policied = {
