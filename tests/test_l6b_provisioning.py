@@ -14,7 +14,11 @@ from sqlalchemy import func, select
 from tests.orgwall import app_role_url
 from usali.auth import effective_roles
 from usali.db import make_engine, make_session_factory
-from usali.keycloak_admin import InMemoryKeycloakAdmin, KeycloakAdminConflict
+from usali.keycloak_admin import (
+    InMemoryKeycloakAdmin,
+    KeycloakAdminConflict,
+    KeycloakAdminError,
+)
 from usali.models import Organization, RoleAssignment
 from usali.provisioning import provision_tenant
 from usali.tenancy import bind_org_context
@@ -169,3 +173,50 @@ def test_provisioned_admin_acts_only_in_their_org(
     with factory() as s:
         bind_org_context(s, 1)  # the founding org
         assert effective_roles(s, result.admin_subject) == frozenset()
+
+
+def test_fake_create_user_refuses_a_duplicate_email():
+    """Parity with the realm: `duplicateEmailsAllowed=false` on usali, so real
+    Keycloak 409s on a second account with the same email. The fake refused a
+    duplicate USERNAME but happily took a duplicate email — a double more
+    permissive than production, which is exactly how the live 409 below reached
+    a real owner through a fully green suite."""
+    kc = InMemoryKeycloakAdmin()
+    kc.create_user(
+        username="test02", email="owner@hotel.test",
+        full_name="Owner", realm_roles=["org_admin"],
+    )
+    with pytest.raises(KeycloakAdminError, match="duplicate email"):
+        kc.create_user(
+            username="test36", email="owner@hotel.test",
+            full_name="Owner", realm_roles=["org_admin"],
+        )
+
+
+def test_provision_adopts_the_account_holding_the_email_under_another_username(
+    db_session, founding_org
+):
+    """The live dead end, 2026-08-27.
+
+    A signup died AFTER Keycloak provisioning but BEFORE the DB org insert (an
+    organization_pkey collision), leaving a realm user `test02` holding the
+    invited email. The owner retried and — told to pick a fresh workspace name —
+    chose `test36`. `admin_username` is the workspace alias, so the
+    username lookup missed, `create_user` ran, and Keycloak 409'd on the email:
+    `{"errorMessage":"User exists with same email"}`, surfaced as a 500.
+
+    The look-before-create posture is meant to make a partial failure
+    recoverable, but keyed on username it only recovers when the owner happens
+    to retype the same alias. Nothing tells them to, and the form invites a new
+    one. The EMAIL is the person here — it is proven by the invite OTP, while
+    the alias merely names the workspace — so adoption keys on it.
+    """
+    kc = InMemoryKeycloakAdmin()
+    orphan = kc.create_user(
+        username="test02", email="admin@rival.com",
+        full_name="Rival Admin", realm_roles=["org_admin"],
+    )
+    result = _provision(db_session, kc, alias="test36", username="test36")
+    db_session.commit()
+    assert result.admin_subject == orphan, "must adopt the account holding the email"
+    assert len(kc.users) == 1, "no second account for the same person"

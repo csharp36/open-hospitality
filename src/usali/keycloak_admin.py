@@ -48,6 +48,18 @@ class KeycloakAdminConflict(KeycloakAdminError):
 
 
 class KeycloakAdmin(Protocol):
+    def find_user_by_email(self, email: str) -> tuple[str, str] | None:
+        """Return (subject_id, username) for the account holding `email`, else None.
+
+        The realm sets `duplicateEmailsAllowed=false`, so email — not username —
+        is the key Keycloak actually enforces uniqueness on, and it is the one
+        provisioning must look before creating on. Provisioning derives the
+        username from the WORKSPACE ALIAS, which the owner retypes freely; a
+        partial failure that left an account behind is therefore only
+        recoverable by email, since the alias on the retry may differ.
+        """
+        ...
+
     def find_user_by_username(self, username: str) -> tuple[str, str] | None:
         """Return (subject_id, email) for an existing user, or None.
 
@@ -167,6 +179,23 @@ class KeycloakAdminClient:
 
     def _auth(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token()}"}
+
+    def find_user_by_email(self, email: str) -> tuple[str, str] | None:
+        r = self._http.get(
+            f"/admin/realms/{self._realm}/users",
+            headers=self._auth(),
+            params={"email": email, "exact": "true"},
+        )
+        if r.status_code != 200:
+            raise KeycloakAdminError(f"user lookup failed: {r.status_code}")
+        for user in r.json():
+            # `exact` still matches case-insensitively on email; compare the way
+            # Keycloak stores it so a differently-cased invite adopts the same
+            # account instead of colliding on create.
+            if str(user.get("email") or "").lower() == email.lower():
+                subject_id: str = user["id"]
+                return subject_id, str(user.get("username") or "")
+        return None
 
     def find_user_by_username(self, username: str) -> tuple[str, str] | None:
         r = self._http.get(
@@ -328,6 +357,12 @@ class InMemoryKeycloakAdmin:
         self.organizations: dict[str, dict[str, object]] = {}
         self._org_counter = 0
 
+    def find_user_by_email(self, email: str) -> tuple[str, str] | None:
+        for subject_id, user in self.users.items():
+            if str(user["email"]).lower() == email.lower():
+                return subject_id, str(user["username"])
+        return None
+
     def find_user_by_username(self, username: str) -> tuple[str, str] | None:
         for subject_id, user in self.users.items():
             if user["username"] == username:
@@ -342,6 +377,12 @@ class InMemoryKeycloakAdmin:
         # bug survived 700+ green tests and only surfaced on a real browser login.
         if self.find_user_by_username(username) is not None:
             raise KeycloakAdminError(f"create user failed: 409 duplicate username {username!r}")
+        # The realm sets duplicateEmailsAllowed=false, so real Keycloak answers
+        # 409 {"errorMessage":"User exists with same email"} here too. The fake
+        # took it happily, which is how a live signup dead-ended on a 500 that
+        # 700+ green tests could never have caught.
+        if self.find_user_by_email(email) is not None:
+            raise KeycloakAdminError(f"create user failed: 409 duplicate email {email!r}")
         self._counter += 1
         subject_id = f"kc-{username}-{self._counter}"
         self.users[subject_id] = {
