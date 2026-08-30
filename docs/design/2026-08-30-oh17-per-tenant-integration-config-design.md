@@ -135,20 +135,41 @@ that would fail on first use.
   lineage stays in process memory, leaving the restart bug in place and now
   multiplied per tenant.
 
-- **D-OH17.7 — QBO refresh-token rotation is persisted to the row, under a
-  row lock (CONFIRMED 2026-08-30).** `QboClient` gains a `TokenStore` port —
-  `load() -> str` and `store(refresh_token) -> None` — and the DB-backed
-  implementation reads and writes the org's `refresh_token` inside the
-  client's existing lock, with `SELECT … FOR UPDATE` on that row.
+- **D-OH17.7 — QBO refresh-token rotation is persisted to the row; it is
+  DURABLE, not cross-process serialized (CONFIRMED 2026-08-30; the row-lock
+  half REVISED 2026-08-30 during Task 5).** `QboClient` gains a `TokenStore`
+  port — `load() -> str` and `store(refresh_token) -> None` — and the
+  DB-backed implementation (`integrations.DbTokenStore`) reads and writes the
+  org's `refresh_token` in its own short transaction per call.
 
   This closes a latent bug the class docstring already names: *"Refresh-token
   rotation is persisted IN MEMORY ONLY … a real deployment would persist the
   rotated token in a secret store"* (`qbo_client.py:112-123`). Today a process
   restart loses the rotation and the next push `invalid_grant`s against a
-  bootstrap token Intuit has already consumed. The in-process
-  `threading.Lock` serializes threads but cannot serialize *processes*; the
-  row lock does, which matters the moment the portal runs more than one
-  worker.
+  bootstrap token Intuit has already consumed. Durability is what fixes that,
+  and durability is what this decision delivers.
+
+  **What it does NOT deliver, and why.** This decision originally said the
+  store would take `SELECT … FOR UPDATE` so the row lock serialized
+  *processes* where the in-process `threading.Lock` could not. That was not
+  deliverable as stated: the critical section is `load()` → outbound grant →
+  `store()`, so a lock taken and released inside either method covers none of
+  it. Holding it across the grant would mean a transaction and a row lock open
+  across a network call, with **no release path on failure** — the port has no
+  abort step and `QboClient._refresh` raises without ever calling `store()`.
+  Grant failure is routine (a revoked or expired refresh token fails every
+  attempt), so that shape would trade a rare protection for a common leaked
+  connection and a locked row.
+
+  So the standing guarantee is: durable, per-tenant, serialized within a
+  process by `QboClient`'s instance lock. Two workers pushing for one tenant
+  at the same instant can both spend the same token; the loser's grant returns
+  `invalid_grant`, its push fails visibly, and the winner's rotated token is in
+  the row, so a retry succeeds. These are month-end operator actions, not a
+  request path, so the exposure is small and recoverable. If it ever stops
+  being small, the fix is an **advisory lock taken and released around the
+  whole refresh by the caller** — which can use `try/finally` — not a
+  `FOR UPDATE` smuggled into `load()`.
 
 - **D-OH17.8 — The probe is a presence check; honesty is enforced on the
   WRITE path (CONFIRMED 2026-08-30).** `_probe_payroll` / `_probe_accounting`
@@ -481,9 +502,13 @@ Per ADR-010, every degradation is loud and named.
 - **Invalid, expired, replayed or missing OAuth `state`** → 400 with a fixed
   message, and no row written. It must not distinguish those cases: the
   difference is an oracle about other tenants' in-flight grants.
-- **Concurrent QBO pushes** → serialized by `SELECT … FOR UPDATE` on the
-  credential row (D-OH17.7). The loser waits and reads the rotated token
-  rather than consuming a dead one.
+- **Concurrent QBO pushes** → serialized WITHIN a process by `QboClient`'s
+  instance lock; across processes they are NOT serialized (D-OH17.7, revised).
+  Both can spend the same refresh token; the loser's grant returns
+  `invalid_grant` and its push fails visibly, while the winner's rotated token
+  is in the row, so a retry succeeds. ACCEPTED, not mitigated: these are
+  month-end operator actions, and the alternative held a row lock across an
+  outbound HTTP call with no release path on a failed grant.
 
 ## 8. Testing
 
@@ -493,8 +518,13 @@ Per ADR-010, every degradation is loud and named.
 - **Rotation durability**: push, discard the client, rebuild it from the DB,
   push again. This fails against today's code, which is the point — it is the
   regression test for the bug `qbo_client.py:112` documents.
-- **Rotation under contention**: two concurrent pushes for one org; both
-  succeed and the row ends holding the surviving token.
+- **Rotation under contention**: NOT a test, because it is no longer a claim
+  (D-OH17.7, revised). Cross-process serialization was dropped, so "both
+  succeed" is not guaranteed and a test asserting it would be asserting a
+  behaviour the code does not promise. What IS tested is the guarantee that
+  replaced it: a second `DbTokenStore` over the same org — the stand-in for a
+  restarted process or a second worker — reads the ROTATED token, not the
+  bootstrap one.
 - **Connect-time verification refuses**: a bad key returns 422 and writes **no
   row**, so the checklist item stays `open` rather than going `done` over a
   broken integration. This is the D-OH17.8 assertion and the one most worth

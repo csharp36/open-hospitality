@@ -6,7 +6,9 @@ from sqlalchemy.exc import IntegrityError
 
 from usali import integrations as integ
 from usali.crypto import EncryptedString
+from usali.mapping.property_registry import ensure_default_org
 from usali.models import Base, OrgIntegrationCredential
+from usali.qbo_client import QboClient
 
 
 def test_the_table_is_registered():
@@ -207,3 +209,171 @@ def test_the_check_agrees_with_the_registry(db_session, founding_org, spec):
             continue
         with pytest.raises(IntegrityError, match=_CHECK):
             _attempt_insert(db_session, {**base, **legal, field: "leftover"})
+
+
+# ------------------------------------------------- resolution (Task 5)
+
+
+@pytest.fixture
+def unconnected_org(db_session):
+    """Org 1 exists and is connected to NOTHING.
+
+    `founding_org` alone is the wrong starting state for every test below.
+    `ensure_default_org` runs the D-OH17.15 seed bridge, which
+    UNCONDITIONALLY plants org 1's payroll (gusto) and accounting (qbo)
+    rows from the process env — so "not connected" would be false before the
+    test began, and a `_connect(... 'payroll' ...)` would collide with the
+    seed on the (org_id, integration) primary key rather than testing
+    anything. Deleting the seeded rows is the smallest fix that keeps ONE
+    org-creating implementation (the L1 rule) instead of hand-rolling a
+    second `Organization` insert here.
+
+    The org row itself must stay: every `_connect` below carries org_id = 1
+    and would otherwise die on `fk_org_integration_credential_org`."""
+    ensure_default_org(db_session)
+    db_session.execute(text("DELETE FROM org_integration_credential"))
+    db_session.commit()
+
+
+def _connect(session, integration, provider, **fields):
+    """Insert a credential row directly, bypassing the API — for tests about
+    resolution rather than about the write path.
+
+    It COMMITS, and that is load-bearing. Every `resolve_*` and every
+    `DbTokenStore` method opens its own session off the org-bound factory —
+    a different connection from this one — so a merely flushed row is
+    invisible to them and each test would silently assert "not connected".
+    A `session.flush()` here is the plausible-looking change that makes this
+    whole section vacuous."""
+    session.add(OrgIntegrationCredential(
+        org_id=1, integration=integration, provider=provider,
+        connected_by="test-subject", **fields,
+    ))
+    session.commit()
+
+
+def _raw_column(session, integration, column):
+    """The value Postgres actually holds, with the ORM's decrypting type out
+    of the picture — `text()` binds no result processor."""
+    return session.execute(
+        text(f"SELECT {column} FROM org_integration_credential "  # noqa: S608
+             "WHERE integration = :integration"),
+        {"integration": integration},
+    ).scalar_one()
+
+
+def test_resolve_returns_none_when_not_connected(org_bound_factory, unconnected_org):
+    """"Not connected" is an ordinary state, not an error: the `resolve_*`
+    functions answer None and let their callers refuse on their own terms
+    (a payroll run 409s, the demand pull degrades to the OFF sentinel).
+    Raising here would make the checklist's honest "open" state a 500."""
+    assert integ.resolve_payroll(org_bound_factory) is None
+    assert integ.resolve_qbo(org_bound_factory) is None
+    assert integ.resolve_crm_feed(org_bound_factory) is None
+
+
+@pytest.mark.parametrize(
+    ("provider", "adapter", "fields"),
+    [
+        ("gusto", "GustoAdapter", {"api_token": "t", "company_id": "c"}),
+        ("adp", "AdpAdapter", {"client_id": "ci", "client_secret": "cs"}),
+    ],
+)
+def test_resolve_payroll_builds_the_named_adapter(
+    org_bound_factory, db_session, unconnected_org, provider, adapter, fields
+):
+    """Both payroll branches, because they are not symmetric: Gusto takes
+    api_token/company_id and ADP takes client_id/client_secret, and a
+    copy-pasted keyword in either branch is a TypeError this catches."""
+    _connect(db_session, "payroll", provider, **fields)
+    assert type(integ.resolve_payroll(org_bound_factory)).__name__ == adapter
+
+
+@pytest.mark.parametrize(
+    ("provider", "adapter", "fields"),
+    [
+        ("delphi", "DelphiAdapter", {"subscription_key": "s"}),
+        ("tripleseat", "TripleseatAdapter", {"api_key": "k"}),
+    ],
+)
+def test_resolve_crm_feed_builds_the_named_adapter(
+    org_bound_factory, db_session, unconnected_org, provider, adapter, fields
+):
+    _connect(db_session, "demand_feed", provider, **fields)
+    assert type(integ.resolve_crm_feed(org_bound_factory)).__name__ == adapter
+
+
+def test_resolve_qbo_reads_the_realm_from_the_row_not_the_env(
+    org_bound_factory, db_session, unconnected_org
+):
+    """D-OH17.3 draws the line: our Intuit APPLICATION id/secret and the base
+    URL stay process-wide because they identify the app, but the realm is the
+    tenant's own QuickBooks company. Asserting on the private attribute is
+    deliberate — the realm is otherwise only observable by watching an
+    outbound URL, and this is the seam where a `settings.qbo_realm_id`
+    fallback would hide."""
+    _connect(db_session, "accounting", "qbo", realm_id="realm-9", refresh_token="r0")
+    client = integ.resolve_qbo(org_bound_factory)
+    assert isinstance(client, QboClient)
+    assert client._realm_id == "realm-9"
+
+
+def test_resolve_qbo_hands_the_client_a_db_backed_store(
+    org_bound_factory, db_session, unconnected_org
+):
+    """The whole point of D-OH17.7: the client's token lineage must live in
+    the row. A `StaticTokenStore` here would pass every other test in this
+    file and still lose every rotation on restart."""
+    _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="bootstrap")
+    client = integ.resolve_qbo(org_bound_factory)
+    assert isinstance(client._tokens, integ.DbTokenStore)
+    assert client._tokens.load() == "bootstrap"
+
+
+def test_the_token_store_survives_being_rebuilt(
+    org_bound_factory, db_session, unconnected_org
+):
+    """Durability, which is the bug OH-17 actually fixes: a SECOND store over
+    the same org — the stand-in for a restarted process or a second worker —
+    reads the rotated token, not the bootstrap one. Before OH-17 the lineage
+    died with the client and the next push `invalid_grant`ed."""
+    _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="tok-0")
+    integ.DbTokenStore(org_bound_factory).store("tok-1")
+    assert integ.DbTokenStore(org_bound_factory).load() == "tok-1"
+
+
+def test_the_rotated_token_is_encrypted_at_rest(
+    org_bound_factory, db_session, unconnected_org
+):
+    """ADR-005 applies to the token the STORE writes, not just the one the
+    connect endpoint wrote. `store()` goes through the mapped attribute so
+    the `EncryptedString` bind processor runs; a raw `text()` UPDATE — the
+    obvious "just one statement" optimisation — would write the rotated
+    token to disk in plaintext and every other test here would still pass."""
+    _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="tok-0")
+    integ.DbTokenStore(org_bound_factory).store("rotated-s3cret")
+    raw = _raw_column(db_session, "accounting", "refresh_token")
+    assert raw != "rotated-s3cret"
+    assert "rotated-s3cret" not in raw
+
+
+def test_the_token_store_refuses_when_accounting_is_not_connected(
+    org_bound_factory, unconnected_org
+):
+    """`load`/`store` are called from inside a push that has already decided a
+    connection exists, so absence there is a broken invariant, not the
+    ordinary "not connected" the `resolve_*` functions answer None for."""
+    store = integ.DbTokenStore(org_bound_factory)
+    with pytest.raises(integ.IntegrationNotConfigured):
+        store.load()
+    with pytest.raises(integ.IntegrationNotConfigured):
+        store.store("anything")
+
+
+def test_credentials_are_encrypted_at_rest(db_session, unconnected_org):
+    """ADR-005: a DB dump must not yield the token. The ORM decrypts, so the
+    assertion reads the raw column."""
+    _connect(db_session, "demand_feed", "delphi", subscription_key="s3cret")
+    raw = _raw_column(db_session, "demand_feed", "subscription_key")
+    assert raw != "s3cret"
+    assert "s3cret" not in raw

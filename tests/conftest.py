@@ -24,6 +24,7 @@ from usali.mapping.loader import load_mappings  # noqa: E402
 from usali.mapping.property_registry import ensure_default_org, seed_properties  # noqa: E402
 from usali.mapping.schedules import seed_schedules  # noqa: E402
 from usali.models import Base  # noqa: E402
+from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory  # noqa: E402
 
 from tests.orgwall import (  # noqa: E402
     app_role_url,
@@ -90,6 +91,26 @@ def founding_org(db_session: Session) -> None:
     their own Organization keep doing so and must not also request this."""
     ensure_default_org(db_session)
     db_session.commit()
+
+
+@pytest.fixture
+def org_bound_factory(db_engine: Engine) -> OrgBoundSessionFactory:
+    """A founding-org-bound SESSION FACTORY — the shape `usali.integrations`'
+    `resolve_*` functions and `DbTokenStore` take (OH-17).
+
+    Deliberately a factory and not a session: those callers open their OWN
+    short session per call, so handing them one long-lived session would test
+    a different object than production uses. Built exactly as
+    `test_l2_rls_wall.test_the_app_factory_binds_the_founding_org` builds it,
+    so what it wraps is the same L2-instrumented binding create_app uses.
+
+    It does NOT depend on `db_session` or `founding_org`: it is only a
+    factory, so it seeds nothing and truncates nothing. Tests pair it with
+    whichever world fixture they need — and note `founding_org` unconditionally
+    plants org 1's payroll and accounting credential rows (the D-OH17.15 seed
+    bridge), which is the wrong starting state for any test about NOT being
+    connected."""
+    return OrgBoundSessionFactory(make_session_factory(db_engine), FOUNDING_ORG_ID)
 
 
 @pytest.fixture(scope="module")

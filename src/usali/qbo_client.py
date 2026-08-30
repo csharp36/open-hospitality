@@ -212,11 +212,18 @@ class QboClient:
         # or the NEXT refresh fails with invalid_grant. Through the store, so
         # the token has a durable home and the lineage CAN outlive this
         # process (D-OH17.7). `post_journal_entry` holds the instance lock
-        # around this, which serializes threads here. Whether two PROCESSES
-        # refreshing at once are serialized is the store's problem, not this
-        # client's, and is not settled yet: the critical section is
-        # load() -> grant -> store(), which a lock taken inside store() is
-        # too late to cover. `DbTokenStore` has to answer that.
+        # around this, which serializes THREADS here.
+        #
+        # PROCESSES are deliberately NOT serialized (settled 2026-08-30; see
+        # `integrations.DbTokenStore`). The critical section is
+        # load() -> grant -> store(), which no lock taken inside either method
+        # can cover, and this method is exactly why one spanning them is
+        # unsafe: the `raise` above leaves without ever calling `store()`, so a
+        # lock opened by `load()` would have no release path on the routine
+        # failure of an expired or revoked token. Two workers pushing for one
+        # tenant at once can therefore both spend the same token; the loser
+        # gets invalid_grant here and its push fails visibly, while the
+        # winner's rotated token is in the row, so a retry succeeds.
         self._tokens.store(payload["refresh_token"])
 
     def post_journal_entry(self, je: dict[str, Any], request_id: str) -> str:
