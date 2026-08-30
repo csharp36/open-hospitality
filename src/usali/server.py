@@ -2,7 +2,7 @@ import threading
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import anyio
 from fastapi import Depends, FastAPI, HTTPException, Request, UploadFile
@@ -27,6 +27,7 @@ from usali.crm_feed import CrmFeed
 from usali.db import make_engine, make_session_factory
 from usali.detect import detect_report_signature
 from usali.ingestion import ProcessingError, process_file
+from usali.integrations_api import router as integrations_router
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminClient
 from usali.face_enrollment import router as face_enrollment_router
 from usali.face_match import FaceEmbedder
@@ -272,6 +273,9 @@ def create_app(
     provisioner_session_factory: SessionFactory | None = None,
     admin_notify_email: str | None = None,
     public_base_url: str | None = None,
+    verify_integration: (
+        Callable[[str, str, dict[str, Any], str | None], None] | None
+    ) = None,
 ) -> FastAPI:
     settings = get_settings()
     # There is NO provider-name fail-fast here any more (OH-17). Two used to
@@ -377,6 +381,16 @@ def create_app(
         payroll_provider_factory or integrations.resolve_payroll
     )
     app.state.get_crm_feed = crm_feed_factory or integrations.resolve_crm_feed
+    # The CONNECT-TIME verification call (D-OH17.8), and the one seam here
+    # that is not a resolution: one live provider call made before a
+    # credential is stored, so a key that cannot authenticate never becomes a
+    # row the checklist would read as `done`. Tests inject a fake that raises
+    # or passes; wiring this to a no-op would make D-OH17.8 false in
+    # production with the whole suite still green, which is why the default is
+    # pinned by a test of its own.
+    app.state.verify_integration = (
+        verify_integration or integrations.verify_credentials
+    )
     # Face engine seam (F3). Tests inject a fake; the default loads the ONNX
     # models lazily on the first face route and is SHARED for the app's
     # lifetime (two onnxruntime sessions per process, not per request).
@@ -391,6 +405,10 @@ def create_app(
     app.include_router(workforce_router, dependencies=operator_gates)
     app.include_router(property_config_router, dependencies=operator_gates)
     app.include_router(checklist_router, dependencies=operator_gates)
+    # The per-tenant connect surface (OH-17). EVERY route inside narrows to
+    # org_admin through its own `require_integration_admin` — the read too,
+    # unlike the checklist — so the outer gate here is only authentication.
+    app.include_router(integrations_router, dependencies=operator_gates)
     # Face-template enrollment (F3). Route-level require_onboarder narrows to
     # org_admin/property_gm — require_operator is only the outer gate.
     app.include_router(face_enrollment_router, dependencies=operator_gates)

@@ -23,6 +23,7 @@ is a decision rather than an omission.
 """
 
 from dataclasses import dataclass
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -179,6 +180,113 @@ def connected_provider(session: Session, integration: str) -> str:
     old `org_settings.crm_provider` OFF sentinel did."""
     row = credential_for(session, integration)
     return row.provider if row is not None else ""
+
+
+# ----------------------------------------------- connect-time verification
+
+
+class CannotVerify(Exception):
+    """This credential cannot be PROVEN here, so it must not be stored.
+
+    Distinct from the adapters' own error types on purpose. Those mean "the
+    provider said no" — a typo'd key, a company the token cannot reach — and
+    the router reports them as such. This one means "nothing was asked",
+    which would otherwise be indistinguishable from a pass: a verification
+    that silently returns on the path it cannot handle is a verification that
+    always succeeds, and D-OH17.8 would be false exactly where it matters.
+
+    Two inhabitants today, both loud rather than silent:
+      * a demand feed in a workspace where no property carries a `crm_ref` —
+        every real CRM read is property-scoped, so there is nothing to verify
+        against (ADR-010: name the blocker the operator can act on);
+      * QuickBooks, whose credential is proven by COMPLETING the OAuth grant
+        (OH-17 Task 11) and cannot be proven from a paste at all — Intuit
+        rotates the refresh token on every grant, so "checking" a pasted one
+        would spend it and leave the stored copy dead on first use.
+    """
+
+
+def verify_credentials(
+    integration: str, provider: str, values: dict[str, Any], crm_ref: str | None
+) -> None:
+    """Prove a credential authenticates BEFORE it is stored (D-OH17.8).
+
+    Builds the adapter from the supplied values plus deployment config and
+    calls its `verify()`. Raises the adapter's own error type on failure,
+    which the router turns into a 422. Nothing is written — not here, and not
+    by any `verify()` it calls (each is pinned read-only at the wire by
+    `test_provider_contract` / `test_j3_crm_adapters`).
+
+    Dispatches on the PROVIDER passed in, never on which fields happen to be
+    present: the router has already validated the pair against `spec_for`,
+    and inferring a provider from its field names would silently pick the
+    wrong adapter the first time two providers share a field name — sending
+    one provider's secret to the other.
+
+    The adapter CLASSES are read through this module's globals rather than
+    captured, so a test can substitute a transport-injecting subclass and
+    still exercise the real adapter code. Do not "optimize" this into a dict
+    built at import time.
+
+    TOTAL BY CONSTRUCTION: the final `raise` is what makes this a
+    verification rather than a formality. A provider added to `PROVIDERS`
+    (and to the DB CHECK) but forgotten here would otherwise fall off the end
+    returning None — which reads as "verified" — and its credentials would be
+    stored unchecked while every existing test still passed.
+
+    `integration` is not read today — the provider name alone determines the
+    adapter, because `PROVIDERS` keys providers to exactly one slot. It stays
+    in the signature because this is a SEAM (`create_app(verify_integration=)`)
+    and its shape is the contract a substitute has to satisfy; a caller that
+    had to remember which arguments this particular implementation happens to
+    consult would be a worse seam.
+    """
+    del integration
+    settings = get_settings()
+    if provider == "gusto":
+        GustoAdapter(
+            base_url=settings.gusto_base_url,
+            api_token=values["api_token"],
+            company_id=values["company_id"],
+        ).verify()
+        return
+    if provider == "adp":
+        AdpAdapter(
+            base_url=settings.adp_base_url,
+            client_id=values["client_id"],
+            client_secret=values["client_secret"],
+        ).verify()
+        return
+    if provider in ("delphi", "tripleseat"):
+        if crm_ref is None:
+            raise CannotVerify(
+                "no property in this workspace has a crm_ref, so the demand "
+                "feed cannot be verified — declare one in "
+                "mapping/properties.yaml and re-seed first"
+            )
+        feed: CrmFeed = (
+            DelphiAdapter(
+                base_url=settings.delphi_base_url,
+                subscription_key=values["subscription_key"],
+            )
+            if provider == "delphi"
+            else TripleseatAdapter(
+                base_url=settings.tripleseat_base_url,
+                api_key=values["api_key"],
+            )
+        )
+        feed.verify(crm_ref)
+        return
+    if provider == "qbo":
+        raise CannotVerify(
+            "QuickBooks Online is connected by authorizing Open Hospitality "
+            "in Intuit, not by pasting a token — start the authorization "
+            "from /integrations"
+        )
+    # See TOTAL BY CONSTRUCTION above. Not a defensive `else`: this is the
+    # branch that makes forgetting a provider fail loudly instead of storing
+    # its credentials unverified.
+    raise CannotVerify(f"no verification is implemented for provider {provider!r}")
 
 
 # --------------------------------------------------------------- resolution

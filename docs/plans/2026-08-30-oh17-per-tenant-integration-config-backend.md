@@ -1953,6 +1953,42 @@ git commit -m "feat(oh17): a real verify() on each adapter, so connect can refus
 
 ## Task 10: The read / connect / disconnect router
 
+> **Divergences found in execution (2026-08-30).** Four, two of them
+> load-bearing:
+>
+> 1. **The planned `verify_credentials` was a verification that always passed
+>    for QBO.** Its dispatch ends with a comment — "ACCOUNTING/qbo is verified
+>    by completing the OAuth grant itself (Task 11) — there is no paste-a-key
+>    path that could reach here" — and then *falls off the end returning
+>    `None`*, which the router reads as "verified". The premise is false in the
+>    same code block: `PUT /api/integrations/accounting` is accepted (the
+>    integration is in `INTEGRATIONS`, and `spec_for('accounting', 'qbo')`
+>    returns a spec), so a pasted refresh token WAS a paste-a-key path, and it
+>    would have been stored unchecked — D-OH17.8 inverted for the one
+>    integration whose credential rotates. Shipped instead: `CannotVerify` in
+>    `integrations.py`, raised for QBO *and* by a final unconditional `raise`,
+>    so the dispatch is total and a provider added to `PROVIDERS` but forgotten
+>    here fails loudly rather than reading as verified. Verifying a pasted
+>    refresh token is not the fix: Intuit rotates on every grant, so checking
+>    one would spend it and leave the stored copy dead.
+> 2. **The planned `GET` was ungated**, while the module docstring in the same
+>    block says "Every route is org_admin". The read is gated here: the
+>    identifiers name the tenant's external accounts, and the list of what is
+>    NOT connected is a map of the workspace's gaps.
+> 3. **`ConnectRequest` is `extra="allow"`, so pydantic types none of the
+>    credential values.** The planned checks test only presence, so
+>    `{"subscription_key": {"nested": "x"}}` reaches the `EncryptedString` bind
+>    processor and an int reaches a `String` column — both 500s on a caller
+>    mistake. A `must be a string` 422 was added.
+> 4. Smaller: the planned `GET` reads ORM attributes after its session has
+>    closed (works only because `Session.close()` does not expire loaded
+>    attributes); `_first_crm_ref` had no `ORDER BY`, so which property answered
+>    was a coin flip.
+>
+> The step-1 tests also name no world fixture. `unconnected_org` is the only
+> correct one (D-OH17.15) — `founding_org` plants org 1's payroll and
+> accounting rows, so "not connected" would be false before the test began.
+
 **Files:**
 - Create: `src/usali/integrations_api.py`
 - Modify: `src/usali/server.py` (include the router)
