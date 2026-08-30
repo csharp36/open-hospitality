@@ -566,6 +566,26 @@ Per ADR-010, every degradation is loud and named.
   per-integration buttons rather than an `sr-only` span, since a page of three
   cards repeats "Connect" three times.
 
+## 8a. Carried forward — `pay_run.provider_name` (raised in execution, 2026-08-30)
+
+`payroll_run_api.create_run` still records `provider_name=settings.payroll_provider`
+while the adapter beside it now resolves from the tenant's row. **They cannot
+diverge today** — org 1's row is seeded from that same env, and an org without a
+row 503s before reaching the write — but the connect surfaces (§5) make them
+divergable, and a `pay_run` would then record a provider that did not run it.
+
+Deliberately NOT fixed during the rewiring, because `provider_name` is also the
+identity key of `ProviderEmployeeRef` (`payroll_run.sync_employees`): changing
+what it holds re-keys stored provider references and orphans existing ones.
+That is a data-model decision, not a wiring one. It must be settled before the
+payroll connect surface ships, and the hazard is commented at the call site.
+
+Related, and also out of scope: `cli.py` keeps its own
+`_qbo_client_from_settings` reading `USALI_QBO_*`. The CLI is not org-aware at
+all, so it now diverges from the API's per-tenant resolution — acceptable while
+the CLI is an operator tool run against one deployment, but it should not grow
+a second user.
+
 ## 9. Out of scope
 
 - **Per-property credentials** (D-OH17.13).

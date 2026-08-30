@@ -1425,6 +1425,20 @@ git commit -m "feat(oh17): resolve adapters from the tenant's credential row"
 
 ## Task 6: Rewire the call sites
 
+> **The plan's `_get_qbo_client` leaked tenant state across a permission
+> boundary. Do not restore the `Depends` (found in execution, 2026-08-30).**
+> This task specified `QboClientDep = Annotated[QboClient, Depends(_get_qbo_client)]`.
+> FastAPI resolves dependencies **before** the handler runs, so once that
+> resolution could 503, an out-of-scope caller's **403 became
+> "QuickBooks Online is not connected for this tenant"** — telling someone who
+> may not touch the property whether that tenant has QBO connected. It also
+> contradicted `qbo_push_endpoint`'s own docstring, which promises the scope
+> check runs first. The shipped code resolves the client in the handler body,
+> after the check; `tests/test_workforce_api.py:55` is the ordering pin and says
+> so. A refusal must never become an existence oracle (the `crm_api`
+> "names neither the property nor whether it exists" posture).
+
+
 > **Two stale rationales to delete WITH the memoizer (handed over from Task 5).**
 > `portal_api._get_qbo_client` (`portal_api.py:98-105`) says *"Refresh-token
 > rotation lives in client memory … so a per-request client would invalid_grant
