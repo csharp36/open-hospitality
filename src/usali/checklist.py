@@ -43,12 +43,18 @@ ERROR = "error"
 
 @dataclass(frozen=True)
 class ChecklistItem:
+    """D-B4.8 pairs the last two fields: `where is None` ⟺
+    `unavailable_reason is not None`. An item either routes somewhere that can
+    actually close it, or it says why it cannot be closed yet — never both
+    (a link the reason contradicts) and never neither (a dead end)."""
+
     key: str
     title: str
     description: str
     required: bool
-    where: str  # the SPA route that closes this item
+    where: str | None  # the SPA route that closes this item, or None
     probe: Probe
+    unavailable_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,9 +63,10 @@ class ItemStatus:
     title: str
     description: str
     required: bool
-    where: str
+    where: str | None
     status: str
     detail: str | None = None
+    unavailable_reason: str | None = None
 
 
 def evaluate(
@@ -118,6 +125,9 @@ def _status(item: ChecklistItem, status: str, *, detail: str | None = None) -> I
     return ItemStatus(
         key=item.key, title=item.title, description=item.description,
         required=item.required, where=item.where, status=status, detail=detail,
+        # Unconditional: the reason is a static property of the item, not of
+        # this evaluation, so an `error` row carries it too.
+        unavailable_reason=item.unavailable_reason,
     )
 
 
@@ -175,6 +185,14 @@ def _probe_team(session: Session) -> bool:
     return count > 1
 
 
+# One constant, not three near-identical strings: the three integration items
+# share a single cause, and D-B4.8's point is that this is one class rather
+# than three special cases. OH-17 deletes it along with the `where=None`s.
+_OH17_REASON = (
+    "No connect surface yet — per-tenant integration setup arrives with "
+    "OH-17. You can dismiss this if you do not plan to connect it."
+)
+
 ITEMS: tuple[ChecklistItem, ...] = (
     ChecklistItem(
         key="first_report", title="Upload your first PMS report",
@@ -196,17 +214,20 @@ ITEMS: tuple[ChecklistItem, ...] = (
         key="payroll", title="Connect payroll",
         description="Optional. Compare estimated labor cost against the actual "
                     "gross-to-net from your provider.",
-        required=False, where="/payroll", probe=_probe_payroll,
+        required=False, where=None, probe=_probe_payroll,
+        unavailable_reason=_OH17_REASON,
     ),
     ChecklistItem(
         key="accounting", title="Connect QuickBooks Online",
         description="Optional. Push the journal entry behind your statement.",
-        required=False, where="/qbo", probe=_probe_accounting,
+        required=False, where=None, probe=_probe_accounting,
+        unavailable_reason=_OH17_REASON,
     ),
     ChecklistItem(
         key="demand_feed", title="Connect a demand feed",
         description="Optional. Pull group and event demand from Delphi or Tripleseat.",
-        required=False, where="/schedule", probe=_probe_demand_feed,
+        required=False, where=None, probe=_probe_demand_feed,
+        unavailable_reason=_OH17_REASON,
     ),
     ChecklistItem(
         key="team", title="Invite your team",

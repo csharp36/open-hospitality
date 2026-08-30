@@ -203,6 +203,29 @@ def test_payroll_and_accounting_ignore_process_wide_settings(db_session, foundin
     assert _status_of(db_session, "accounting") == "open"
 
 
+def test_where_and_unavailable_reason_are_paired():
+    """D-B4.8: an item either routes somewhere real or says why it does not.
+    Exactly one of the two, never both and never neither — an item with a
+    reason AND a link would render a link the reason contradicts, and one
+    with neither is the dead end this decision exists to remove."""
+    for item in ITEMS:
+        assert (item.where is None) == (item.unavailable_reason is not None), item.key
+
+
+def test_the_integration_items_have_no_connect_surface_yet():
+    """The three OH-17 items, named explicitly. This test is the tripwire that
+    OH-17 must delete: when it supplies a connect surface it restores `where`
+    and drops the reason, and this assertion fails loudly rather than leaving
+    a stale "coming later" string on a working page."""
+    by_key = {i.key: i for i in ITEMS}
+    for key in ("payroll", "accounting", "demand_feed"):
+        assert by_key[key].where is None
+        assert "OH-17" in (by_key[key].unavailable_reason or "")
+    # Everything else still routes.
+    for key in ("first_report", "room_inventory", "fiscal_calendar", "team"):
+        assert by_key[key].where is not None
+
+
 def _row(key, status, *, required=False):
     return ItemStatus(key=key, title=f"T {key}", description=f"D {key}",
                       required=required, where="/setup", status=status)

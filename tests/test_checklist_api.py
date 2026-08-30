@@ -47,6 +47,21 @@ def test_get_checklist_reports_open_items(db_engine, db_session, tmp_path):
     assert first["where"] == "/upload"
 
 
+def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
+    """ItemModel forbids extra fields and is built with **vars(ItemStatus), so
+    a field added to the dataclass and NOT to the model is a 500. This asserts
+    the pair travels, which is what that coupling can break."""
+    _org(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    body = c.get("/api/checklist", headers=_admin_headers(mint, db_session)).json()
+    by_key = {i["key"]: i for i in body["items"]}
+    assert by_key["first_report"]["where"] == "/upload"
+    assert by_key["first_report"]["unavailable_reason"] is None
+    assert by_key["payroll"]["where"] is None
+    assert "OH-17" in by_key["payroll"]["unavailable_reason"]
+
+
 def test_get_checklist_marks_done_items(db_engine, db_session, tmp_path):
     _org(db_session)
     db_session.add(IngestBatch(org_id=1, pms_source="OPERA", report_type="trial_balance",

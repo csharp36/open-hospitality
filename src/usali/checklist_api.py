@@ -32,9 +32,10 @@ class ItemModel(BaseModel):
     title: str
     description: str
     required: bool
-    where: str
+    where: str | None
     status: str
     detail: str | None = None
+    unavailable_reason: str | None = None
 
 
 class ChecklistModel(BaseModel):
