@@ -12,10 +12,12 @@ which credentials each provider needs. It is MIRRORED by the CHECK on
 DB refuses a malformed row independently of this import. Adding a provider
 means editing PROVIDERS *and* that literal plus its migration.
 
-The `resolve_*` functions take an org-bound SESSION FACTORY, not a session:
-`resolve_qbo` hands the same factory to `DbTokenStore`, which must write the
-rotated refresh token back in its own short transaction (D-OH17.7). All three
-take the same shape so no call site has to remember which is which.
+The `resolve_*` functions (arrive with the resolution seam; they do not exist
+yet in this module) take an org-bound SESSION FACTORY, not a session:
+`resolve_qbo` hands the same factory to `DbTokenStore` (also arrives with the
+resolution seam), which must write the rotated refresh token back in its own
+short transaction (D-OH17.7). All three take the same shape so no call site
+has to remember which is which.
 """
 
 from dataclasses import dataclass

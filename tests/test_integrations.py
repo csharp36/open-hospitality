@@ -126,3 +126,84 @@ def test_the_registry_mirrors_the_crm_provider_closed_set():
     from usali.crm_feed import CRM_PROVIDERS
     feed = {s.provider for s in integ.PROVIDERS if s.integration == integ.DEMAND_FEED}
     assert feed == set(CRM_PROVIDERS)
+
+
+def _attempt_insert(db_session, values: dict[str, object]) -> None:
+    """Insert one row inside its own SAVEPOINT, then always roll the
+    savepoint back — win or lose. This function's callers only care whether
+    the CHECK accepts or refuses a given shape, never about leaving rows
+    behind for later cases to collide with on the (org_id, integration)
+    primary key. The rollback is unconditional (`finally`), not an
+    error-only recovery: Postgres aborts the whole surrounding transaction on
+    any statement error, so a bare `execute` that raises would poison every
+    later assertion in the same test — `begin_nested` scopes the damage to
+    just this one attempt, whether it succeeded or failed."""
+    cols = ", ".join(values)
+    placeholders = ", ".join(f":{k}" for k in values)
+    savepoint = db_session.begin_nested()
+    try:
+        db_session.execute(
+            text(
+                f"INSERT INTO org_integration_credential ({cols}) "
+                f"VALUES ({placeholders})"
+            ),
+            values,
+        )
+    finally:
+        savepoint.rollback()
+
+
+@pytest.mark.parametrize(
+    "spec", integ.PROVIDERS, ids=lambda s: f"{s.integration}:{s.provider}"
+)
+def test_the_check_agrees_with_the_registry(db_session, founding_org, spec):
+    """`PROVIDERS` and `ck_org_integration_credential_provider_fields` are one
+    rule written twice (D-OH17.5) — and until this test, nothing checked that
+    the two copies agree. The four registry tests above never touch the DB;
+    the three CHECK tests above assert on hardcoded literals independent of
+    `PROVIDERS`. So a provider added to one and forgotten in the other passed
+    every existing test, and the drift would only surface later as a row the
+    database rejects, far from its cause. This is parametrized off PROVIDERS
+    itself so it grows automatically when a provider is added, and a failure
+    names the offending (integration, provider) pair.
+
+    Positive case: exactly `spec.fields` populated, everything else NULL,
+    must be ACCEPTED — this catches a spec that claims fewer fields than the
+    CHECK actually demands. Negative cases: each field NOT in `spec.fields`,
+    added one at a time on top of an otherwise-legal row, must be REFUSED —
+    this catches a spec that claims fewer fields than the CHECK forbids.
+    """
+    # founding_org unconditionally seeds org 1's payroll and accounting rows
+    # (property_registry._seed_integration_credentials) — delete whatever it
+    # planted for THIS integration first, or this test's own insert collides
+    # with the seed on the (org_id, integration) primary key and either PASSES
+    # FOR THE WRONG REASON (positive case: the seed row already exists, so a
+    # broken insert is never actually exercised) or fails with the wrong error
+    # (negative case: PK violation, not the CHECK). Org 1 itself stays — it
+    # already satisfies the FK, so no other org needs to exist for this test.
+    db_session.execute(
+        text(
+            "DELETE FROM org_integration_credential "
+            "WHERE org_id = 1 AND integration = :integration"
+        ),
+        {"integration": spec.integration},
+    )
+
+    base = {
+        "org_id": 1,
+        "integration": spec.integration,
+        "provider": spec.provider,
+        "connected_by": "sub",
+    }
+    legal = {field: "v" for field in spec.fields}
+
+    # Positive: exactly spec.fields, nothing more — must succeed.
+    _attempt_insert(db_session, {**base, **legal})
+
+    # Negative: every OTHER credential column, added one at a time on top of
+    # an otherwise-legal row — each must be refused BY THIS CHECK specifically.
+    for field in integ.ALL_CREDENTIAL_FIELDS:
+        if field in spec.fields:
+            continue
+        with pytest.raises(IntegrityError, match=_CHECK):
+            _attempt_insert(db_session, {**base, **legal, field: "leftover"})
