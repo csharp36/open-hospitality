@@ -192,9 +192,19 @@ which is past 1200 lines already.
      "required": true, "status": "done", "where": "/upload"}
   ],
   "open_count": 4,
+  "error_count": 0,
   "all_clear": false
 }
 ```
+
+**`all_clear` requires zero open items AND zero errors** (corrected 2026-08-30
+in review). An item whose probe failed is not a finished item: the first draft
+computed `all_clear = open_count == 0` with errors excluded from the count, so
+a tenant whose probes ALL failed would have been told setup was complete when
+the truth was simply unknown — the plausible-looking wrong result ADR-010
+refuses, and §8's own principle violated one level up. `error_count` is on the
+wire so a client can distinguish "4 things to do" from "4 things we could not
+check" and say so.
 
 Refusals, per the fail-loud posture of
 [ADR-010](../adr/adr-010-fail-closed-loud-posture.md):
@@ -212,7 +222,11 @@ Refusals, per the fail-loud posture of
   Accounting section (it belongs to neither Accounting nor Employee
   Management). Required and optional items grouped separately; every item links
   to the route named by `where`; optional items carry a dismiss control.
-- **Dashboard card** — rendered only while `open_count > 0`; compact, links to
+- **Dashboard card** — rendered while **`all_clear` is false** (NOT while
+  `open_count > 0`: on a total probe failure `open_count` is zero while
+  nothing is actually known, and gating on it would retire the card exactly
+  when the operator most needs it). An `error_count > 0` state must read as
+  "we could not check these", never as progress. Compact, links to
   `/setup`. It **retires at zero** and the dashboard returns to pure
   operations, while `/setup` remains the permanent home for the day someone
   reconnects an integration. This is the resolved placement: the checklist page

@@ -1,5 +1,8 @@
+from dataclasses import replace
+
 from fastapi.testclient import TestClient
 
+import usali.checklist as checklist_module
 from tests.authkit import DEFAULT_ORG_ALIAS, make_authkit
 from tests.grants import grant_role
 from usali.db import make_session_factory
@@ -53,3 +56,38 @@ def test_get_checklist_marks_done_items(db_engine, db_session, tmp_path):
     r = c.get("/api/checklist", headers=_admin_headers(mint, db_session))
     items = {i["key"]: i for i in r.json()["items"]}
     assert items["first_report"]["status"] == "done"
+
+
+def test_get_checklist_surfaces_a_probe_error_and_withholds_all_clear(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    """A probe that raises must reach the client as `error`, and must NOT be
+    countable as clear: `all_clear` requires zero errors as well as zero
+    open items (an unchecked item is not a finished item)."""
+    _org(db_session)
+
+    def _boom(_session):
+        raise RuntimeError("probe exploded")
+
+    patched = tuple(
+        replace(item, probe=_boom) if item.key == "team" else item
+        for item in checklist_module.ITEMS
+    )
+    monkeypatch.setattr(checklist_module, "ITEMS", patched)
+
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.get("/api/checklist", headers=_admin_headers(mint, db_session))
+    assert r.status_code == 200
+    body = r.json()
+    items = {i["key"]: i for i in body["items"]}
+    assert items["team"]["status"] == "error"
+    assert body["error_count"] >= 1
+    assert body["all_clear"] is False
+
+
+def test_get_checklist_requires_authentication(db_engine, tmp_path):
+    verifier, _mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.get("/api/checklist")
+    assert r.status_code == 401

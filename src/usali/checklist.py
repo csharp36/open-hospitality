@@ -93,6 +93,29 @@ def evaluate(
     return out
 
 
+@dataclass(frozen=True)
+class ChecklistSummary:
+    items: list[ItemStatus]
+    open_count: int
+    error_count: int
+    all_clear: bool
+
+
+def summarize(rows: list[ItemStatus]) -> ChecklistSummary:
+    """Aggregate derived statuses. `all_clear` requires that nothing is open
+    AND that nothing failed to evaluate: an item we could not check is not a
+    finished item, and reporting otherwise would tell an operator to stop
+    when the truth is unknown (ADR-010, design §8)."""
+    open_count = sum(1 for r in rows if r.status == OPEN)
+    error_count = sum(1 for r in rows if r.status == ERROR)
+    return ChecklistSummary(
+        items=rows,
+        open_count=open_count,
+        error_count=error_count,
+        all_clear=open_count == 0 and error_count == 0,
+    )
+
+
 def _status(item: ChecklistItem, status: str, *, detail: str | None = None) -> ItemStatus:
     return ItemStatus(
         key=item.key, title=item.title, description=item.description,

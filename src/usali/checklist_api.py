@@ -7,11 +7,11 @@ commitment about the tenant rather than a per-user preference.
 """
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from usali.auth import request_session_factory
-from usali.checklist import OPEN, evaluate
+from usali.checklist import evaluate, summarize
 
 router = APIRouter(prefix="/api/checklist")
 
@@ -21,6 +21,8 @@ def _session(request: Request) -> Session:
 
 
 class ItemModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     key: str
     title: str
     description: str
@@ -33,6 +35,7 @@ class ItemModel(BaseModel):
 class ChecklistModel(BaseModel):
     items: list[ItemModel]
     open_count: int
+    error_count: int
     all_clear: bool
 
 
@@ -41,8 +44,9 @@ def get_checklist(request: Request) -> ChecklistModel:
     """Every registered item with its DERIVED status for the active org."""
     with _session(request) as session:
         rows = evaluate(session)
-    items = [ItemModel(**vars(row)) for row in rows]
-    open_count = sum(1 for row in rows if row.status == OPEN)
+    summary = summarize(rows)
+    items = [ItemModel(**vars(row)) for row in summary.items]
     return ChecklistModel(
-        items=items, open_count=open_count, all_clear=open_count == 0
+        items=items, open_count=summary.open_count,
+        error_count=summary.error_count, all_clear=summary.all_clear,
     )

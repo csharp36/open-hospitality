@@ -1,7 +1,7 @@
 from datetime import date
 
 from tests.grants import grant_role
-from usali.checklist import ITEMS, ChecklistItem, evaluate
+from usali.checklist import ITEMS, ChecklistItem, ItemStatus, evaluate, summarize
 from usali.models import (
     Base,
     FiscalCalendar,
@@ -201,3 +201,43 @@ def test_payroll_and_accounting_ignore_process_wide_settings(db_session, foundin
     Both stay open until OH-17 gives them per-tenant config."""
     assert _status_of(db_session, "payroll") == "open"
     assert _status_of(db_session, "accounting") == "open"
+
+
+def _row(key, status, *, required=False):
+    return ItemStatus(key=key, title=f"T {key}", description=f"D {key}",
+                      required=required, where="/setup", status=status)
+
+
+def test_summarize_all_open():
+    rows = [_row("a", "open"), _row("b", "open")]
+    summary = summarize(rows)
+    assert summary.open_count == 2
+    assert summary.error_count == 0
+    assert summary.all_clear is False
+
+
+def test_summarize_all_done():
+    rows = [_row("a", "done"), _row("b", "done")]
+    summary = summarize(rows)
+    assert summary.open_count == 0
+    assert summary.error_count == 0
+    assert summary.all_clear is True
+
+
+def test_summarize_mixed_statuses():
+    rows = [_row("a", "done"), _row("b", "open"), _row("c", "dismissed")]
+    summary = summarize(rows)
+    assert summary.open_count == 1
+    assert summary.error_count == 0
+    assert summary.all_clear is False
+
+
+def test_summarize_an_error_blocks_all_clear_even_with_no_open_items():
+    """ADR-010 / design §8: an item we could not check is not a finished
+    item. A tenant whose only non-done item errored must NOT read as
+    all_clear, even though open_count is zero."""
+    rows = [_row("a", "done"), _row("b", "error")]
+    summary = summarize(rows)
+    assert summary.open_count == 0
+    assert summary.error_count == 1
+    assert summary.all_clear is False

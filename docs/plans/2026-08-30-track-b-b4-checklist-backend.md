@@ -50,6 +50,10 @@ Fixtures are synthetic — no real PII, phone numbers, or credentials.
 - **Router prefixes:** `portal_api.py:693` is `APIRouter(prefix="/api")`;
   `property_config_api.py:75` is `/api/properties`; `crm_api.py:45` is
   `/api/crm`. The new router is `/api/checklist`.
+- **`request_session_factory` lives in `usali.auth:384`, NOT `usali.tenancy`**
+  (corrected 2026-08-30 — an earlier draft of this plan had it wrong; every
+  feature router imports it from `usali.auth`). `current_org_id` IS in
+  `usali.tenancy:128`.
 - **The session idiom for a feature router** (`property_config_api.py:78`):
   ```python
   def _session(request: Request) -> Session:
@@ -809,8 +813,8 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from usali.auth import request_session_factory
 from usali.checklist import OPEN, evaluate
-from usali.tenancy import request_session_factory
 
 router = APIRouter(prefix="/api/checklist")
 
@@ -975,10 +979,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from usali.auth import ORG_ADMIN, Principal, require_grants
+from usali.auth import (
+    ORG_ADMIN, Principal, request_session_factory, require_grants,
+)
 from usali.checklist import ITEMS, OPEN, evaluate
 from usali.models import OrgChecklistOverride
-from usali.tenancy import current_org_id, request_session_factory
+from usali.tenancy import current_org_id
 ```
 
 then append:
