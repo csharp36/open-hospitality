@@ -7,7 +7,7 @@ commitment about the tenant rather than a per-user preference.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
@@ -62,7 +62,9 @@ _BY_KEY = {item.key: item for item in ITEMS}
 
 
 class DismissRequest(BaseModel):
-    note: str | None = None
+    # Bounded to the column width (String(200)); an over-long note is a clean
+    # 422 rather than an unhandled Postgres StringDataRightTruncation 500.
+    note: str | None = Field(default=None, max_length=200)
 
 
 def _item_or_404(key: str) -> ChecklistItem:

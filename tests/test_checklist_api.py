@@ -174,6 +174,27 @@ def test_unknown_item_key_is_404(db_engine, db_session, tmp_path):
     assert r.status_code == 404
 
 
+def test_unknown_item_key_is_404_on_delete(db_engine, db_session, tmp_path):
+    _org(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.delete("/api/checklist/no_such_item/dismissal",
+                 headers=_admin_headers(mint, db_session))
+    assert r.status_code == 404
+
+
+def test_an_over_long_note_is_a_clean_422_not_a_500(db_engine, db_session, tmp_path):
+    """note is String(200); pydantic's max_length must refuse before the
+    write reaches Postgres, or an over-long note is an unhandled
+    StringDataRightTruncation 500."""
+    _org(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.put("/api/checklist/payroll/dismissal", json={"note": "x" * 201},
+              headers=_admin_headers(mint, db_session))
+    assert r.status_code == 422
+
+
 def test_a_non_admin_operator_cannot_dismiss(db_engine, db_session, tmp_path):
     _org(db_session)
     grant_role(db_session, "accountant", sub="bookkeeper", org_id=1)
