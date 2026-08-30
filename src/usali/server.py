@@ -20,6 +20,7 @@ from usali.auth import (
     require_active_org,
     require_operator,
 )
+from usali.checklist_api import router as checklist_router
 from usali.config import Settings, get_settings
 from usali.crm_api import router as crm_router
 from usali.crm_feed import CRM_PROVIDERS, CrmFeed
@@ -455,6 +456,7 @@ def create_app(
     app.include_router(portal_router, dependencies=operator_gates)
     app.include_router(workforce_router, dependencies=operator_gates)
     app.include_router(property_config_router, dependencies=operator_gates)
+    app.include_router(checklist_router, dependencies=operator_gates)
     # Face-template enrollment (F3). Route-level require_onboarder narrows to
     # org_admin/property_gm — require_operator is only the outer gate.
     app.include_router(face_enrollment_router, dependencies=operator_gates)
