@@ -9,6 +9,8 @@
 // `soon: true` items are visible-but-inert placeholders for pages that land
 // later. Collapsed mode keeps every control's accessible name: labels go
 // sr-only (never unmounted), so tests and screen readers see the same nav.
+// The Setup link is the one nav entry whose accessible name carries data —
+// match it with { name: /^Setup/ } unless you are pinning the count.
 
 import { useState, type ComponentType, type SVGProps } from 'react'
 import { Link, Outlet } from '@tanstack/react-router'
@@ -174,14 +176,26 @@ function SetupBadge({ badge, collapsed }: { badge: ChecklistBadge; collapsed: bo
  * The Setup link's accessible name: the visible label first, so Label-in-Name
  * (WCAG 2.5.3) still holds and "click Setup" still works by voice.
  *
- * `aria-label` rather than an sr-only sibling carrying the same sentence. Both
- * produce this name, but sr-only text is real text: three suites mount this
- * shell, and two of them query the checklist wording with `getByText`, which
- * does not care that a node is visually hidden. Putting the words in the name
- * only — never in the document — keeps the sidebar out of their results.
+ * `aria-label` rather than an sr-only sibling carrying the same sentence, for
+ * two reasons.
+ *
+ * sr-only text is real text: three suites mount this shell, and two of them
+ * query the checklist wording with `getByText`, which does not care that a
+ * node is visually hidden. Putting the words in the name only — never in the
+ * document — keeps the sidebar out of their results.
+ *
+ * And the two variants do not even agree on the name. In a browser they do:
+ * Tailwind's sr-only sets position:absolute, which blockifies computed
+ * display, so the accname algorithm inserts a separator. In jsdom no
+ * stylesheet loads, the span stays display:inline, and the sr-only variant
+ * computes "Setup3 items still to set up". `aria-label` is the only variant
+ * whose name is the same in the tests and in the product — which is the
+ * promise the header of this file makes.
  */
 function setupLinkName(label: string, badge: ChecklistBadge | null): string | undefined {
-  return badge === null ? undefined : `${label} ${badge.title}`
+  // Colon, not a space: it gives a screen reader a prosodic break instead of
+  // a run-on, and `label` still prefixes the name, so Label-in-Name holds.
+  return badge === null ? undefined : `${label}: ${badge.title}`
 }
 
 function SidebarContent({

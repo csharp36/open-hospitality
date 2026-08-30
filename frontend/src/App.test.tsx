@@ -5,7 +5,7 @@
 // visit. The second describe covers the Setup entry and its checklist badge.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
 
@@ -24,6 +24,7 @@ import { getMe } from './api/client'
 import { getChecklist } from './api/checklist'
 import { createAppRouter } from './router'
 import type { Checklist } from './api/types'
+import { CHECKLIST_KEY } from './lib/useChecklist'
 import { AuthContext, type AuthContextValue } from './auth/authContext'
 import { AUTHED_CONTEXT } from './test/fixtures'
 
@@ -37,6 +38,9 @@ function renderApp(auth: AuthContextValue = AUTHED_CONTEXT, initialPath = '/sos'
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
+  // Returned so a test can anchor on the query's own state rather than on a
+  // link that is already in the DOM, and can drive a refetch.
+  return queryClient
 }
 
 // File-scoped rather than per-describe: the sidebar reads the checklist on
@@ -184,7 +188,7 @@ describe('app shell — setup nav', () => {
     // in it: a pill whose text lands in the name turns this into "Setup3" and
     // makes every exact-name lookup in this file miss.
     expect(
-      await screen.findByRole('link', { name: 'Setup 3 items still to set up' }),
+      await screen.findByRole('link', { name: 'Setup: 3 items still to set up' }),
     ).toBeInTheDocument()
     // Scoped to the badge: '3' is a bare numeral in a whole app shell.
     expect(within(screen.getByTestId('setup-badge')).getByText('3')).toBeInTheDocument()
@@ -200,14 +204,15 @@ describe('app shell — setup nav', () => {
         settle = resolve
       }),
     )
-    renderApp()
+    const queryClient = renderApp()
     await screen.findByRole('link', { name: 'Setup' })
     expect(screen.queryByTestId('setup-badge')).toBeNull()
 
     settle({ items: [], open_count: 0, error_count: 0, all_clear: true })
-    // Resolves only after the badge branch has re-rendered post-resolution,
-    // which is what stops the assertion below passing on a pending query.
-    await screen.findByRole('link', { name: 'Setup' })
+    // Anchored on the query, not on `findByRole`: the link is already in the
+    // DOM, so a role lookup resolves at once and would leave the assertion
+    // below passing against a still-pending fetch.
+    await waitFor(() => expect(queryClient.getQueryData(CHECKLIST_KEY)).toBeDefined())
     expect(screen.queryByTestId('setup-badge')).toBeNull()
   })
 
@@ -215,9 +220,26 @@ describe('app shell — setup nav', () => {
   it('renders no badge and keeps the shell when the checklist read fails', async () => {
     vi.mocked(getChecklist).mockRejectedValue(new Error('boom'))
     renderApp()
-    expect(await screen.findByRole('heading', { name: 'Summary Operating Statement' })).toBeInTheDocument()
+    expect(
+      await screen.findByRole('heading', { name: 'Summary Operating Statement' }),
+    ).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: 'Setup' })).toBeInTheDocument()
     expect(screen.queryByTestId('setup-badge')).toBeNull()
+  })
+
+  // Pins what Layout's comment promises: a failure *after* a good read keeps
+  // the last-known count, because an ambient pointer that blinks out on a
+  // transient hiccup is worse than a slightly stale numeral.
+  it('keeps the last-known count when a background refetch fails', async () => {
+    vi.mocked(getChecklist)
+      .mockResolvedValueOnce({ items: [], open_count: 3, error_count: 0, all_clear: false })
+      .mockRejectedValue(new Error('boom'))
+    const queryClient = renderApp()
+    expect(await screen.findByTestId('setup-badge')).toHaveTextContent('3')
+
+    void queryClient.invalidateQueries({ queryKey: CHECKLIST_KEY })
+    await waitFor(() => expect(queryClient.getQueryState(CHECKLIST_KEY)?.error).toBeTruthy())
+    expect(screen.getByTestId('setup-badge')).toHaveTextContent('3')
   })
 
   // THE divergence case, at the badge.
@@ -233,15 +255,15 @@ describe('app shell — setup nav', () => {
     // '!' announces as nothing at default verbosity, so the divergence has to
     // survive into the name as words.
     expect(
-      screen.getByRole('link', { name: 'Setup Could not check 4 items' }),
+      screen.getByRole('link', { name: 'Setup: Could not check 4 items' }),
     ).toBeInTheDocument()
   })
 
   // The count is the whole reason a collapsed sidebar still points at setup,
-  // so the pill must not ride along when the label goes sr-only. `sr-only` is
-  // position/clip, not display:none — `toBeVisible()` would pass on an sr-only
-  // element even with the real stylesheet loaded, so the structural check is
-  // the only way to express this invariant at all.
+  // so the pill must not ride along when the label goes sr-only. It has to be
+  // a structural check: `sr-only` is position/clip, not display:none, so
+  // `toBeVisible()` would pass on an sr-only element even with the real
+  // stylesheet loaded.
   it('keeps the badge out of sr-only when the sidebar is collapsed', async () => {
     localStorage.setItem('usali.sidebar-collapsed', '1')
     vi.mocked(getChecklist).mockResolvedValue({
