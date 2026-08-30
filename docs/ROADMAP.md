@@ -134,6 +134,19 @@ retry succeeds. This is accepted, not mitigated — a row lock held across an
 outbound HTTP call with no release path on a failed grant was judged worse —
 so nothing here should be read as promising cross-process serialization.
 
+**A second accepted residual, decided 2026-08-30:** the OAuth `state` is
+signed and short-lived but **not single-use**, so a captured, unexpired state
+submitted with an attacker's own fresh Intuit `code` binds the attacker's
+QuickBooks company onto the victim org's accounting row. Accepted after
+working out that a nonce store would not have closed it — single-use refuses
+only the second use, and an attacker who calls back first consumes the nonce
+himself. The fix, if it is ever needed, is a browser-bound cookie across the
+authorize/callback pair, not a nonce table. Full reasoning in D-OH17.11's
+residual-risk block. **This makes one frontend requirement non-optional: the
+`/integrations` page must DISPLAY the connected QBO company id**, because the
+stored `realm_id` plus the `integration_connected` audit event are the only
+signals that separate a hijack from a normal connection.
+
 The open-items checklist (§2.2) is the one place this is fully wired
 end-to-end: `payroll`, `accounting`, and `demand_feed` each probe the
 tenant's own credential row (`checklist.py`'s `_probe_payroll` /

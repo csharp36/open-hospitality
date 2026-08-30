@@ -244,6 +244,46 @@ that would fail on first use.
   `field_encryption_key` under a fixed domain label — the `_photo_key`
   precedent (`crypto.py:79-113`) — so no new deployment secret appears.
 
+  **Residual risk ACCEPTED 2026-08-30 (user decision).** The amendment's
+  reasoning covers replaying a *whole* callback, and only that. It does not
+  cover **state substitution with a fresh code**: an attacker holding a valid,
+  unexpired `state` issued to org A's admin can run their own Intuit consent
+  against their own QuickBooks company, then swap their `state` for the
+  captured one. The MAC verifies, the callback derives org A, and the
+  attacker's `code` is unspent — so the exchange succeeds and the attacker's
+  `realm_id` and refresh token land on **org A's** accounting row, audited to
+  org A's admin. Org A's subsequent QBO pushes then post into a book the
+  attacker controls.
+
+  Accepted rather than fixed, for three reasons in order of weight:
+
+  1. The precondition is a captured `state` inside its 10-minute TTL. It is
+     never sent to a third-party origin by us; it reaches an attacker only
+     through the admin's browser history, our own access log, or a logging
+     proxy — positions from which better attacks are usually already
+     available.
+  2. **A nonce store would not have closed it.** Single-use refuses only the
+     *second* use, and nothing forces the legitimate callback to be first: an
+     attacker who fires the substituted callback ahead of the admin consumes
+     the nonce themselves, the write lands, and it is the admin's own connect
+     that then fails. Single-use narrows the window to "before the admin
+     finishes" and adds a loud symptom — worth something, but a narrowing,
+     not a fix. This is the specific reason the earlier amendment is not
+     simply reversed.
+  3. The fix that would actually close it is binding `state` to the browser
+     that began the flow: an opaque cookie set at `authorize` and required at
+     `callback` (the standard OAuth CSRF pairing). That means putting a cookie
+     requirement on the one route deliberately mounted outside every gate — a
+     design change, not a hardening tweak. **If this is ever revisited, build
+     that, not the nonce store.**
+
+  Two properties make the attack detectable rather than silent, and both are
+  load-bearing now that the hole is accepted: the connect writes an
+  `integration_connected` audit event, and `realm_id` is stored in plaintext.
+  A `/integrations` page that DISPLAYS the connected company id gives a tenant
+  the one signal separating a hijack from a normal connection — carried into
+  the frontend plan as a requirement, not a nicety.
+
 - **D-OH17.12 — The B4 tripwire is deleted and replaced by its mirror image
   (CONFIRMED 2026-08-30).** `test_the_integration_items_have_no_connect_surface_yet`
   (`tests/test_checklist.py:215`) fails by design once a `where` is restored —
@@ -455,6 +495,12 @@ Intuit's `code` is already single-use at Intuit and a replayed `state`
 therefore carries a spent code that the exchange refuses. This paragraph is
 the one that has to say so, because "consume the nonce" read as a shipping
 instruction long after the decision above had retired it.
+
+That reasoning covers replaying a whole callback and nothing more. A captured
+`state` paired with the attacker's OWN fresh code still binds their QuickBooks
+company onto the victim org's row, and single-use would not have stopped it
+either — see D-OH17.11's accepted-residual block, which is the canonical
+statement of both the hole and why a nonce store is the wrong answer to it.
 
 `callback` is mounted **outside** `operator_gates` — it arrives as a top-level
 browser navigation with no bearer token, so `require_operator` and

@@ -405,12 +405,20 @@ def sign_state(*, org_id: int, subject: str, now: float | None = None) -> str:
     is the ONLY carrier of "which tenant is this grant for". Everything the
     callback is allowed to do is derived from what verifies out of here.
 
-    Deliberately NOT single-use against a nonce store. Replay is already dead:
-    the other half of the callback is Intuit's `code`, which is single-use AT
-    INTUIT, so a replayed state necessarily carries a spent code and the token
-    exchange refuses it. A nonce table would add a row, a migration and a
-    reaper to re-block something already blocked. (The design doc's §5 prose
-    predates this amendment; D-OH17.11 itself carries it.)
+    Deliberately NOT single-use against a nonce store. Replaying a WHOLE
+    callback is already dead: the other half of it is Intuit's `code`, which
+    is single-use AT INTUIT, so a replayed state necessarily carries a spent
+    code and the token exchange refuses it.
+
+    That is the full extent of what it buys, and the limit is ACCEPTED
+    (2026-08-30), not overlooked: a captured, unexpired state paired with the
+    attacker's OWN fresh code binds THEIR realm and refresh token onto the
+    victim org's row. Do not "fix" this by adding the nonce store — it refuses
+    only the second use, and an attacker who calls back before the admin
+    consumes the nonce himself, so it narrows the window without closing it.
+    The fix, if this is ever revisited, is a browser-bound cookie set at
+    `authorize` and required here. D-OH17.11's residual-risk block in the
+    OH-17 design doc carries the full reasoning.
 
     The MAC covers `org_id`, `subject` AND `expiry` together — not the org
     alone. An unsigned expiry is no expiry, and an unsigned subject lets a

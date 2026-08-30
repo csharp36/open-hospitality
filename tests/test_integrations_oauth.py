@@ -462,9 +462,14 @@ def test_a_state_for_one_org_never_touches_the_others_row(
 
 def test_a_refused_grant_stores_nothing(oauth_client, db_session, exchange_spy):
     """Intuit's `code` is single-use AT INTUIT, which is what makes the nonce
-    store unnecessary (D-OH17.11 as amended): a replayed state carries a spent
-    code and the exchange refuses it. That refusal must leave no row — the
-    same "verify before persist" rule D-OH17.8 puts on the paste path."""
+    store unnecessary for WHOLE-callback replay (D-OH17.11 as amended): a
+    replayed state carries a spent code and the exchange refuses it. That
+    refusal must leave no row — the same "verify before persist" rule
+    D-OH17.8 puts on the paste path.
+
+    It does not pin anything about a captured state submitted with a fresh
+    code, which succeeds by design and is the residual D-OH17.11 accepts.
+    Nothing here should be read as covering that case."""
     exchange_spy.error = QboError(400, "invalid_grant")
     resp = oauth_client.get(_CALLBACK, params={
         "code": "already-spent", "realmId": "r1",

@@ -133,11 +133,16 @@ def exchange_authorization_code(
     from the credential row this token lands in (`integrations.resolve_qbo`).
 
     `code` is SINGLE-USE at Intuit. That is load-bearing beyond tidiness: it
-    is precisely why D-OH17.11's `state` needs no server-side nonce store — a
-    replayed state necessarily carries a spent code and this call refuses it
-    with `invalid_grant`. Do not add a caching or retry layer around it; a
-    retry of a consumed code is a guaranteed failure, and a cache of the
-    result would resurrect the replay window the design closed.
+    is what makes replaying a whole captured callback useless, and it is the
+    reason D-OH17.11 carries no server-side nonce store. Do not add a caching
+    or retry layer around it; a retry of a consumed code is a guaranteed
+    failure, and a cache of the result would resurrect the replay window that
+    property closes.
+
+    It closes replay of a whole callback and nothing wider — a captured
+    `state` submitted with a FRESH code still binds this grant to the org
+    named in that state. That residual is accepted and documented at
+    `integrations_api.sign_state`; it is not something this function can fix.
 
     `redirect_uri` must be the BYTE-IDENTICAL string sent to the consent
     endpoint — Intuit compares them exactly, and a mismatch fails here, long
