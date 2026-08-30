@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getAccessToken } from '../auth/oidc'
+import { getAccessToken, login } from '../auth/oidc'
 import { dismissItem, getChecklist, restoreItem } from './checklist'
 
 vi.mock('../auth/oidc', () => ({ getAccessToken: vi.fn(), login: vi.fn() }))
@@ -39,11 +39,24 @@ describe('checklist API', () => {
   it('restoreItem DELETEs the dismissal', async () => {
     const f = mockFetch(204)
     await restoreItem('payroll')
-    expect((f.mock.calls[0]![1] as RequestInit).method).toBe('DELETE')
+    const init = f.mock.calls[0]![1] as RequestInit
+    expect(init.method).toBe('DELETE')
+    expect(new Headers(init.headers).get('Authorization')).toBe('Bearer tok')
   })
 
   it('surfaces the 422 detail when a required item is dismissed', async () => {
     mockFetch(422, { detail: 'first_report is required and cannot be dismissed' })
-    await expect(dismissItem('first_report')).rejects.toThrow(/cannot be dismissed/)
+    await expect(dismissItem('first_report')).rejects.toMatchObject({
+      status: 422,
+      detail: expect.stringContaining('cannot be dismissed'),
+    })
+  })
+
+  // ONE 401 test only: `redirecting` in client.ts is a module-level latch, so a
+  // second 401 in this file would see login already fired and assert nothing.
+  it('a 401 on a write redirects to login and still rejects', async () => {
+    mockFetch(401)
+    await expect(dismissItem('payroll')).rejects.toThrow()
+    expect(login).toHaveBeenCalled()
   })
 })
