@@ -82,7 +82,7 @@ import { orgAliasesFromToken, resolveActiveOrg } from '../auth/activeOrg'
 // multi-org request carries no header (the server 400s ambiguity, never
 // guesses). The kiosk device calls deliberately bypass authHeaders() and so
 // carry neither header — kiosk multi-org is deferred.
-async function authHeaders(base?: HeadersInit): Promise<Headers> {
+export async function authHeaders(base?: HeadersInit): Promise<Headers> {
   const headers = new Headers(base)
   const token = await getAccessToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
@@ -97,7 +97,7 @@ async function authHeaders(base?: HeadersInit): Promise<Headers> {
 // so no reset is needed.
 let redirecting = false
 
-function redirectToLogin(): void {
+export function redirectToLogin(): void {
   if (!redirecting) {
     redirecting = true
     void login()
@@ -123,7 +123,7 @@ export class ApiError extends Error {
   }
 }
 
-async function raiseApiError(res: Response): Promise<never> {
+export async function raiseApiError(res: Response): Promise<never> {
   let detail = res.statusText
   let detailBody: unknown = res.statusText
   try {
