@@ -55,34 +55,49 @@ def test_secrets_are_encrypted_and_identifiers_are_not():
         assert not isinstance(table.c[name].type, EncryptedString), name
 
 
+# All three go through raw `text()` rather than the ORM on purpose: the claim
+# is that the DATABASE refuses these rows, independently of the app import
+# (D-OH17.5). Each `match=` names the CHECK explicitly — without it a row that
+# happens to collide with a seeded PK would raise IntegrityError too, and the
+# test would pass while proving nothing about the CHECK. `Session.execute` on
+# a `text()` INSERT emits immediately, so the refusal lands on that statement;
+# there is no later flush to wait for.
+_CHECK = "ck_org_integration_credential_provider_fields"
+
+
 def test_the_check_refuses_a_gusto_row_carrying_an_api_key(db_session, founding_org):
     """D-OH17.5: the DB refuses a malformed credential row independently of
     the app import. The 'must be NULL' half is what stops a stale api_key
     surviving a switch from Tripleseat to Delphi."""
-    with pytest.raises(IntegrityError):
+    with pytest.raises(IntegrityError, match=_CHECK):
         db_session.execute(text(
             "INSERT INTO org_integration_credential "
             "(org_id, integration, provider, api_token, company_id, api_key, connected_by) "
             "VALUES (1, 'payroll', 'gusto', 'x', 'c1', 'leftover', 'sub')"
         ))
-        db_session.flush()
 
 
 def test_the_check_refuses_a_row_with_no_secret(db_session, founding_org):
-    with pytest.raises(IntegrityError):
+    """The other half: a provider with NO credential at all. D-OH17.1 says the
+    row IS the connection, so a provider name on its own is not a connection —
+    it is the `org_settings.crm_provider` split this table exists to end."""
+    with pytest.raises(IntegrityError, match=_CHECK):
         db_session.execute(text(
             "INSERT INTO org_integration_credential "
             "(org_id, integration, provider, connected_by) "
             "VALUES (1, 'demand_feed', 'delphi', 'sub')"
         ))
-        db_session.flush()
 
 
 def test_the_check_refuses_a_provider_from_another_integration(db_session, founding_org):
-    with pytest.raises(IntegrityError):
+    """`integration` and `provider` arrive as INDEPENDENT inputs from the
+    connect endpoint, so nothing in the column types stops a caller pairing
+    them wrongly. Without this half of the CHECK a QBO refresh token could sit
+    in the demand-feed slot, and `checklist._probe_demand_feed` — which asks
+    only whether a demand_feed row exists — would read it as connected."""
+    with pytest.raises(IntegrityError, match=_CHECK):
         db_session.execute(text(
             "INSERT INTO org_integration_credential "
             "(org_id, integration, provider, realm_id, refresh_token, connected_by) "
             "VALUES (1, 'demand_feed', 'qbo', 'r1', 'tok', 'sub')"
         ))
-        db_session.flush()

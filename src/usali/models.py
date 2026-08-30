@@ -730,7 +730,7 @@ PAY_TYPES = frozenset({"hourly", "salary", EXCLUDE_FROM_PAYROLL})
 # Closed vocabularies for property config (property_config_api + demo seed).
 # The DB CHECKs below are the literal SCHEMA MIRROR of these sets — kept literal
 # on purpose so the database refuses an unknown value independently of the app
-# import, the org_settings.crm_provider idiom.
+# import, the `ck_org_integration_credential_provider_fields` idiom.
 OOO_REASON_CODES = frozenset({
     "maintenance", "renovation", "damage", "deep_clean", "other",
     "do_not_rent", "owner_occupied",

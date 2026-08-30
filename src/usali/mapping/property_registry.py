@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from sqlalchemy import update
 
-from usali.config import get_settings
+from usali.config import Settings, get_settings
 from usali.models import (
     Organization,
     OrgIntegrationCredential,
@@ -115,61 +115,117 @@ def ensure_default_org(session: Session) -> int:
     org_id = session.execute(
         select(Organization.org_id).where(Organization.org_id == FOUNDING_ORG_ID)
     ).scalar_one()
-    # OH-17 (D-OH17.15): seed org 1's integration credentials from the
-    # process-wide env, ON FIRST INSERT ONLY — the crm_ref / wage_jurisdiction
-    # find-or-create posture, so a bare re-seed never blanks a credential an
-    # operator connected by hand. At runtime every adapter reads THIS row,
-    # never env; an env fallback for org != 1 is the mutant L5 killed.
-    #
-    # This is a BRIDGE, not a connect action: it reproduces exactly what each
-    # default means today and does NOT run the connect endpoint's verification.
-    # Do NOT "improve" it into seeding only when env differs from the committed
-    # mock defaults — scripts/e2e_backend.py:399 states that the Gusto defaults
-    # ARE the working local config with no env set, and that rule would break
-    # payrun.spec.ts silently.
+    _seed_integration_credentials(session, org_id)
+    return org_id
+
+
+# The closed provider set per integration — the same partition
+# `ck_org_integration_credential_provider_fields` enumerates. Held here so an
+# unknown provider is refused BY NAME (below) instead of reaching the DB as a
+# CHECK violation that names no provider at all.
+_SEED_PROVIDERS: dict[str, tuple[str, ...]] = {
+    "payroll": ("gusto", "adp"),
+    "accounting": ("qbo",),
+    "demand_feed": ("delphi", "tripleseat"),
+}
+
+
+def _seed_credential_fields(
+    integration: str, provider: str, settings: Settings
+) -> dict[str, str]:
+    """The env-sourced credential columns ONE (integration, provider) pair
+    needs — keyed exactly as the CHECK demands, and enumerated rather than
+    inferred.
+
+    It REFUSES an unknown pair, matching `_payroll_provider_from_settings`
+    (`server.py:187`), which already rejects a misspelled
+    `USALI_PAYROLL_PROVIDER` by name. A branch whose `else` meant "adp" would
+    instead build a row carrying ADP's columns under the misspelled provider
+    name, and the typo would surface as a CHECK violation naming no provider —
+    the same failure, several layers further from its cause.
+    """
+    match (integration, provider):
+        case ("payroll", "gusto"):
+            return {"api_token": settings.gusto_api_token,
+                    "company_id": settings.gusto_company_id}
+        case ("payroll", "adp"):
+            return {"client_id": settings.adp_client_id,
+                    "client_secret": settings.adp_client_secret}
+        case ("accounting", "qbo"):
+            return {"realm_id": settings.qbo_realm_id,
+                    "refresh_token": settings.qbo_refresh_token}
+        case ("demand_feed", "delphi"):
+            return {"subscription_key": settings.delphi_subscription_key}
+        case ("demand_feed", "tripleseat"):
+            return {"api_key": settings.tripleseat_api_key}
+        case _:
+            legal = "|".join(_SEED_PROVIDERS.get(integration, ()))
+            raise RuntimeError(
+                f"unknown {integration} provider {provider!r}"
+                + (f" (expected {legal})" if legal else "")
+            )
+
+
+def _seed_integration_credentials(session: Session, org_id: int) -> None:
+    """Seed org 1's integration credentials from the process-wide env, ON
+    FIRST INSERT ONLY (OH-17, D-OH17.15) — the crm_ref / wage_jurisdiction
+    find-or-create posture, so a bare re-seed never blanks a credential an
+    operator connected by hand. At runtime every adapter reads THIS row, never
+    env; an env fallback for org != 1 is the mutant L5 killed.
+
+    This is a BRIDGE, not a connect action: it reproduces exactly what each
+    default means today and does NOT run the connect endpoint's verification.
+    Do NOT "improve" it into seeding only when env differs from the committed
+    mock defaults — scripts/e2e_backend.py:399 states that the Gusto defaults
+    ARE the working local config with no env set, and that rule would break
+    payrun.spec.ts silently.
+
+    Payroll and accounting are UNCONDITIONAL because neither has an off state
+    to represent: `payroll_provider` defaults to gusto and every Gusto/QBO
+    setting defaults to a working local mock, so "no env set" already means a
+    live connection here — that is precisely what the pay-run e2e leans on.
+    The demand feed is the one integration with a genuine OFF state, and it
+    keeps its sentinel: `crm_provider == ''` means NO ROW, so an unset
+    `USALI_CRM_PROVIDER` still produces demo_seed.py's honest "skipped" note
+    rather than a connection to nothing. Note the test is truthiness, not
+    `== 'delphi' or == 'tripleseat'`: a typo'd provider must be REFUSED by
+    `_seed_credential_fields`, the way the old `org_settings` CHECK refused it
+    at seed time, never silently fall through to "off".
+
+    Accounting's provider is the literal "qbo" and not a setting because qbo
+    is the ENTIRE accounting half of the closed provider set — there is no
+    `USALI_ACCOUNTING_PROVIDER` to read, and inventing one to make the three
+    integrations look symmetrical would be a config knob with one legal value.
+
+    In tension with D-B4.3, deliberately: `checklist.py:167` holds that a
+    process-wide credential is NOT this tenant's connection, and this function
+    turns exactly that env into org 1's rows — which Task 7's probe will then
+    read as connected. That is honest for org 1 and only org 1: it is the
+    pilot/demo org, whose rows say precisely what the process-wide config they
+    replace already said. The property D-B4.3 protects is that a NEWLY
+    PROVISIONED tenant inherits nothing — `provision_tenant` writes no
+    credential rows, so its checklist reads "open" no matter what env the
+    server happens to hold.
+    """
     settings = get_settings()
-    seeds: list[dict[str, Any]] = [
-        {
-            "org_id": org_id, "integration": "payroll",
-            "provider": settings.payroll_provider,
-            "connected_by": _SEED_SUBJECT,
-            **(
-                {"api_token": settings.gusto_api_token,
-                 "company_id": settings.gusto_company_id}
-                if settings.payroll_provider == "gusto"
-                else {"client_id": settings.adp_client_id,
-                      "client_secret": settings.adp_client_secret}
-            ),
-        },
-        {
-            "org_id": org_id, "integration": "accounting", "provider": "qbo",
-            "realm_id": settings.qbo_realm_id,
-            "refresh_token": settings.qbo_refresh_token,
-            "connected_by": _SEED_SUBJECT,
-        },
+    seeds: list[tuple[str, str]] = [
+        ("payroll", settings.payroll_provider),
+        ("accounting", "qbo"),
     ]
-    # The demand feed keeps its OFF sentinel: '' means no row at all, so an
-    # unset USALI_CRM_PROVIDER still produces demo_seed.py's honest "skipped"
-    # note rather than a connection to nothing.
-    if settings.crm_provider == "delphi":
-        seeds.append({
-            "org_id": org_id, "integration": "demand_feed", "provider": "delphi",
-            "subscription_key": settings.delphi_subscription_key,
-            "connected_by": _SEED_SUBJECT,
-        })
-    elif settings.crm_provider == "tripleseat":
-        seeds.append({
-            "org_id": org_id, "integration": "demand_feed",
-            "provider": "tripleseat", "api_key": settings.tripleseat_api_key,
-            "connected_by": _SEED_SUBJECT,
-        })
-    for values in seeds:
+    if settings.crm_provider:
+        seeds.append(("demand_feed", settings.crm_provider))
+    for integration, provider in seeds:
         session.execute(
             insert(OrgIntegrationCredential)
-            .values(**values)
+            .values(
+                org_id=org_id,
+                integration=integration,
+                provider=provider,
+                connected_by=_SEED_SUBJECT,
+                **_seed_credential_fields(integration, provider, settings),
+            )
             .on_conflict_do_nothing(index_elements=["org_id", "integration"])
         )
-    return org_id
 
 
 def _slugify(name: str) -> str:

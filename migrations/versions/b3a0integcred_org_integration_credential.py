@@ -19,8 +19,9 @@ transaction-local `app.org_id`, predicate reused verbatim from l2a0rlswall so
 the two cannot drift. No GRANT — the DEFAULT PRIVILEGES l2a0rlswall recorded
 cover future tables.
 
-The CHECK is the schema mirror of `usali.integrations.PROVIDERS`, kept literal
-so the DB refuses a malformed row independently of the app import.
+The CHECK is the schema mirror of `usali.integrations.PROVIDERS` (arrives with
+the connect surfaces; it does not exist yet at this revision), kept literal so
+the DB refuses a malformed row independently of the app import.
 """
 
 from alembic import op
@@ -36,6 +37,14 @@ depends_on = None
 _POLICY = "org_wall"
 _PREDICATE = f"org_id = NULLIF(current_setting('{RLS_ORG_VAR}', true), '')::int"
 
+# BYTE-IDENTICAL to `models.OrgIntegrationCredential.__table_args__`, and
+# duplicated rather than imported ON PURPOSE. A migration pins the schema as of
+# THIS revision; importing the model would let a later edit silently rewrite
+# what an old revision claims to have created, and `alembic upgrade` would then
+# build a different table than the one this file documents. The model's
+# docstring points here and this comment points back: EDIT BOTH OR NEITHER —
+# `tests/test_l1_org_wall_migration.py`'s `compare_metadata` parity check is
+# what fails if you edit one.
 _CHECK = (
     "(integration = 'payroll' AND provider = 'gusto'"
     "  AND api_token IS NOT NULL AND company_id IS NOT NULL"

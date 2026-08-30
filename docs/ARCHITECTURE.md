@@ -1146,9 +1146,15 @@ out-rank the realm's coarse claim.
 from the master key salted by `org_id`), so a prefix-routing bug yields
 UNDECRYPTABLE ciphertext, not another hotel's punch photos. Org 1's key is
 DEFINED as the current master key, so existing objects stay readable with no
-re-encrypt. Per-org integration config lives in `org_settings` (the
-`crm_provider` a tenant pulls from; empty = off); `USALI_CRM_PROVIDER` seeds
-org 1's row only, and runtime reads the active org's row, never env.
+re-encrypt. Per-org integration config lives in `org_integration_credential`,
+one row per (org, integration): the row IS the connection, carrying the
+provider AND its credentials together, so a tenant cannot hold a provider
+without credentials for it (OH-17 absorbed L5's `org_settings.crm_provider`,
+whose only column that was, and dropped the table). There is no empty-string
+sentinel any more — NOT CONNECTED is the absence of a row. Secrets on the row
+are `EncryptedString`; identifiers (`realm_id`, `company_id`, `client_id`)
+stay plaintext. The env settings seed org 1's rows only, and runtime reads the
+active org's row, never env.
 
 **Provisioning is a primitive, not a signup surface.** `provision_tenant()`
 chains KC organization → first admin user → membership → DB `organization` row
