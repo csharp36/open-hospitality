@@ -35,6 +35,7 @@ docs/
 2. `reference/samples/*` — the actual daily PDF deliverables we parse.
 3. `reference/usali/*` — the target standard we map into.
 4. `design/*` — how the engine bridges the two.
+5. [`ROADMAP.md`](ROADMAP.md) — what is shipped, what is missing, and in what order.
 
 > **Authoritative source of truth:** HFTP's paid USALI 12th Revised Edition.
 > Anything marked LOW / unverified in `reference/usali/` must be confirmed
