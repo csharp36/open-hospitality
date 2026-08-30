@@ -1,13 +1,14 @@
 from dataclasses import replace
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 import usali.checklist as checklist_module
 from tests.authkit import DEFAULT_ORG_ALIAS, make_authkit
 from tests.grants import grant_role
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali.models import IngestBatch, OrgChecklistOverride, Organization
+from usali.models import AuditEvent, IngestBatch, OrgChecklistOverride, Organization
 from usali.server import create_app
 
 
@@ -133,6 +134,39 @@ def test_dismissing_an_optional_item_hides_it_from_the_open_count(
     assert {i["key"]: i for i in body["items"]}["payroll"]["status"] == "dismissed"
 
 
+def test_dismissing_writes_an_audit_event(db_engine, db_session, tmp_path):
+    _org(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    r = c.put("/api/checklist/payroll/dismissal", headers=h)
+    assert r.status_code == 204
+    db_session.expire_all()
+    audits = db_session.execute(
+        select(AuditEvent).where(AuditEvent.action == "checklist_dismissed")
+    ).scalars().all()
+    assert len(audits) == 1
+    assert audits[0].resource_id == "payroll"
+    assert audits[0].actor_subject == "cl-admin"
+
+
+def test_undismissing_writes_an_audit_event(db_engine, db_session, tmp_path):
+    _org(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    h = _admin_headers(mint, db_session)
+    c.put("/api/checklist/payroll/dismissal", headers=h)
+    r = c.delete("/api/checklist/payroll/dismissal", headers=h)
+    assert r.status_code == 204
+    db_session.expire_all()
+    audits = db_session.execute(
+        select(AuditEvent).where(AuditEvent.action == "checklist_undismissed")
+    ).scalars().all()
+    assert len(audits) == 1
+    assert audits[0].resource_id == "payroll"
+    assert audits[0].actor_subject == "cl-admin"
+
+
 def test_dismissal_is_idempotent(db_engine, db_session, tmp_path):
     """D-B4.5: two browser sessions dismissing at once must not 500."""
     _org(db_session)
@@ -163,6 +197,21 @@ def test_dismissing_a_required_item_refuses_loudly(db_engine, db_session, tmp_pa
               headers=_admin_headers(mint, db_session))
     assert r.status_code == 422
     assert "required" in r.json()["detail"]
+
+
+def test_a_refused_dismissal_writes_no_audit_event(db_engine, db_session, tmp_path):
+    """A recorded attempt that did not happen is worse than no record."""
+    _org(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = c.put("/api/checklist/room_inventory/dismissal",
+              headers=_admin_headers(mint, db_session))
+    assert r.status_code == 422
+    db_session.expire_all()
+    audits = db_session.execute(
+        select(AuditEvent).where(AuditEvent.action == "checklist_dismissed")
+    ).scalars().all()
+    assert audits == []
 
 
 def test_unknown_item_key_is_404(db_engine, db_session, tmp_path):

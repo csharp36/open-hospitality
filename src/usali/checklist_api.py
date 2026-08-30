@@ -12,9 +12,10 @@ from sqlalchemy import delete
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from usali import checklist as checklist_module
 from usali.auth import ORG_ADMIN, Principal, request_session_factory, require_grants
-from usali.checklist import ITEMS, ChecklistItem, evaluate, summarize
-from usali.models import OrgChecklistOverride
+from usali.checklist import ChecklistItem, evaluate, summarize
+from usali.models import AuditEvent, OrgChecklistOverride
 from usali.tenancy import current_org_id
 
 router = APIRouter(prefix="/api/checklist")
@@ -58,8 +59,6 @@ def get_checklist(request: Request) -> ChecklistModel:
 
 require_checklist_admin = require_grants(ORG_ADMIN)
 
-_BY_KEY = {item.key: item for item in ITEMS}
-
 
 class DismissRequest(BaseModel):
     # Bounded to the column width (String(200)); an over-long note is a clean
@@ -68,10 +67,19 @@ class DismissRequest(BaseModel):
 
 
 def _item_or_404(key: str) -> ChecklistItem:
-    item = _BY_KEY.get(key)
-    if item is None:
-        raise HTTPException(status_code=404, detail="unknown checklist item")
-    return item
+    # Reads the LIVE registry through the module (not a name captured at
+    # import time): a snapshot dict would go stale the moment a test — or a
+    # future caller — patches usali.checklist.ITEMS, and there are only
+    # seven items, so there is nothing worth caching here.
+    for item in checklist_module.ITEMS:
+        if item.key == key:
+            return item
+    raise HTTPException(status_code=404, detail="unknown checklist item")
+
+
+def _audit(session: Session, principal: Principal, action: str, item_key: str) -> None:
+    session.add(AuditEvent(actor_subject=principal.subject, action=action,
+                           resource_type="checklist_item", resource_id=item_key))
 
 
 @router.put("/{key}/dismissal", status_code=204)
@@ -104,6 +112,7 @@ def dismiss(
             )
             .on_conflict_do_nothing(index_elements=["org_id", "item_key"])
         )
+        _audit(session, principal, "checklist_dismissed", key)
         session.commit()
     return Response(status_code=204)
 
@@ -120,5 +129,6 @@ def undismiss(
         session.execute(
             delete(OrgChecklistOverride).where(OrgChecklistOverride.item_key == key)
         )
+        _audit(session, principal, "checklist_undismissed", key)
         session.commit()
     return Response(status_code=204)
