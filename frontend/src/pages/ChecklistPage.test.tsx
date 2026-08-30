@@ -1,6 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
 import { render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT } from '../test/fixtures'
@@ -15,7 +16,7 @@ vi.mock('../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/client')>()),
   getMe: vi.fn(), getProperties: vi.fn(),
 }))
-import { getChecklist } from '../api/checklist'
+import { dismissItem, getChecklist, restoreItem } from '../api/checklist'
 import { getMe, getProperties } from '../api/client'
 
 function item(over: Partial<ChecklistItem> = {}): ChecklistItem {
@@ -187,5 +188,106 @@ describe('ChecklistPage', () => {
     vi.mocked(getChecklist).mockRejectedValue(new ApiError(503, 'upstream down'))
     renderSetup()
     expect(await screen.findByText(/upstream down/i)).toBeInTheDocument()
+  })
+})
+
+// Three of the seven items have no connect surface until OH-17 (D-B4.8), so
+// dismissal is the only action an operator can take on them: without it those
+// rows are dead ends and `all_clear` is unreachable for every tenant.
+describe('ChecklistPage — dismissal', () => {
+  function payroll(over: Partial<ChecklistItem> = {}): ChecklistItem {
+    return item({
+      key: 'payroll', title: 'Connect payroll', required: false, where: null,
+      unavailable_reason: 'No connect surface yet — arrives with OH-17.',
+      ...over,
+    })
+  }
+
+  it('an org admin can dismiss an optional item, and the list refetches', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['org_admin'] })
+    vi.mocked(dismissItem).mockResolvedValue(undefined)
+    // Open on the first read, dismissed on the refetch. Nothing but the shared
+    // key's invalidation can turn Dismiss into Restore, so the second
+    // assertion is what pins the refetch rather than just the write.
+    vi.mocked(getChecklist)
+      .mockResolvedValueOnce({
+        items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+      })
+      .mockResolvedValue({
+        items: [payroll({ status: 'dismissed' })], open_count: 0, error_count: 0, all_clear: true,
+      })
+    renderSetup()
+
+    await userEvent.click(await screen.findByRole('button', { name: /dismiss connect payroll/i }))
+    expect(dismissItem).toHaveBeenCalledWith('payroll')
+    expect(
+      await screen.findByRole('button', { name: /restore connect payroll/i }),
+    ).toBeInTheDocument()
+  })
+
+  // D-B4.4 makes a dismissal a two-way decision, so a UI that could only
+  // dismiss would be a one-way door over it. This is also the one place a
+  // copy-pasted mutation pair would silently call `dismissItem` twice.
+  it('an org admin can restore a dismissed item, and the list refetches', async () => {
+    vi.mocked(restoreItem).mockResolvedValue(undefined)
+    vi.mocked(getChecklist)
+      .mockResolvedValueOnce({
+        items: [payroll({ status: 'dismissed' })], open_count: 0, error_count: 0, all_clear: true,
+      })
+      .mockResolvedValue({
+        items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+      })
+    renderSetup()
+
+    await userEvent.click(await screen.findByRole('button', { name: /restore connect payroll/i }))
+    expect(restoreItem).toHaveBeenCalledWith('payroll')
+    expect(dismissItem).not.toHaveBeenCalled()
+    expect(
+      await screen.findByRole('button', { name: /dismiss connect payroll/i }),
+    ).toBeInTheDocument()
+  })
+
+  // The server answers 422 here (design §6), so offering the control would be
+  // offering a button that can only fail.
+  it('offers no dismiss control on a REQUIRED item', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item()], open_count: 1, error_count: 0, all_clear: false,
+    })
+    renderSetup()
+
+    const required = await screen.findByRole('region', { name: /required/i })
+    expect(within(required).getByText(/upload your first pms report/i)).toBeInTheDocument()
+    expect(within(required).queryByRole('button', { name: /dismiss/i })).toBeNull()
+  })
+
+  // "We don't use payroll" is a standing commitment about the tenant, not a
+  // per-user preference, so the endpoint requires ORG_ADMIN (design §6) and the
+  // page must not offer what the server would refuse.
+  it('offers no dismiss control to a non-admin', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['property_gm'] })
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+    })
+    renderSetup()
+
+    // Awaited first: queryByRole against a page that has not rendered yet
+    // would pass for the wrong reason.
+    const optional = await screen.findByRole('region', { name: /optional/i })
+    expect(within(optional).getByText(/connect payroll/i)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
+  })
+
+  // ADR-010: a refusal is never a silent no-op. The control is withheld from
+  // required items, but the branch stays handled — the endpoint is reachable
+  // and a registry edit could move a key across the required line.
+  it('surfaces a refused dismissal instead of silently doing nothing', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+    })
+    vi.mocked(dismissItem).mockRejectedValue(new ApiError(422, 'first_report is required'))
+    renderSetup()
+
+    await userEvent.click(await screen.findByRole('button', { name: /dismiss connect payroll/i }))
+    expect(await screen.findByText(/first_report is required/i)).toBeInTheDocument()
   })
 })
