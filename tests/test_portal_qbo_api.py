@@ -25,7 +25,7 @@ from tests.authkit import make_authkit
 from tests.grants import grant_role
 from usali.db import make_session_factory
 from usali.models import UsaliFinancialFact
-from usali.qbo_client import QboClient, SyncASGITransport
+from usali.qbo_client import QboClient, StaticTokenStore, SyncASGITransport
 from usali.qbo_mock import create_mock_qbo
 from usali.server import create_app
 
@@ -105,7 +105,7 @@ def client(
             "client",
             "secret",
             REALM,
-            token,
+            StaticTokenStore(token),
             transport=SyncASGITransport(mock_app),
         )
 
@@ -333,7 +333,9 @@ def test_push_unreachable_qbo_is_502(db_engine, db_session, seed_six_pdfs, tmp_p
     # Nothing listens on port 1: the transport error is wrapped as a clear 502,
     # not a raw httpx traceback (a 500), and nothing is recorded in the ledger.
     def factory() -> QboClient:
-        return QboClient("http://127.0.0.1:1", "client", "secret", REALM, "token")
+        return QboClient(
+            "http://127.0.0.1:1", "client", "secret", REALM, StaticTokenStore("token")
+        )
 
     grant_role(db_session, "accountant")
     client = _make_client(db_engine, tmp_path, factory)

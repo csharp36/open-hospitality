@@ -48,7 +48,7 @@ from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
-from usali.qbo_client import QboClient
+from usali.qbo_client import QboClient, StaticTokenStore
 from usali.schedule_api import router as schedule_router
 from usali.signup_api import router as signup_router
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory, SessionFactory
@@ -135,7 +135,7 @@ def _qbo_client_from_settings() -> QboClient:
         settings.qbo_client_id,
         settings.qbo_client_secret,
         settings.qbo_realm_id,
-        settings.qbo_refresh_token,
+        StaticTokenStore(settings.qbo_refresh_token),
     )
 
 

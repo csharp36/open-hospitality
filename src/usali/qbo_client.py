@@ -5,8 +5,8 @@ of Intuit's API the push needs: the OAuth2 refresh grant and journal-entry
 create. Faithful to the real-Intuit behaviors the mock enforces:
 
 - Token refresh uses HTTP Basic auth (client_id:client_secret) and Intuit
-  ROTATES the refresh token on every grant — the rotated token is persisted
-  in memory for the client's lifetime (the configured one is only the
+  ROTATES the refresh token on every grant — the rotated token is written
+  back through the injected `TokenStore` (the configured one is only the
   bootstrap; losing a rotation locks the client out of the next refresh).
 - Every ``/v3/*`` call sends ``Accept: application/json`` (real QBO answers
   in XML otherwise).
@@ -25,7 +25,7 @@ import asyncio
 import base64
 import threading
 import time
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -106,17 +106,48 @@ def _error_message(resp: httpx.Response) -> str:
     return resp.text[:200]
 
 
+class TokenStore(Protocol):
+    """Where one tenant's QBO refresh token lives across calls (OH-17,
+    D-OH17.7).
+
+    Intuit rotates the refresh token on EVERY grant, so whoever holds it must
+    be able to write the new one back. Before OH-17 that holder was process
+    memory, which meant a restart lost the rotation and the next push
+    invalid_grant'd against a spent token. The DB-backed implementation
+    (`usali.integrations.DbTokenStore`) makes the lineage per-tenant and
+    durable; `StaticTokenStore` preserves the old in-memory behaviour for the
+    mock and for tests."""
+
+    def load(self) -> str: ...
+    def store(self, refresh_token: str) -> None: ...
+
+
+class StaticTokenStore:
+    """In-memory token store — dev, tests, and the `usali qbo-mock` loop.
+    Rotation survives for the client's lifetime and no longer."""
+
+    def __init__(self, refresh_token: str) -> None:
+        self._refresh_token = refresh_token
+
+    def load(self) -> str:
+        return self._refresh_token
+
+    def store(self, refresh_token: str) -> None:
+        self._refresh_token = refresh_token
+
+
 class QboClient:
     """Minimal QuickBooks Online client: refresh-grant auth + JE create.
 
-    Refresh-token rotation is persisted IN MEMORY ONLY: the first refresh
-    invalidates the configured bootstrap token, so callers pushing more than
-    once MUST share a single client instance for its whole lifetime (the
-    portal should hold one via an app.state factory). Against a long-lived
-    token server (e.g. one `usali qbo-mock` process), a SECOND process
-    configured with the same bootstrap token gets `invalid_grant` — a known
-    P8 limitation; a real deployment would persist the rotated token in a
-    secret store.
+    Refresh-token rotation is written back through a `TokenStore` port, so
+    where the lineage lives — and how long it survives — is the caller's
+    choice, not this class's. The first refresh invalidates the token the
+    store handed out, so two clients sharing a `StaticTokenStore`-style
+    in-memory lineage must be one instance for its whole lifetime (the portal
+    holds one via an app.state factory), and a SECOND process bootstrapped
+    from the same static token gets `invalid_grant`. A durable store
+    (`usali.integrations.DbTokenStore`, which takes a row lock) is what makes
+    the rotation outlive this process and serialize across them.
 
     Thread safety: `post_journal_entry` holds an internal lock for its whole
     body (lazy refresh + POST + retry loops), so concurrent callers on one
@@ -134,12 +165,12 @@ class QboClient:
         client_id: str,
         client_secret: str,
         realm_id: str,
-        refresh_token: str,
+        token_store: TokenStore,
         *,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self._realm_id = realm_id
-        self._refresh_token = refresh_token
+        self._tokens = token_store
         basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
         self._basic_auth = f"Basic {basic}"
         self._access_token: str | None = None
@@ -165,7 +196,7 @@ class QboClient:
         """Mint a fresh access token via the refresh grant (lazily, and on 401)."""
         resp = self._http.post(
             _TOKEN_PATH,
-            data={"grant_type": "refresh_token", "refresh_token": self._refresh_token},
+            data={"grant_type": "refresh_token", "refresh_token": self._tokens.load()},
             headers={"Authorization": self._basic_auth},
         )
         if resp.status_code != 200:
@@ -173,8 +204,11 @@ class QboClient:
         payload = resp.json()
         self._access_token = payload["access_token"]
         # Intuit rotates the refresh token on every grant; persist the new one
-        # or the NEXT refresh fails with invalid_grant.
-        self._refresh_token = payload["refresh_token"]
+        # or the NEXT refresh fails with invalid_grant. Through the store, so
+        # the lineage outlives this process (D-OH17.7) — `post_journal_entry`
+        # already holds the instance lock around this, and DbTokenStore takes
+        # a row lock, which is what serializes ACROSS processes.
+        self._tokens.store(payload["refresh_token"])
 
     def post_journal_entry(self, je: dict[str, Any], request_id: str) -> str:
         """POST one journal entry; returns the QBO JournalEntry Id.

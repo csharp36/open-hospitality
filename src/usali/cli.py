@@ -24,7 +24,7 @@ from usali.models import Timecard
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from usali.notifications import Notifier, notifier_from_settings
 from usali.photo_store import LocalPhotoStore
-from usali.qbo_client import QboClient
+from usali.qbo_client import QboClient, StaticTokenStore
 from usali.roster_seed import RosterError, load_roster, seed_roster
 from usali.stage import stage_records
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory
@@ -553,7 +553,7 @@ def _qbo_client_from_settings() -> QboClient:
         settings.qbo_client_id,
         settings.qbo_client_secret,
         settings.qbo_realm_id,
-        settings.qbo_refresh_token,
+        StaticTokenStore(settings.qbo_refresh_token),
     )
 
 

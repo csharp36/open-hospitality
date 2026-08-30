@@ -24,7 +24,7 @@ from usali import qbo_client as qbo_client_module
 from usali import qbo_push
 from usali.cli import app
 from usali.models import QboPushLedger, UsaliFinancialFact
-from usali.qbo_client import QboClient, QboError, SyncASGITransport
+from usali.qbo_client import QboClient, QboError, StaticTokenStore, SyncASGITransport
 from usali.qbo_mock import create_mock_qbo
 from usali.qbo_push import (
     JePlan,
@@ -59,7 +59,7 @@ def qbo(mock_app: Any) -> QboClient:
         "client",
         "secret",
         REALM,
-        _bootstrap_refresh_token(mock_app),
+        StaticTokenStore(_bootstrap_refresh_token(mock_app)),
         transport=SyncASGITransport(mock_app),
     )
 
@@ -323,6 +323,74 @@ def test_expired_token_once_refreshes_and_retries(db_session, seed_six_pdfs, moc
     assert len(_stored_jes(mock_app)) == 1
 
 
+class RecordingTokenStore:
+    """A TokenStore that keeps its value, so a test can rebuild a client the
+    way a NEW PROCESS would and prove the rotation lineage survived."""
+
+    def __init__(self, token: str) -> None:
+        self.token = token
+        self.stores: list[str] = []
+
+    def load(self) -> str:
+        return self.token
+
+    def store(self, refresh_token: str) -> None:
+        self.token = refresh_token
+        self.stores.append(refresh_token)
+
+
+def _client_on(mock_app: Any, store: Any) -> QboClient:
+    return QboClient(
+        "http://mock-qbo", "client", "secret", REALM, store,
+        transport=SyncASGITransport(mock_app),
+    )
+
+
+def test_rotation_is_written_through_to_the_store(db_session, seed_six_pdfs, mock_app):
+    """D-OH17.7. The lazy first refresh consumes and rotates the bootstrap
+    token, so the store must have been written or the NEXT refresh is dead."""
+    store = RecordingTokenStore(_bootstrap_refresh_token(mock_app))
+    result = push_day(db_session, _client_on(mock_app, store),
+                      property_id="HISJ", business_date=DAY)
+    assert result.status == "pushed"
+    assert store.stores, "the rotated refresh token was never persisted"
+
+
+def test_a_rebuilt_client_can_still_refresh(db_session, seed_six_pdfs, mock_app):
+    """The regression test for the bug `qbo_client.py` documents against
+    itself: rotation used to live in client memory, so a process restart lost
+    it and the next push invalid_grant'd against a token Intuit had already
+    consumed. Rebuilding from the SAME store is exactly what a restart does.
+
+    The second push MUST be a different property. Re-pushing HISJ would
+    short-circuit in `push_day` on the already-pushed ledger row and never
+    reach QBO at all, so the test would pass without a single refresh.
+    """
+    store = RecordingTokenStore(_bootstrap_refresh_token(mock_app))
+    first = push_day(db_session, _client_on(mock_app, store),
+                     property_id="HISJ", business_date=DAY)
+    assert first.status == "pushed"
+    rotations_after_first = len(store.stores)
+
+    # A fresh client, as a restarted process would build: same store, new
+    # instance, no in-memory state carried over.
+    rebuilt = _client_on(mock_app, store)
+    rebuilt._http.headers["X-Mock-Fault"] = "expired-once:test-401"
+    second = push_day(db_session, rebuilt, property_id="SSSJ", business_date=DAY)
+    assert second.status == "pushed", second.message
+    # It really refreshed — twice, in fact: the lazy grant plus the one the
+    # injected 401 forces. A cached access token could not have carried it.
+    assert len(store.stores) == rotations_after_first + 2
+    assert len(_stored_jes(mock_app)) == 2
+
+
+def test_static_store_keeps_the_old_in_memory_behaviour():
+    store = StaticTokenStore("tok")
+    assert store.load() == "tok"
+    store.store("rotated")
+    assert store.load() == "rotated"
+
+
 def test_unbalanced_post_records_failed_row_then_retry_succeeds(
     db_session, seed_six_pdfs, mock_app, qbo, monkeypatch
 ):
@@ -357,7 +425,7 @@ def test_third_consecutive_429_exhausts_retries(mock_app, monkeypatch):
         "client",
         "secret",
         REALM,
-        _bootstrap_refresh_token(mock_app),
+        StaticTokenStore(_bootstrap_refresh_token(mock_app)),
         transport=_RepeatFault(mock_app, "throttle-once"),
     )
     with pytest.raises(QboError) as excinfo:
@@ -373,7 +441,7 @@ def test_second_consecutive_401_raises_after_single_refresh(mock_app):
         "client",
         "secret",
         REALM,
-        _bootstrap_refresh_token(mock_app),
+        StaticTokenStore(_bootstrap_refresh_token(mock_app)),
         transport=_RepeatFault(mock_app, "expired-once"),
     )
     # 401 -> refresh once -> retry -> 401 again -> QboError, never a loop.
@@ -433,7 +501,7 @@ def test_concurrent_posts_on_one_client_refresh_exactly_once(mock_app):
         "client",
         "secret",
         REALM,
-        _bootstrap_refresh_token(mock_app),
+        StaticTokenStore(_bootstrap_refresh_token(mock_app)),
         transport=transport,
     )
     barrier = threading.Barrier(2)
