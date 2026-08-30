@@ -1156,6 +1156,30 @@ git commit -m "feat(oh17): TokenStore port so QBO rotation can outlive the proce
 
 ## Task 5: Adapter resolution
 
+> **Open design question, raised by Task 4's review (2026-08-30) — settle it,
+> do not inherit it.** D-OH17.7 says `DbTokenStore` takes `SELECT … FOR UPDATE`
+> so two concurrent pushes cannot fork the rotation lineage across processes.
+> A row lock taken *inside* `store()` **cannot** deliver that: the critical
+> section is `load()` → HTTP grant → `store()`, and a lock acquired in `store()`
+> covers only the tail. Holding it across the grant requires `load()` to open a
+> transaction that `store()` commits — i.e. a transaction held open across an
+> outbound HTTP call, which needs a statement timeout and is invisible from
+> `QboClient`.
+>
+> Pick one and say which in the code:
+> **(a)** `load()` opens the transaction and takes `FOR UPDATE`; `store()`
+> commits it. Honours D-OH17.7, at the cost of a transaction spanning the
+> grant — set a lock timeout and document why the span is deliberate.
+> **(b)** Drop the cross-process serialization claim. A concurrent double
+> refresh is then possible and the loser gets `invalid_grant` on its next push
+> — recoverable, since the winner's token is in the row. Correct the D-OH17.7
+> wording and the `_refresh` comment in `qbo_client.py` to match.
+>
+> (a) is what the design promised; (b) is simpler and may be enough for pilot
+> throughput. Either is defensible — shipping the promise without the mechanism
+> is not.
+
+
 **Files:**
 - Modify: `src/usali/integrations.py`
 - Test: `tests/test_integrations.py`
