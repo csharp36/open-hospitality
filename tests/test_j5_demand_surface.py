@@ -21,12 +21,13 @@ from sqlalchemy import select
 
 from tests.authkit import make_authkit
 from tests.grants import grant_role
+from tests.orgworld import set_demand_feed
 from usali.config import get_settings
 from usali.crm_feed import CrmCapabilities, CrmDemandDay, CrmDemandPull, InMemoryCrmFeed
 from usali.crm_pull import store_pull
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali.models import AuditEvent, Organization, OrgSettings, Property
+from usali.models import AuditEvent, Organization, Property
 from usali.photo_store import InMemoryPhotoStore
 from usali.server import create_app
 from usali.mapping.property_registry import DEFAULT_ORG_ALIAS
@@ -34,9 +35,11 @@ from usali.mapping.property_registry import DEFAULT_ORG_ALIAS
 
 def _seed(db_session):
     db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS, name="Org"))
-    db_session.flush()  # org row before its org_settings FK child
-    # L5: the provider lives on org 1's org_settings row, seeded from env.
-    db_session.add(OrgSettings(org_id=1, crm_provider=get_settings().crm_provider))
+    db_session.flush()  # org row before its credential row's FK
+    # OH-17: the provider lives on org 1's `org_integration_credential`
+    # demand_feed row alongside its credentials, seeded from env. An empty
+    # env means NO ROW at all (the OFF state), not an empty sentinel.
+    set_demand_feed(db_session, get_settings().crm_provider)
     db_session.add_all([
         Property(property_id="HISJ", org_id=1, name="HISJ",
                  pms_source="OPERA", wage_jurisdiction="US-CA",

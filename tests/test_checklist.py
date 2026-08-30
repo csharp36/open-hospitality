@@ -1,13 +1,13 @@
 from datetime import date
 
 from tests.grants import grant_role
+from tests.orgworld import set_demand_feed
 from usali.checklist import ITEMS, ChecklistItem, ItemStatus, evaluate, summarize
 from usali.models import (
     Base,
     FiscalCalendar,
     IngestBatch,
     OrgChecklistOverride,
-    OrgSettings,
     Property,
     RoomInventory,
 )
@@ -180,11 +180,15 @@ def test_fiscal_calendar_done_when_every_property_has_a_row(db_session, founding
     assert _status_of(db_session, "fiscal_calendar") == "done"
 
 
-def test_demand_feed_reads_org_settings(db_session, founding_org):
-    db_session.merge(OrgSettings(org_id=1, crm_provider=""))
+def test_demand_feed_reads_the_org_credential_row(db_session, founding_org):
+    """OH-17 (D-OH17.1): "not connected" is the ABSENCE of a demand_feed
+    credential row, not an empty `crm_provider` sentinel on an always-present
+    one. The probe still derives its answer from what is actually configured
+    (D-B4.1) — only the shape of "configured" changed."""
+    set_demand_feed(db_session, "")
     db_session.commit()
     assert _status_of(db_session, "demand_feed") == "open"
-    db_session.merge(OrgSettings(org_id=1, crm_provider="delphi"))
+    set_demand_feed(db_session, "delphi")
     db_session.commit()
     assert _status_of(db_session, "demand_feed") == "done"
 

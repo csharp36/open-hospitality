@@ -350,7 +350,8 @@ def test_a_multi_night_block_lands_rooms_and_labels_on_every_night():
 
 def test_the_feed_is_selected_by_the_provider_name_alone():
     """L5: the feed is selected by the PROVIDER NAME the caller resolved
-    (per-org, from org_settings) — delphi|tripleseat pick an adapter, empty
+    (per-org, from the org's demand_feed credential row) — delphi|tripleseat
+    pick an adapter, empty
     means the feature is OFF (None), and an unknown value refuses loudly.
     Base URLs stay process-wide (from_settings), so no env is needed here."""
     from usali.server import _crm_feed_for_provider

@@ -25,6 +25,7 @@ from sqlalchemy import select
 
 from tests.authkit import make_authkit
 from tests.grants import grant_role
+from tests.orgworld import set_demand_feed
 from usali.config import get_settings
 from usali.crm_feed import CrmCapabilities, CrmDemandDay, CrmFeedError, InMemoryCrmFeed
 from usali.crm_pull import demand_pace, latest_demand, store_pull
@@ -35,7 +36,6 @@ from usali.models import (
     CrmDemandSnapshot,
     CrmPullBatch,
     Organization,
-    OrgSettings,
     Property,
 )
 from usali.photo_store import InMemoryPhotoStore
@@ -47,12 +47,14 @@ def _seed(db_session):
     """HISJ carries a crm_ref; SSSJ deliberately has none (the refusal
     case). Same two-property shape as the schedule API tests."""
     db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS, name="Org"))
-    db_session.flush()  # org row before its org_settings FK child
-    # L5: the provider is per-org now — org 1's org_settings row carries it,
+    db_session.flush()  # org row before its credential row's FK
+    # OH-17: the provider is per-org AND inseparable from its credentials —
+    # org 1's `org_integration_credential` demand_feed row carries both,
     # seeded from the env default exactly as ensure_default_org does (the
     # crm_on fixture sets USALI_CRM_PROVIDER=delphi; feature-off tests leave
-    # it empty). At runtime the crm router reads THIS row, not env.
-    db_session.add(OrgSettings(org_id=1, crm_provider=get_settings().crm_provider))
+    # it empty, which now means NO ROW rather than an empty sentinel). At
+    # runtime the crm router reads THIS row, not env.
+    set_demand_feed(db_session, get_settings().crm_provider)
     db_session.add_all([
         Property(property_id="HISJ", org_id=1, name="HISJ",
                  pms_source="OPERA", wage_jurisdiction="US-CA",

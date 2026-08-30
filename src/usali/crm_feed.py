@@ -47,9 +47,12 @@ SENSITIVE_FIELD_PATTERNS: tuple[str, ...] = (
 # may legally hold is ('',) + CRM_PROVIDERS. This constant is the ONE
 # source the app layer reads: `server` fail-fast + `_crm_feed_for_provider`
 # both reference it, so "add a provider" is a one-line change here. The
-# org_settings CHECK (models.OrgSettings and the l5a0orgsettings migration)
-# is the SCHEMA MIRROR of the same set — kept literal on purpose so the DB
-# refuses an unknown value independently of the app import.
+# `ck_org_integration_credential_provider_fields` CHECK
+# (models.OrgIntegrationCredential and the b3a0integcred migration) is the
+# SCHEMA MIRROR of the same set — kept literal on purpose so the DB refuses
+# an unknown value independently of the app import. It mirrors more than the
+# names: OH-17 folded the demand provider into the credential row, so the
+# CHECK also pins WHICH secret column each provider must carry.
 CRM_PROVIDERS: tuple[str, ...] = ("delphi", "tripleseat")
 
 # Labels (block/event names) are bounded operator display text, the

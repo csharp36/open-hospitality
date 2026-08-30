@@ -20,7 +20,12 @@ from sqlalchemy.orm import Session
 from sqlalchemy import update
 
 from usali.config import get_settings
-from usali.models import Organization, OrgSettings, Property, PropertyDetectionAlias
+from usali.models import (
+    Organization,
+    OrgIntegrationCredential,
+    Property,
+    PropertyDetectionAlias,
+)
 from usali.tenancy import FOUNDING_ORG_ID
 
 # The founding hotel group (multi-org arrives via provisioning, Pillar L).
@@ -30,6 +35,10 @@ _DEFAULT_ORG = "Pilot Hotel Group"
 # authkit's default claim — the contract is pinned in
 # tests/test_oidc_realm_contract.py.
 DEFAULT_ORG_ALIAS = "pilot-hotel-group"
+
+# The `connected_by` recorded for env-seeded rows: no human connected these,
+# and attributing them to one would be a lie in the audit trail.
+_SEED_SUBJECT = "seed:env"
 
 
 def ensure_default_org(session: Session) -> int:
@@ -106,18 +115,60 @@ def ensure_default_org(session: Session) -> int:
     org_id = session.execute(
         select(Organization.org_id).where(Organization.org_id == FOUNDING_ORG_ID)
     ).scalar_one()
-    # L5 decision 5: seed the founding org's per-org settings from the
-    # process-wide env default, but ONLY on first insert — a bare re-seed
-    # never blanks or overwrites a crm_provider an operator set by hand (the
-    # crm_ref / wage_jurisdiction find-or-create posture). `USALI_CRM_PROVIDER`
-    # is the SEED default for org 1 ONLY; at runtime the crm router reads the
-    # value from this row, never from env (env fallback for any org is the
-    # mutant L5 kills).
-    session.execute(
-        insert(OrgSettings)
-        .values(org_id=org_id, crm_provider=get_settings().crm_provider)
-        .on_conflict_do_nothing(index_elements=["org_id"])
-    )
+    # OH-17 (D-OH17.15): seed org 1's integration credentials from the
+    # process-wide env, ON FIRST INSERT ONLY — the crm_ref / wage_jurisdiction
+    # find-or-create posture, so a bare re-seed never blanks a credential an
+    # operator connected by hand. At runtime every adapter reads THIS row,
+    # never env; an env fallback for org != 1 is the mutant L5 killed.
+    #
+    # This is a BRIDGE, not a connect action: it reproduces exactly what each
+    # default means today and does NOT run the connect endpoint's verification.
+    # Do NOT "improve" it into seeding only when env differs from the committed
+    # mock defaults — scripts/e2e_backend.py:399 states that the Gusto defaults
+    # ARE the working local config with no env set, and that rule would break
+    # payrun.spec.ts silently.
+    settings = get_settings()
+    seeds: list[dict[str, Any]] = [
+        {
+            "org_id": org_id, "integration": "payroll",
+            "provider": settings.payroll_provider,
+            "connected_by": _SEED_SUBJECT,
+            **(
+                {"api_token": settings.gusto_api_token,
+                 "company_id": settings.gusto_company_id}
+                if settings.payroll_provider == "gusto"
+                else {"client_id": settings.adp_client_id,
+                      "client_secret": settings.adp_client_secret}
+            ),
+        },
+        {
+            "org_id": org_id, "integration": "accounting", "provider": "qbo",
+            "realm_id": settings.qbo_realm_id,
+            "refresh_token": settings.qbo_refresh_token,
+            "connected_by": _SEED_SUBJECT,
+        },
+    ]
+    # The demand feed keeps its OFF sentinel: '' means no row at all, so an
+    # unset USALI_CRM_PROVIDER still produces demo_seed.py's honest "skipped"
+    # note rather than a connection to nothing.
+    if settings.crm_provider == "delphi":
+        seeds.append({
+            "org_id": org_id, "integration": "demand_feed", "provider": "delphi",
+            "subscription_key": settings.delphi_subscription_key,
+            "connected_by": _SEED_SUBJECT,
+        })
+    elif settings.crm_provider == "tripleseat":
+        seeds.append({
+            "org_id": org_id, "integration": "demand_feed",
+            "provider": "tripleseat", "api_key": settings.tripleseat_api_key,
+            "connected_by": _SEED_SUBJECT,
+        })
+    for values in seeds:
+        session.execute(
+            insert(OrgIntegrationCredential)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["org_id", "integration"])
+        )
     return org_id
 
 
