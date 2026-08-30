@@ -1732,49 +1732,79 @@ and in this document stay aligned.
 - Modify: `src/usali/crm_feed.py` (protocol + `InMemoryCrmFeed`)
 - Modify: `src/usali/gusto_adapter.py`, `src/usali/adp_adapter.py`,
   `src/usali/delphi_adapter.py`, `src/usali/tripleseat_adapter.py`
-- Test: `tests/test_gusto_adapter.py`, `tests/test_adp_adapter.py`,
-  `tests/test_delphi_adapter.py`, `tests/test_tripleseat_adapter.py`
+- Modify: `src/usali/gusto_mock.py` (add the company endpoint)
+- Test: `tests/test_provider_contract.py` (payroll), `tests/test_j3_crm_adapters.py` (CRM)
 
-**Why this task exists.** D-OH17.8 makes the checklist honest by verifying a
-credential before storing it. There is currently **nothing to call**:
-`capabilities()` on all four adapters (`gusto_adapter.py:49`,
-`adp_adapter.py:62`, `delphi_adapter.py:77`, `tripleseat_adapter.py:72`) is a
-local declaration that touches no network, so using it as the verification
-would make D-OH17.8 quietly false — a `done` over an unauthenticated
-credential, the exact drift the decision exists to stop. Each adapter needs one
-real, read-only, authenticated call.
-
-Each provider's cheapest such call differs, and none of them writes:
-
-| Adapter | Verification call |
-|---|---|
-| ADP | the OAuth client-credentials grant (`_token()`, `adp_adapter.py:99`) — already exists, proves id+secret |
-| Gusto | `GET /v1/companies/{company_id}` — proves token AND that the company id is reachable |
-| Delphi | a one-day `fetch_demand` against the org's first `crm_ref` |
-| Tripleseat | a one-day `fetch_demand` against the org's first `crm_ref` |
+> **Corrected before dispatch (2026-08-30).** This task originally named
+> `tests/test_adp_adapter.py`, `tests/test_gusto_adapter.py`,
+> `tests/test_delphi_adapter.py`, `tests/test_tripleseat_adapter.py` and
+> fixtures `adp_mock_url` / `gusto_mock_url` / … — **none of the eight exist**.
+> This is the third instance of that defect class in this plan (see Task 2's
+> `test_crm_api.py` and Task 4's `test_qbo_client.py`).
+>
+> The real homes are better than what was invented:
+> - **Payroll:** `tests/test_provider_contract.py` is a *parametrized contract
+>   suite* whose own docstring states the convention — *"Adding a provider =
+>   adding a param row here; every provider still runs the identical
+>   assertions."* Its `PROVIDERS` list holds `pytest.param(_gusto, …, id="gusto")`
+>   and `pytest.param(_adp, …, id="adp")`, with factories `_gusto()` / `_adp()`
+>   wiring each adapter to its in-process mock via `SyncASGITransport`. Add the
+>   `verify()` cases there so both providers run identical assertions and a
+>   third provider inherits them for free.
+> - **CRM:** `tests/test_j3_crm_adapters.py`, which has `_delphi(key="mock")`
+>   and `_tripleseat(key="mock")` factories taking the key as an argument —
+>   exactly what a bad-credential test needs.
+>
+> Do NOT create new per-adapter test files.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_adp_adapter.py`:
+In `tests/test_provider_contract.py`, add to the existing parametrized suite so
+BOTH payroll providers run the same two assertions:
 
 ```python
-def test_verify_succeeds_against_the_mock(adp_mock_url):
-    AdpAdapter(base_url=adp_mock_url, client_id="mock", client_secret="mock").verify()
-
-
-def test_verify_raises_on_bad_credentials(adp_mock_url):
-    with pytest.raises(ProviderError):
-        AdpAdapter(base_url=adp_mock_url, client_id="wrong", client_secret="wrong").verify()
+@pytest.mark.parametrize("factory,_etax,_xtax", PROVIDERS)
+def test_verify_succeeds_against_the_mock(factory, _etax, _xtax):
+    """D-OH17.8: the connect endpoint refuses a credential that cannot
+    authenticate, so every adapter needs one real, read-only, authenticated
+    call. `capabilities()` cannot serve — it touches no network."""
+    factory().verify()
 ```
 
-Add the mirror pair to `tests/test_gusto_adapter.py` (bad `api_token`), and to
-`tests/test_delphi_adapter.py` / `tests/test_tripleseat_adapter.py` (bad key,
-`verify(external_ref=...)`), using each module's existing mock fixture. Do not
-build a second mock harness.
+and a bad-credential case per provider, built by calling the adapter
+constructors directly with a wrong secret (the `_gusto` / `_adp` factories
+hardcode `"mock"`, so a bad-credential case needs its own construction —
+follow their shape, including `SyncASGITransport`):
+
+```python
+def test_verify_raises_on_a_bad_gusto_token():
+    bad = GustoAdapter(base_url="http://mock-gusto", api_token="wrong",
+                       company_id="mock",
+                       transport=SyncASGITransport(create_mock_gusto()))
+    with pytest.raises(ProviderError):
+        bad.verify()
+```
+
+In `tests/test_j3_crm_adapters.py`, use the existing `_delphi(key)` /
+`_tripleseat(key)` factories, which already take the key as an argument:
+
+```python
+def test_verify_succeeds_against_the_mock():
+    _delphi().verify(REF)
+    _tripleseat().verify(REF)
+
+
+def test_verify_raises_on_a_bad_key():
+    with pytest.raises(CrmFeedError):
+        _delphi(key="wrong").verify(REF)
+```
+
+Use whatever `crm_ref` constant that module already uses for its fetch tests —
+read it rather than inventing one.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_adp_adapter.py -k verify -v`
+Run: `uv run pytest tests/test_provider_contract.py tests/test_j3_crm_adapters.py -k verify -v`
 Expected: FAIL — `AttributeError: 'AdpAdapter' object has no attribute 'verify'`
 
 - [ ] **Step 3: Add `verify` to the two ports**
@@ -1870,7 +1900,7 @@ mirroring how the mock already treats the token on its other routes.
 
 - [ ] **Step 6: Run the tests**
 
-Run: `uv run pytest tests/test_gusto_adapter.py tests/test_adp_adapter.py tests/test_delphi_adapter.py tests/test_tripleseat_adapter.py -v && uv run mypy src`
+Run: `uv run pytest tests/test_provider_contract.py tests/test_j3_crm_adapters.py -v && uv run mypy src`
 Expected: PASS
 
 - [ ] **Step 7: Commit**
