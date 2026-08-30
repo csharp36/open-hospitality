@@ -68,6 +68,11 @@ def evaluate(
             done = item.probe(session)
         except Exception as exc:  # design §8: loud, but contained
             logger.exception("checklist probe failed for %s", item.key)
+            # A DBAPI-level failure leaves the Session in "pending rollback":
+            # without this, every LATER probe would raise PendingRollbackError
+            # and degrade too, making the containment illusory. The house
+            # pattern (ingestion.py:273, crm_api.py:124).
+            session.rollback()
             out.append(_status(item, ERROR, detail=type(exc).__name__))
             continue
         if done:

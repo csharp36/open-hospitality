@@ -63,3 +63,42 @@ def test_a_raising_probe_degrades_only_that_item(db_session, founding_org):
     assert by_key["payroll"].status == "error"
     assert by_key["payroll"].status != "done"
     assert by_key["team"].status == "done"
+
+
+def test_a_db_error_in_one_probe_does_not_cascade(db_session, founding_org):
+    """A DBAPI failure poisons the session; without a rollback every later
+    probe that touches the database would degrade too, and §8's containment
+    would be a fiction. `_item()`'s probe ignores the session entirely, so it
+    can't exercise a poisoned transaction — the second probe here must issue
+    a real query for this test to mean anything."""
+    from sqlalchemy import text
+
+    def _bad_query(session):
+        session.execute(text("SELECT * FROM no_such_table"))
+        return True
+
+    def _touches_db(session):
+        session.execute(text("SELECT 1"))
+        return True
+
+    bad = ChecklistItem(key="payroll", title="T", description="D", required=False,
+                        where="/setup", probe=_bad_query)
+    team = ChecklistItem(key="team", title="T", description="D", required=False,
+                        where="/setup", probe=_touches_db)
+    rows = evaluate(db_session, items=(bad, team))
+    by_key = {r.key: r for r in rows}
+    assert by_key["payroll"].status == "error"
+    assert by_key["team"].status == "done"   # NOT "error" — this is the point
+
+
+def test_item_status_mirrors_checklist_item_fields():
+    """Adding a field to one and not the other must fail loudly, not silently
+    drop it from the API payload."""
+    from dataclasses import fields
+    from usali.checklist import ChecklistItem, ItemStatus
+    assert ({f.name for f in fields(ItemStatus)} - {"status", "detail"}
+            == {f.name for f in fields(ChecklistItem)} - {"probe"})
+
+
+def test_evaluate_uses_the_module_registry_by_default(db_session, founding_org):
+    assert evaluate(db_session) == []
