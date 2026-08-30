@@ -171,6 +171,24 @@ class CrmDemandPull:
 class CrmFeed(Protocol):
     def capabilities(self) -> CrmCapabilities: ...
 
+    def verify(self, external_ref: str) -> None:
+        """Prove these credentials authenticate against one property's feed
+        (OH-17, D-OH17.8). Raises CrmFeedError on failure.
+
+        Exists because the connect endpoint must refuse a key that cannot
+        authenticate BEFORE storing it — otherwise a typo'd key becomes a
+        checklist item reading `done` over an integration that 502s on the
+        first pull. `capabilities()` cannot serve as that proof: it is a
+        purely local declaration that touches no network.
+
+        Needs a ref because every real CRM read is property-scoped — there is
+        no account-level ping to call instead, and a key that authenticates
+        against an account the tenant's property does not live in is still a
+        broken connection. Read-only BY CONTRACT (this port never writes at
+        all; the same posture as `fetch_demand`)."""
+        ...
+
+
     def fetch_demand(
         self, external_ref: str, start: date, end: date
     ) -> CrmDemandPull:
@@ -194,6 +212,12 @@ class InMemoryCrmFeed:
 
     def capabilities(self) -> CrmCapabilities:
         return self.feed_capabilities
+
+    def verify(self, external_ref: str) -> None:
+        # The fake authenticates against nothing, so there is nothing to
+        # prove — and deliberately NOT recorded in `calls`, which endpoint
+        # tests read as "what demand was pulled".
+        return None
 
     def fetch_demand(
         self, external_ref: str, start: date, end: date

@@ -68,6 +68,22 @@ class AdpAdapter:
             supports_employee_update=True,
         )
 
+    def verify(self) -> None:
+        """D-OH17.8: the client-credentials grant IS the verification. It
+        proves the id and the secret authenticate, and it is what every other
+        call does lazily anyway — nothing in the tenant's payroll account is
+        read and nothing is written (the grant is write-SHAPED, a POST, but
+        it creates no ADP resource; it mints a bearer).
+
+        The cache is cleared first ON PURPOSE. `_token()` short-circuits on a
+        cached bearer, so on an adapter that has already made a call verify()
+        would return without touching the network — a silent no-op wearing
+        the shape of a verification, which is precisely the failure mode
+        D-OH17.8 exists to close. Connect builds a fresh adapter, so today
+        this only costs one grant; it stays correct if that ever changes."""
+        self._access_token = None
+        self._token()
+
     def update_employee(
         self, provider_employee_id: str, employee: PayrollEmployee
     ) -> None:
