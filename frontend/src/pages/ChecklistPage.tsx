@@ -10,7 +10,7 @@ import { Link } from '@tanstack/react-router'
 
 import { Badge, Card, PageHeader, sectionHeadClass, type BadgeTone } from '../components/ui'
 import type { ChecklistItem, ChecklistStatus } from '../api/types'
-import { groupItems, useChecklist } from '../lib/useChecklist'
+import { badgeLabel, groupItems, useChecklist } from '../lib/useChecklist'
 import { errorMessage } from '../lib/errors'
 
 // `error` reads "Could not check" — not "Failed", and never a tick — because
@@ -33,13 +33,20 @@ const glyphTone: Record<ChecklistStatus, string> = {
 export default function ChecklistPage() {
   const checklist = useChecklist()
   const groups = checklist.data !== undefined ? groupItems(checklist.data.items) : null
+  // Reuses the sidebar badge's own sentence rather than composing a fourth
+  // count string: /setup is the page that badge sends you to, and §6 puts
+  // `error_count` on the wire so a client can tell "4 things to do" from
+  // "4 things we could not check" and say so. This is where it says so.
+  const summary = checklist.data !== undefined ? badgeLabel(checklist.data) : null
 
   return (
     <div className="flex flex-col gap-5">
       <PageHeader
         title="Setup"
-        subtitle="What is left to configure. Nothing here blocks reporting."
+        subtitle="What is left to configure. The checklist never blocks you — the required items are what reporting needs."
       />
+
+      {summary !== null && <p className="text-sm text-ink-muted">{summary.title}</p>}
 
       {checklist.isError && (
         <Card>
@@ -53,9 +60,8 @@ export default function ChecklistPage() {
         </Card>
       )}
 
-      {/* `all_clear`, never `open_count === 0`: an item whose probe raised is
-          not counted as open, so a tenant whose probes all failed has zero
-          open items while nothing at all is known. */}
+      {/* `all_clear`, never `open_count === 0` — see the invariant on
+          `Checklist.all_clear` for why the two differ. */}
       {checklist.data?.all_clear === true && (
         <Card>
           <p className="text-sm text-ink">Nothing left to set up.</p>
@@ -76,7 +82,9 @@ function ItemGroup({ label, items }: { label: string; items: ChecklistItem[] }) 
   return (
     <Card role="region" aria-label={`${label} setup`}>
       <h2 className={sectionHeadClass}>{label}</h2>
-      <ul className="mt-1 flex flex-col">
+      {/* No `display:flex` on the <ul>: it drops the list role in WebKit/
+          VoiceOver, and "how many, and which" is this page's whole job. */}
+      <ul className="mt-1">
         {items.map((item) => (
           <ItemRow key={item.key} item={item} />
         ))}
@@ -89,24 +97,35 @@ function ItemRow({ item }: { item: ChecklistItem }) {
   const status = STATUS[item.status]
   return (
     <li className="flex flex-col gap-0.5 border-b border-line py-3 last:border-0">
-      <div className="flex flex-wrap items-center gap-2">
-        <span aria-hidden="true" className={`w-3 text-sm font-semibold ${glyphTone[item.status]}`}>
-          {status.glyph}
-        </span>
-        {item.where !== null ? (
-          <Link to={item.where} className="text-sm font-medium text-accent hover:underline">
-            {item.title}
-          </Link>
-        ) : (
-          <span className="text-sm font-medium text-ink">{item.title}</span>
-        )}
-        <Badge tone={status.tone}>{status.word}</Badge>
-        {item.detail !== null && <span className="text-xs text-ink-muted">{item.detail}</span>}
+      {/* justify-between reserves the right edge as a stable action slot: an
+          inline control after `detail` would be moved around by flex-wrap. */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span
+            aria-hidden="true"
+            className={`w-3 shrink-0 text-center text-sm font-semibold ${glyphTone[item.status]}`}
+          >
+            {status.glyph}
+          </span>
+          {item.where !== null ? (
+            <Link to={item.where} className="text-sm font-medium text-accent hover:underline">
+              {item.title}
+            </Link>
+          ) : (
+            <span className="text-sm font-medium text-ink">{item.title}</span>
+          )}
+          <Badge tone={status.tone}>{status.word}</Badge>
+          {item.detail !== null && <span className="text-xs text-ink-muted">{item.detail}</span>}
+        </div>
       </div>
       <p className="pl-5 text-sm text-ink-muted">{item.description}</p>
       {/* Deliberately not conditioned on status: a demand feed the tenant was
           provisioned with probes `done` and still had no surface to connect it
-          on, so Done and the reason legitimately appear together (D-B4.8). */}
+          on, so Done and the reason legitimately appear together (D-B4.8).
+          The `unavailable_reason` half of the test is a guard against a backend
+          that broke D-B4.8's paired invariant — an un-closeable item with no
+          reason renders as plain text with no explanation, which is wrong but
+          less wrong than crashing the page. */}
       {item.where === null && item.unavailable_reason !== null && (
         <p className="pl-5 text-sm text-ink-muted">{item.unavailable_reason}</p>
       )}

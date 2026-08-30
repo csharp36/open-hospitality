@@ -40,6 +40,7 @@ function renderSetup() {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['org_admin'] })
   vi.mocked(getProperties).mockResolvedValue([])
 })
@@ -65,7 +66,7 @@ describe('ChecklistPage', () => {
 
   it('links an item that has a `where`', async () => {
     vi.mocked(getChecklist).mockResolvedValue({
-      items: [item()], open_count: 1, error_count: 0, all_clear: false,
+      items: [item({ where: '/upload' })], open_count: 1, error_count: 0, all_clear: false,
     })
     renderSetup()
     const link = await screen.findByRole('link', { name: /upload your first pms report/i })
@@ -111,9 +112,35 @@ describe('ChecklistPage', () => {
       open_count: 0, error_count: 1, all_clear: false,
     })
     renderSetup()
-    expect(await screen.findByText(/could not check/i)).toBeInTheDocument()
+    // The word alone is not the invariant — a green tick beside "Could not
+    // check" would still read as progress, which design §8 forbids
+    // absolutely. Pin the tone and the glyph, not just the wording.
+    const badge = await screen.findByText('Could not check')
+    expect(badge.className).toMatch(/red/)
+    expect(badge.className).not.toMatch(/green/)
+    // Scoped to the row: the sidebar badge also renders '!' on an errored
+    // checklist, and the glyph under test is the one beside the item.
+    const row = screen.getByRole('region', { name: /required/i })
+    expect(within(row).getByText('!').className).toMatch(/red/)
+    expect(screen.queryByText('✓')).toBeNull()
     expect(screen.queryByText(/^done$/i)).toBeNull()
     expect(screen.getByText(/OperationalError/)).toBeInTheDocument()
+  })
+
+  // The only status with no other fixture, and Task 5 puts its Restore
+  // control on exactly these rows.
+  it('renders a dismissed item in the neutral tone', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item({
+        key: 'team', title: 'Invite your team', required: false,
+        where: '/employees', status: 'dismissed',
+      })],
+      open_count: 0, error_count: 0, all_clear: true,
+    })
+    renderSetup()
+    const badge = await screen.findByText('Dismissed')
+    expect(badge.className).toMatch(/surface-sunken/)
+    expect(badge.className).not.toMatch(/green|amber|red|blue/)
   })
 
   // The load-bearing gate: zero open items with a failed probe is NOT
@@ -125,8 +152,26 @@ describe('ChecklistPage', () => {
       open_count: 0, error_count: 1, all_clear: false,
     })
     renderSetup()
-    expect(await screen.findByText(/could not check/i)).toBeInTheDocument()
+    expect(await screen.findByText('Could not check')).toBeInTheDocument()
     expect(screen.queryByText(/nothing left to set up/i)).toBeNull()
+  })
+
+  // §6 puts error_count on the wire so a client can tell "4 things to do"
+  // from "4 things we could not check" AND SAY SO. This is where it says so.
+  it('summarises the counts, keeping could-not-check apart from to-do', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [
+        item(),
+        item({ key: 'team', title: 'Invite your team', required: false, status: 'error', detail: 'OperationalError' }),
+      ],
+      open_count: 1, error_count: 1, all_clear: false,
+    })
+    renderSetup()
+    // Both halves in one sentence. The exact wording is badgeLabel's own and
+    // is pinned in useChecklist.test.tsx; what this pins is that /setup shows
+    // it at all, and that the errored item is not folded into the to-do count.
+    const summary = await screen.findByText(/could not check 1 item;/i)
+    expect(summary.textContent).toMatch(/1 .*still to set up/i)
   })
 
   it('says setup is finished when all_clear', async () => {
@@ -135,6 +180,7 @@ describe('ChecklistPage', () => {
     })
     renderSetup()
     expect(await screen.findByText(/nothing left to set up/i)).toBeInTheDocument()
+    expect(screen.queryByText(/still to set up/i)).toBeNull()
   })
 
   it('shows a loud failure when the checklist itself cannot be fetched', async () => {
