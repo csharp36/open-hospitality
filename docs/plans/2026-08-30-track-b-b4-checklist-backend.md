@@ -67,11 +67,18 @@ Fixtures are synthetic — no real PII, phone numbers, or credentials.
   `OrgSettings` (`models.py:467`, has `crm_provider`), `Property`.
 - **`test_tables_registered`** (`tests/test_models.py:12`) asserts the exact set
   of table names in `Base.metadata`. Adding a model without updating it fails.
-- **Tenancy invariants** live in `tests/test_migration_on_populated_data.py`:
-  `_L1_ORG_INDEPENDENT` (line 1291) lists tables that legitimately carry no
-  `org_id`. `org_checklist_override` is `OrgScoped`, so it does **NOT** go in
-  that set — it must simply carry `org_id` and an `org_wall` policy, which the
-  existing inventory tests then verify automatically.
+- **Tenancy invariants** live in two places, and BOTH matter:
+  - `tests/test_migration_on_populated_data.py`: `_L1_ORG_INDEPENDENT` (line
+    1291) lists tables that legitimately carry no `org_id`.
+    `org_checklist_override` is `OrgScoped`, so it does **NOT** go in that set.
+  - `tests/test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`
+    (line 428) hardcodes the **complete expected set** of org-walled tables as
+    a literal. It is deliberately exact and never sampled, so a new org-scoped
+    table does **NOT** join it automatically — you must add its name in the
+    same commit, as `l5a0orgsettings`, `m1a0propcfg`, and `m2a0perffoundations`
+    each did. **Corrected 2026-08-30:** an earlier draft of this plan claimed
+    the inventory tests pick the table up automatically. They do not. Task 2's
+    gate command must therefore include `tests/test_l2_rls_wall.py`.
 - **The upsert idiom** is `sqlalchemy.dialects.postgresql.insert(...)` +
   `.on_conflict_do_nothing(...)`; precedent at `stage.py:64`, `ledger_stage.py:52`.
 - **Ruff** runs the pre-0.16 default set (`pyproject.toml` `[tool.ruff.lint]`) —
@@ -289,9 +296,11 @@ def downgrade() -> None:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_l4_org_grants.py tests/test_migration_on_populated_data.py -v`
-Expected: PASS — including the RLS inventory and L1 `org_id` invariant tests,
-which now see the new table and require its `org_wall` policy.
+Run: `uv run pytest tests/test_l4_org_grants.py tests/test_migration_on_populated_data.py tests/test_l2_rls_wall.py -v`
+Expected: PASS. `test_l2_rls_wall.py` will FAIL until you add
+`"org_checklist_override"` to the hardcoded `expected` set in
+`test_the_rls_inventory_is_complete_and_forced` (line 428) and extend its
+docstring in the established style — that literal is part of this task.
 
 - [ ] **Step 5: Commit**
 
