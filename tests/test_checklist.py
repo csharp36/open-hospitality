@@ -2,6 +2,7 @@ from datetime import date
 
 from tests.grants import grant_role
 from tests.orgworld import set_demand_feed
+from tests.test_integrations import _connect
 from usali.checklist import ITEMS, ChecklistItem, ItemStatus, evaluate, summarize
 from usali.models import (
     Base,
@@ -200,13 +201,6 @@ def test_team_needs_a_second_subject(db_session, founding_org):
     assert _status_of(db_session, "team") == "done"
 
 
-def test_payroll_and_accounting_ignore_process_wide_settings(db_session, founding_org):
-    """D-B4.3: a deployment-wide credential is not THIS tenant's connection.
-    Both stay open until OH-17 gives them per-tenant config."""
-    assert _status_of(db_session, "payroll") == "open"
-    assert _status_of(db_session, "accounting") == "open"
-
-
 def test_where_and_unavailable_reason_are_paired():
     """D-B4.8: an item either routes somewhere real or says why it does not.
     Exactly one of the two, never both and never neither — an item with a
@@ -216,17 +210,35 @@ def test_where_and_unavailable_reason_are_paired():
         assert (item.where is None) == (item.unavailable_reason is not None), item.key
 
 
-def test_the_integration_items_have_no_connect_surface_yet():
-    """The three OH-17 items, named explicitly. This test is the tripwire that
-    OH-17 must delete: when it supplies a connect surface it restores `where`
-    and drops the reason, and this assertion fails loudly rather than leaving
-    a stale "coming later" string on a working page."""
+def test_every_item_has_a_connect_surface():
+    """D-OH17.12, the mirror image of the tripwire this replaces. OH-17 gave
+    all three integration items a real `where`, so a null one now means a
+    regression rather than an honest gap."""
+    assert [i.key for i in ITEMS if i.where is None] == []
+
+
+def test_the_integration_items_route_to_integrations():
     by_key = {i.key: i for i in ITEMS}
-    no_surface = {i.key for i in ITEMS if i.where is None}
-    assert no_surface == {"payroll", "accounting", "demand_feed"}
-    for key in no_surface:
-        assert by_key[key].unavailable_reason is not None
-        assert "OH-17" in by_key[key].unavailable_reason
+    for key in ("payroll", "accounting", "demand_feed"):
+        assert by_key[key].where == "/integrations"
+        assert by_key[key].unavailable_reason is None
+
+
+def test_payroll_and_accounting_read_the_credential_row(db_session, unconnected_org):
+    """D-OH17.8: the probe is a presence check on what is actually configured
+    for THIS tenant — still derived (D-B4.1), never a stored status.
+
+    `unconnected_org`, not bare `founding_org`: `ensure_default_org` seeds
+    org 1's payroll and accounting rows unconditionally (D-OH17.15), so under
+    `founding_org` alone both would already read "done" and `_connect` below
+    would collide with the seed on the (org_id, integration) primary key
+    instead of testing anything."""
+    assert _status_of(db_session, "payroll") == "open"
+    assert _status_of(db_session, "accounting") == "open"
+    _connect(db_session, "payroll", "gusto", api_token="t", company_id="c")
+    _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="tok")
+    assert _status_of(db_session, "payroll") == "done"
+    assert _status_of(db_session, "accounting") == "done"
 
 
 def _row(key, status, *, required=False):

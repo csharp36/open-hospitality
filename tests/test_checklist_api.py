@@ -50,8 +50,16 @@ def test_get_checklist_reports_open_items(db_engine, db_session, tmp_path):
 def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
     """`ItemModel` sets extra="forbid" and is built with **vars(ItemStatus),
     so the model's field set is coupled to the dataclass's. The existing tests
-    already catch a MISSING field (it 500s); this pins the harder half — that
-    both arms of the D-B4.8 pair serialize, null and non-null."""
+    already catch a MISSING field (it 500s); this pins that the null arm of
+    the D-B4.8 pair serializes.
+
+    OH-17 (Task 7, D-OH17.12) closed the pair's only non-null-reason
+    inhabitants — payroll, accounting and demand_feed now all route to
+    `/integrations` instead of carrying a reason — so there is no live
+    example left to pin the other arm with. `payroll` stays the item under
+    test here (rather than swapping to some other required item) so a
+    regression that brings back a null `where` for it is caught in the same
+    place this test already watches."""
     _org(db_session)
     verifier, mint = make_authkit()
     c = _client(db_engine, tmp_path, verifier)
@@ -59,8 +67,8 @@ def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
     by_key = {i["key"]: i for i in body["items"]}
     assert by_key["first_report"]["where"] == "/upload"
     assert by_key["first_report"]["unavailable_reason"] is None
-    assert by_key["payroll"]["where"] is None
-    assert "OH-17" in by_key["payroll"]["unavailable_reason"]
+    assert by_key["payroll"]["where"] == "/integrations"
+    assert by_key["payroll"]["unavailable_reason"] is None
 
 
 def test_get_checklist_marks_done_items(db_engine, db_session, tmp_path):

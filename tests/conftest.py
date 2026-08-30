@@ -94,6 +94,40 @@ def founding_org(db_session: Session) -> None:
 
 
 @pytest.fixture
+def unconnected_org(db_session: Session) -> None:
+    """Org 1 exists and is connected to NOTHING.
+
+    `founding_org` alone is the wrong starting state for any test about a
+    tenant's OWN connection state: `ensure_default_org` runs the D-OH17.15
+    seed bridge, which UNCONDITIONALLY plants org 1's payroll (gusto) and
+    accounting (qbo) rows from the process env — so "not connected" would be
+    false before the test began, and a `_connect(... 'payroll' ...)` would
+    collide with the seed on the (org_id, integration) primary key rather
+    than testing anything. Deleting the seeded rows is the smallest fix that
+    keeps ONE org-creating implementation (the L1 rule) instead of
+    hand-rolling a second `Organization` insert here.
+
+    The org row itself must stay: every `_connect` carries org_id = 1 and
+    would otherwise die on `fk_org_integration_credential_org`.
+
+    Shared between `tests/test_integrations.py` and `tests/test_checklist.py`
+    (OH-17 Task 7) — one fixture, not two, the same reason `_connect` lives
+    in one place."""
+    ensure_default_org(db_session)
+    # SCOPED to org 1 explicitly. `db_session` truncates first, so nothing
+    # else can be here in-suite and the WHERE is redundant TODAY — but this
+    # commit's headline lesson is that an org-scoped write carrying no org_id
+    # is confined by RLS alone, and `db_session` runs as the superuser, which
+    # bypasses RLS. An unscoped DELETE sitting in the same diff is the thing
+    # a future two-org test copies.
+    db_session.execute(
+        text("DELETE FROM org_integration_credential WHERE org_id = :org"),
+        {"org": FOUNDING_ORG_ID},
+    )
+    db_session.commit()
+
+
+@pytest.fixture
 def org_bound_factory(db_engine: Engine) -> OrgBoundSessionFactory:
     """A founding-org-bound SESSION FACTORY — the shape `usali.integrations`'
     `resolve_*` functions and `DbTokenStore` take (OH-17).

@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
+from usali.integrations import ACCOUNTING, DEMAND_FEED, PAYROLL, has_credential
 from usali.models import (
     FiscalCalendar,
     IngestBatch,
     OrgChecklistOverride,
-    OrgIntegrationCredential,
     Property,
     RoleAssignment,
     RoomInventory,
@@ -165,36 +165,22 @@ def _probe_fiscal_calendar(session: Session) -> bool:
 
 
 def _probe_payroll(session: Session) -> bool:
-    """D-B4.3: deliberately ignores `settings.payroll_provider`. A
-    process-wide credential is not this tenant's connection, so the honest
-    answer for a real tenant is "not connected". OH-17 replaces this body."""
-    return False
+    """OH-17 (D-OH17.8): the tenant's OWN credential row, not
+    `settings.payroll_provider`. A presence check, not a live provider call —
+    the checklist is read on every page load via the sidebar badge, and a
+    probe that dialled out would put the SPA's critical path behind a provider.
+    A credential that does not authenticate never becomes a row, because the
+    connect endpoint verifies before it writes."""
+    return has_credential(session, PAYROLL)
 
 
 def _probe_accounting(session: Session) -> bool:
-    """D-B4.3, as `_probe_payroll`. OH-17 replaces this body."""
-    return False
+    """D-OH17.8, as `_probe_payroll`."""
+    return has_credential(session, ACCOUNTING)
 
 
 def _probe_demand_feed(session: Session) -> bool:
-    """OH-17 Task 7 replaces this body. `integration == "demand_feed"` picks
-    out the one row (if any) this org holds for the demand-feed slot — the
-    same filter `crm_api._active_org_crm_provider` uses, so the checklist and
-    the pull endpoint agree on what "connected" means.
-
-    "OFF" used to be `org_settings.crm_provider == ''`, an explicit sentinel
-    value on an always-present row. Under `OrgIntegrationCredential` there is
-    no sentinel: OFF is the ABSENCE of a row entirely (D-OH17.1 — a tenant
-    cannot hold a provider without its credentials, so an unconnected org
-    simply has no row for this integration). `bool(row)` is therefore still
-    the right test, but now for a different reason: it used to reject the
-    empty string, and now it rejects `None` from `scalar_one_or_none()`."""
-    row = session.execute(
-        select(OrgIntegrationCredential.provider).where(
-            OrgIntegrationCredential.integration == "demand_feed"
-        )
-    ).scalar_one_or_none()
-    return bool(row)
+    return has_credential(session, DEMAND_FEED)
 
 
 def _probe_team(session: Session) -> bool:
@@ -203,15 +189,6 @@ def _probe_team(session: Session) -> bool:
     ).scalar_one()
     return count > 1
 
-
-# One constant, not three near-identical strings: the three integration items
-# share a single cause, and D-B4.8's point is that this is one class rather
-# than three special cases. OH-17 deletes it along with the `where=None`s.
-# Deliberately says nothing about dismissing: `demand_feed` can probe `done`
-# today, and "you can dismiss this" is false next to a Done badge (D-B4.4).
-_OH17_REASON = (
-    "No connect surface yet — per-tenant integration setup arrives with OH-17."
-)
 
 ITEMS: tuple[ChecklistItem, ...] = (
     ChecklistItem(
@@ -234,20 +211,17 @@ ITEMS: tuple[ChecklistItem, ...] = (
         key="payroll", title="Connect payroll",
         description="Optional. Compare estimated labor cost against the actual "
                     "gross-to-net from your provider.",
-        required=False, where=None, probe=_probe_payroll,
-        unavailable_reason=_OH17_REASON,
+        required=False, where="/integrations", probe=_probe_payroll,
     ),
     ChecklistItem(
         key="accounting", title="Connect QuickBooks Online",
         description="Optional. Push the journal entry behind your statement.",
-        required=False, where=None, probe=_probe_accounting,
-        unavailable_reason=_OH17_REASON,
+        required=False, where="/integrations", probe=_probe_accounting,
     ),
     ChecklistItem(
         key="demand_feed", title="Connect a demand feed",
         description="Optional. Pull group and event demand from Delphi or Tripleseat.",
-        required=False, where=None, probe=_probe_demand_feed,
-        unavailable_reason=_OH17_REASON,
+        required=False, where="/integrations", probe=_probe_demand_feed,
     ),
     ChecklistItem(
         key="team", title="Invite your team",
