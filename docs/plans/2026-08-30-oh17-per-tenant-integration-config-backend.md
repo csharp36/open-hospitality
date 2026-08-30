@@ -1425,6 +1425,17 @@ git commit -m "feat(oh17): resolve adapters from the tenant's credential row"
 
 ## Task 6: Rewire the call sites
 
+> **Two stale rationales to delete WITH the memoizer (handed over from Task 5).**
+> `portal_api._get_qbo_client` (`portal_api.py:98-105`) says *"Refresh-token
+> rotation lives in client memory … so a per-request client would invalid_grant
+> on the second push"*, and `server._shared` (`server.py:142-155`) says the
+> same. Both are **now false for QBO** — `DbTokenStore` is precisely what fixed
+> it — and both are the justification this task removes. Delete the rationales
+> along with the code they justify; do not leave them behind pointing at a bug
+> that no longer exists. `_shared` itself survives for the face engine, so trim
+> its docstring rather than deleting it wholesale.
+
+
 **Files:**
 - Modify: `src/usali/server.py:130-139`, `:142-186`, `:200-217`, `:384`, `:431-451`
 - Modify: `src/usali/portal_api.py:98-110`
