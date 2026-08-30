@@ -419,9 +419,10 @@ def _payroll_provider():
 def _crm_feed():
     """The same provider-selected demand feed the API uses (the J4/L5
     seam) — None when USALI_CRM_PROVIDER is unset (demo.sh sets delphi).
-    The demo seeds the FOUNDING org, whose org_settings.crm_provider is
-    seeded from this same env (ensure_default_org), so reading env here is
-    reading org 1's provider. Tests point this at the in-process mock."""
+    The demo seeds the FOUNDING org, whose org_integration_credential row
+    for demand_feed is seeded from this same env (ensure_default_org), so
+    reading env here is reading org 1's provider. Tests point this at the
+    in-process mock."""
     from usali.server import _crm_feed_for_provider
 
     return _crm_feed_for_provider(get_settings().crm_provider)

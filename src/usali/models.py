@@ -552,7 +552,7 @@ class OrgIntegrationCredential(OrgScoped, Base):
     connected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    connected_by: Mapped[str] = mapped_column(String(255))
+    connected_by: Mapped[str] = mapped_column(String(64))  # actor keycloak subject
 
 
 class OrgChecklistOverride(OrgScoped, Base):
@@ -563,9 +563,9 @@ class OrgChecklistOverride(OrgScoped, Base):
     (no `state` column — with one legal value it could only say one thing).
 
     `org_id` is part of the composite primary key and the FK to
-    `organization`, the `OrgSettings` "org-scoped by its own key" shape. Both
-    L2 walls therefore confine it automatically — the ORM criteria hook and
-    the `org_wall` RLS policy.
+    `organization`, the `OrgIntegrationCredential` "org-scoped by its own
+    composite key" shape. Both L2 walls therefore confine it automatically —
+    the ORM criteria hook and the `org_wall` RLS policy.
 
     A dismissal LOSES to a probe that says done (D-B4.4): `checklist.evaluate`
     consults this table only when the probe reports the item still open.
@@ -574,8 +574,9 @@ class OrgChecklistOverride(OrgScoped, Base):
     __tablename__ = "org_checklist_override"
     # The CHECK is the SCHEMA MIRROR of the keys in usali.checklist.ITEMS —
     # kept literal on purpose so the DB refuses an unknown key independently
-    # of the app import (the org_settings.crm_provider discipline). Adding an
-    # item means editing ITEMS *and* this literal plus its migration.
+    # of the app import (the org_integration_credential.integration
+    # discipline). Adding an item means editing ITEMS *and* this literal plus
+    # its migration.
     __table_args__ = (
         CheckConstraint(
             "item_key IN ('first_report', 'room_inventory', 'fiscal_calendar', "

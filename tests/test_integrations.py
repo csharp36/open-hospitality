@@ -1,5 +1,8 @@
 """OH-17: per-tenant integration credentials (design D-OH17.1, D-OH17.5)."""
 
+from sqlalchemy import String
+
+from usali.crypto import EncryptedString
 from usali.models import Base, OrgIntegrationCredential
 
 
@@ -20,3 +23,31 @@ def test_org_id_is_part_of_the_primary_key():
     so both L2 walls confine it automatically."""
     pk = {c.name for c in OrgIntegrationCredential.__table__.primary_key}
     assert pk == {"org_id", "integration"}
+
+
+def test_secrets_are_encrypted_and_identifiers_are_not():
+    """ADR-005: only actual secrets pay the encryption tax. `refresh_token`,
+    `api_token`, `client_secret`, `subscription_key`, and `api_key` are bearer
+    material — anyone holding one can act as the tenant against the provider
+    — so they are `EncryptedString`. `realm_id`, `company_id`, and `client_id`
+    are identifiers, not secrets: they are useless without the matching
+    secret, and reading one in plaintext during a support conversation is
+    worth more than encrypting it. This split is deliberate — if you are
+    "helpfully" encrypting a company id, or leaving a new secret column
+    plaintext because it "doesn't look secret enough," this test is the place
+    that disagrees with you."""
+    table = OrgIntegrationCredential.__table__
+    encrypted_columns = {
+        "refresh_token",
+        "api_token",
+        "client_secret",
+        "subscription_key",
+        "api_key",
+    }
+    plaintext_columns = {"realm_id", "company_id", "client_id"}
+
+    for name in encrypted_columns:
+        assert isinstance(table.c[name].type, EncryptedString), name
+    for name in plaintext_columns:
+        assert isinstance(table.c[name].type, String), name
+        assert not isinstance(table.c[name].type, EncryptedString), name

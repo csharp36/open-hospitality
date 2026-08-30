@@ -177,6 +177,18 @@ def _probe_accounting(session: Session) -> bool:
 
 
 def _probe_demand_feed(session: Session) -> bool:
+    """OH-17 Task 7 replaces this body. `integration == "demand_feed"` picks
+    out the one row (if any) this org holds for the demand-feed slot — the
+    same filter `crm_api._active_org_crm_provider` uses, so the checklist and
+    the pull endpoint agree on what "connected" means.
+
+    "OFF" used to be `org_settings.crm_provider == ''`, an explicit sentinel
+    value on an always-present row. Under `OrgIntegrationCredential` there is
+    no sentinel: OFF is the ABSENCE of a row entirely (D-OH17.1 — a tenant
+    cannot hold a provider without its credentials, so an unconnected org
+    simply has no row for this integration). `bool(row)` is therefore still
+    the right test, but now for a different reason: it used to reject the
+    empty string, and now it rejects `None` from `scalar_one_or_none()`."""
     row = session.execute(
         select(OrgIntegrationCredential.provider).where(
             OrgIntegrationCredential.integration == "demand_feed"
