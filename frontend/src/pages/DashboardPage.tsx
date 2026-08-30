@@ -22,6 +22,7 @@ import { barFill, barRampCss, barWidth, topRoundedBar } from '../lib/chartBars'
 import { BanknoteIcon, ClockIcon, ReportsIcon, UploadIcon } from '../components/icons'
 import { useAuth } from '../auth/authContext'
 import { useGlobalProperty } from '../lib/propertyContext'
+import { useChecklist } from '../lib/useChecklist'
 
 // --- formatting --------------------------------------------------------------
 
@@ -351,6 +352,56 @@ function IconChip({ tone, children }: { tone: string; children: React.ReactNode 
   )
 }
 
+// --- first-run setup card ----------------------------------------------------
+
+function countOf(n: number, word: string): string {
+  return `${n} ${word}${n === 1 ? '' : 's'}`
+}
+
+/**
+ * A pointer to /setup, not a second checklist — the destination carries the
+ * items, this only says how much is left and then gets out of the way.
+ */
+function SetupCard() {
+  const { data } = useChecklist()
+  // all_clear, NOT open_count > 0. They differ only on a probe failure, where
+  // open_count is 0 while nothing is known — gating on it would retire this
+  // card at exactly the moment it matters. (design §7)
+  //
+  // `undefined` covers pending and error alike: the card is ambient, and a
+  // dashboard is not where a checklist fetch failure gets announced.
+  if (data === undefined || data.all_clear) return null
+
+  const failed = data.error_count > 0
+  // Two counts, two sentences, never a sum: an item we could not check is not
+  // an item still to do, and no numeral may stand in for "we do not know".
+  const line = failed
+    ? `We could not check ${countOf(data.error_count, 'setup item')}.` +
+      (data.open_count > 0 ? ` ${countOf(data.open_count, 'other thing')} still to set up.` : '')
+    : `${countOf(data.open_count, 'thing')} left before your setup is complete.`
+
+  return (
+    <Card className="flex items-center gap-3">
+      {/* The same two glyphs the /setup rows use for these two states, so the
+          card and its destination read as one feature. */}
+      <span
+        aria-hidden="true"
+        className={`text-sm font-semibold ${failed ? 'text-danger-red' : 'text-warn-amber'}`}
+      >
+        {failed ? '!' : '○'}
+      </span>
+      <div className="flex min-w-0 flex-col gap-0.5">
+        {/* Headline wording is fixed across both branches: one accessible name
+            for one card, whatever it goes on to say beneath. */}
+        <Link to="/setup" className="text-sm font-semibold text-accent hover:underline">
+          Finish setting up
+        </Link>
+        <p className="text-sm text-ink-muted">{line}</p>
+      </div>
+    </Card>
+  )
+}
+
 // --- page -------------------------------------------------------------------
 
 const TREND_DAYS = 14
@@ -503,6 +554,10 @@ export default function DashboardPage() {
           statementTo={{ property, date }}
         />
       </div>
+
+      {/* Directly under the hero, above the KPI grid: a first-run operator has
+          no KPIs yet, so a card below an empty grid is a card below the fold. */}
+      <SetupCard />
 
       {ready && dayQuery.isError && (
         <Card className="flex flex-wrap items-center justify-between gap-3">
