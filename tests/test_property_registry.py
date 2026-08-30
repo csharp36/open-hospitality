@@ -77,9 +77,17 @@ def test_the_seed_writes_no_demand_feed_row_when_the_provider_is_unset(
     )).scalar_one() == 0
 
 
-def test_a_reseed_does_not_overwrite_an_operator_set_row(db_session):
+def test_a_reseed_does_not_overwrite_an_operator_set_row(db_session, monkeypatch):
     """The crm_ref find-or-create posture: a bare re-seed must never blank a
-    credential an operator connected by hand."""
+    credential an operator connected by hand.
+
+    The payroll pin is not boilerplate here: the operator edit this simulates
+    is to `company_id`, a GUSTO-only column. Under an ambient
+    USALI_PAYROLL_PROVIDER=adp the seeded row is an ADP row, whose CHECK
+    branch requires `company_id IS NULL` — so the UPDATE below would raise
+    IntegrityError and the test would die for a reason unrelated to the
+    find-or-create posture it exists to pin."""
+    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "gusto")
     ensure_default_org(db_session)
     db_session.execute(text(
         "UPDATE org_integration_credential SET company_id = 'operator-chosen' "
