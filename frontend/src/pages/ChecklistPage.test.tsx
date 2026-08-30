@@ -1,0 +1,145 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
+import { render, screen, within } from '@testing-library/react'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { AuthContext } from '../auth/authContext'
+import { AUTHED_CONTEXT } from '../test/fixtures'
+import { createAppRouter } from '../router'
+import { ApiError } from '../api/client'
+import type { ChecklistItem } from '../api/types'
+
+vi.mock('../api/checklist', () => ({
+  getChecklist: vi.fn(), dismissItem: vi.fn(), restoreItem: vi.fn(),
+}))
+vi.mock('../api/client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/client')>()),
+  getMe: vi.fn(), getProperties: vi.fn(),
+}))
+import { getChecklist } from '../api/checklist'
+import { getMe, getProperties } from '../api/client'
+
+function item(over: Partial<ChecklistItem> = {}): ChecklistItem {
+  return {
+    key: 'first_report', title: 'Upload your first PMS report',
+    description: 'Drop a night-audit export.', required: true,
+    where: '/upload', unavailable_reason: null, status: 'open', detail: null,
+    ...over,
+  }
+}
+
+function renderSetup() {
+  const router = createAppRouter(createMemoryHistory({ initialEntries: ['/setup'] }))
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={qc}>
+      <AuthContext.Provider value={AUTHED_CONTEXT}>
+        <RouterProvider router={router} />
+      </AuthContext.Provider>
+    </QueryClientProvider>,
+  )
+}
+
+beforeEach(() => {
+  vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['org_admin'] })
+  vi.mocked(getProperties).mockResolvedValue([])
+})
+
+describe('ChecklistPage', () => {
+  it('groups required and optional items under their own headings', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [
+        item(),
+        item({ key: 'team', title: 'Invite your team', required: false, where: '/employees' }),
+      ],
+      open_count: 2, error_count: 0, all_clear: false,
+    })
+    renderSetup()
+
+    const required = await screen.findByRole('region', { name: /required/i })
+    const optional = screen.getByRole('region', { name: /optional/i })
+    expect(within(required).getByText(/upload your first pms report/i)).toBeInTheDocument()
+    expect(within(required).queryByText(/invite your team/i)).toBeNull()
+    expect(within(optional).getByText(/invite your team/i)).toBeInTheDocument()
+    expect(within(optional).queryByText(/upload your first pms report/i)).toBeNull()
+  })
+
+  it('links an item that has a `where`', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item()], open_count: 1, error_count: 0, all_clear: false,
+    })
+    renderSetup()
+    const link = await screen.findByRole('link', { name: /upload your first pms report/i })
+    expect(link).toHaveAttribute('href', '/upload')
+  })
+
+  // D-B4.8. The item is un-closeable today, and says so — it is never a link
+  // to a page where the feature is invisible.
+  it('renders an item with no `where` as a non-link carrying its reason', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item({
+        key: 'payroll', title: 'Connect payroll', required: false, where: null,
+        unavailable_reason: 'No connect surface yet — per-tenant integration setup arrives with OH-17.',
+      })],
+      open_count: 1, error_count: 0, all_clear: false,
+    })
+    renderSetup()
+    expect(await screen.findByText(/connect payroll/i)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /connect payroll/i })).toBeNull()
+    expect(screen.getByText(/arrives with OH-17/i)).toBeInTheDocument()
+  })
+
+  // The reason is deliberately status-neutral: a demand_feed a tenant was
+  // provisioned with probes `done` while still having had no way to connect
+  // it, so Done and the reason legitimately appear together.
+  it('keeps the reason on a done item that still has no connect surface', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item({
+        key: 'demand_feed', title: 'Connect a demand feed', required: false,
+        where: null, unavailable_reason: 'No connect surface yet — arrives with OH-17.',
+        status: 'done',
+      })],
+      open_count: 0, error_count: 0, all_clear: true,
+    })
+    renderSetup()
+    expect(await screen.findByText(/^done$/i)).toBeInTheDocument()
+    expect(screen.getByText(/arrives with OH-17/i)).toBeInTheDocument()
+  })
+
+  it('renders an errored item as unchecked, never as progress', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item({ status: 'error', detail: 'OperationalError' })],
+      open_count: 0, error_count: 1, all_clear: false,
+    })
+    renderSetup()
+    expect(await screen.findByText(/could not check/i)).toBeInTheDocument()
+    expect(screen.queryByText(/^done$/i)).toBeNull()
+    expect(screen.getByText(/OperationalError/)).toBeInTheDocument()
+  })
+
+  // The load-bearing gate: zero open items with a failed probe is NOT
+  // finished. Gating on open_count === 0 would say setup is complete at the
+  // exact moment nothing whatsoever is known.
+  it('does not claim setup is finished when every probe failed', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item({ status: 'error', detail: 'OperationalError' })],
+      open_count: 0, error_count: 1, all_clear: false,
+    })
+    renderSetup()
+    expect(await screen.findByText(/could not check/i)).toBeInTheDocument()
+    expect(screen.queryByText(/nothing left to set up/i)).toBeNull()
+  })
+
+  it('says setup is finished when all_clear', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [item({ status: 'done' })], open_count: 0, error_count: 0, all_clear: true,
+    })
+    renderSetup()
+    expect(await screen.findByText(/nothing left to set up/i)).toBeInTheDocument()
+  })
+
+  it('shows a loud failure when the checklist itself cannot be fetched', async () => {
+    vi.mocked(getChecklist).mockRejectedValue(new ApiError(503, 'upstream down'))
+    renderSetup()
+    expect(await screen.findByText(/upstream down/i)).toBeInTheDocument()
+  })
+})

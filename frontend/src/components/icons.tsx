@@ -232,3 +232,11 @@ export const AlertIcon = (p: IconProps) => (
     <circle cx="12" cy="16.6" r=".9" fill="currentColor" stroke="none" />
   </Icon>
 )
+
+export const ChecklistIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M9 4.5H7a2 2 0 0 0-2 2V19a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6.5a2 2 0 0 0-2-2h-2" />
+    <rect x="9" y="2.5" width="6" height="4" rx="1.2" />
+    <path d="M8.75 13.5l2.25 2.25 4.25-5" />
+  </Icon>
+)
