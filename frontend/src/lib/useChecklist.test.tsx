@@ -6,14 +6,20 @@
 // whose probes all failed reads `open_count === 0` while nothing is known.
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ReactNode } from 'react'
 import type { Checklist, ChecklistItem } from '../api/types'
 
 vi.mock('../api/checklist', () => ({ getChecklist: vi.fn() }))
 import { getChecklist } from '../api/checklist'
-import { CHECKLIST_KEY, badgeLabel, groupItems, useChecklist } from './useChecklist'
+import {
+  CHECKLIST_KEY,
+  badgeLabel,
+  groupItems,
+  useChecklist,
+  useInvalidateChecklist,
+} from './useChecklist'
 
 function wrapper(qc: QueryClient) {
   return ({ children }: { children: ReactNode }) => (
@@ -53,17 +59,39 @@ describe('useChecklist', () => {
     renderHook(() => useChecklist(), { wrapper: w })
     renderHook(() => useChecklist(), { wrapper: w })
     await waitFor(() => expect(getChecklist).toHaveBeenCalledTimes(1))
+  })
+
+  it('invalidating refetches the query the hook owns — one key, both directions', async () => {
+    vi.mocked(getChecklist).mockResolvedValue(makeChecklist())
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(
+      () => ({ q: useChecklist(), invalidate: useInvalidateChecklist() }),
+      { wrapper: wrapper(qc) },
+    )
+    await waitFor(() => expect(getChecklist).toHaveBeenCalledTimes(1))
+    act(() => result.current.invalidate())
+    await waitFor(() => expect(getChecklist).toHaveBeenCalledTimes(2))
+  })
+
+  it('reads the key the rest of the app is greppable for', () => {
     expect(CHECKLIST_KEY).toEqual(['checklist'])
   })
 })
 
+// Every case here states open_count, error_count and all_clear explicitly, even
+// where the value matches the factory default. The (open, error) pair is the
+// thing each case is ABOUT: inheriting open_count from `makeChecklist` once made
+// the divergence case below vacuous — it went on passing with the default
+// changed to 7, when open_count === 0 is the entire premise.
 describe('badgeLabel', () => {
   it('is null when all_clear — the badge retires at zero', () => {
-    expect(badgeLabel(makeChecklist())).toBeNull()
+    expect(badgeLabel(makeChecklist({ open_count: 0, error_count: 0, all_clear: true }))).toBeNull()
   })
 
   it('counts the open items', () => {
-    expect(badgeLabel(makeChecklist({ open_count: 3, all_clear: false }))).toEqual({
+    expect(
+      badgeLabel(makeChecklist({ open_count: 3, error_count: 0, all_clear: false })),
+    ).toEqual({
       text: '3',
       tone: 'warn',
       title: '3 items still to set up',
@@ -74,29 +102,32 @@ describe('badgeLabel', () => {
   // nothing at all is known. A badge reading "0" — or no badge — would say
   // "finished" at the exact moment the operator most needs to look.
   it('shows "!" and never "0" when every probe failed', () => {
-    const badge = badgeLabel(makeChecklist({ error_count: 3, all_clear: false }))
+    const badge = badgeLabel(makeChecklist({ open_count: 0, error_count: 3, all_clear: false }))
     expect(badge).not.toBeNull()
     expect(badge!.text).toBe('!')
     expect(badge!.tone).toBe('danger')
     expect(badge!.title).toMatch(/could not check/i)
   })
 
+  // Both counts are named separately and never folded into a total: "3 items"
+  // here would tell the operator one wrong thing about two different kinds.
   it('leads with the errors when items are both open and unchecked', () => {
     const badge = badgeLabel(makeChecklist({ open_count: 2, error_count: 1, all_clear: false }))
+    expect(badge!.text).toBe('!')
     expect(badge!.tone).toBe('danger')
-    expect(badge!.title).toMatch(/could not check/i)
-    // The open items are still named — the operator is not told the errors are
-    // all that is left.
-    expect(badge!.title).toMatch(/2/)
+    expect(badge!.title).toBe('Could not check 1 item; 2 other items still to set up')
   })
 
-  it('says "item" once and "items" otherwise', () => {
-    expect(badgeLabel(makeChecklist({ open_count: 1, all_clear: false }))!.title).toBe(
-      '1 item still to set up',
-    )
-    expect(badgeLabel(makeChecklist({ error_count: 1, all_clear: false }))!.title).toBe(
-      'Could not check 1 item',
-    )
+  it('says "item" once and "items" otherwise, in both clauses', () => {
+    expect(
+      badgeLabel(makeChecklist({ open_count: 1, error_count: 0, all_clear: false }))!.title,
+    ).toBe('1 item still to set up')
+    expect(
+      badgeLabel(makeChecklist({ open_count: 0, error_count: 1, all_clear: false }))!.title,
+    ).toBe('Could not check 1 item')
+    expect(
+      badgeLabel(makeChecklist({ open_count: 1, error_count: 2, all_clear: false }))!.title,
+    ).toBe('Could not check 2 items; 1 other item still to set up')
   })
 })
 

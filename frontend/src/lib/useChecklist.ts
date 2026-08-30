@@ -3,10 +3,10 @@
 // this hook, so they are one fetch and cannot disagree. Do not write
 // `useQuery({ queryKey: ['checklist'] })` anywhere else.
 
+import { useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getChecklist } from '../api/checklist'
 import type { Checklist, ChecklistItem } from '../api/types'
-import type { BadgeTone } from '../components/ui'
 
 export const CHECKLIST_KEY = ['checklist'] as const
 
@@ -16,14 +16,20 @@ export function useChecklist() {
   return useQuery({ queryKey: CHECKLIST_KEY, queryFn: getChecklist, staleTime: 60_000 })
 }
 
-export function useInvalidateChecklist() {
+export function useInvalidateChecklist(): () => void {
   const qc = useQueryClient()
-  return () => void qc.invalidateQueries({ queryKey: CHECKLIST_KEY })
+  // Stable across renders (`useQueryClient()` is): a consumer that puts this in
+  // a `useEffect` dep array would otherwise invalidate in a loop.
+  return useCallback(() => void qc.invalidateQueries({ queryKey: CHECKLIST_KEY }), [qc])
 }
+
+/** Only the two tones this badge can produce. Structurally assignable to
+ *  `BadgeTone`, so a caller can still pass it straight to `<Badge tone={…}>`. */
+export type ChecklistBadgeTone = 'warn' | 'danger'
 
 export interface ChecklistBadge {
   text: string
-  tone: BadgeTone
+  tone: ChecklistBadgeTone
   title: string
 }
 
@@ -32,7 +38,9 @@ function plural(n: number): string {
 }
 
 /**
- * The badge every surface shows, or null when there is nothing to show.
+ * The sidebar badge, or null when there is nothing to show. (The other two
+ * surfaces do not use this: /setup renders a per-item badge from the item's
+ * own status, and the dashboard card composes its own prose.)
  *
  * Null iff `all_clear` — never on `open_count === 0`. An item whose probe
  * raised is `status: 'error'`, which `open_count` does not count, so a tenant
@@ -52,7 +60,9 @@ export function badgeLabel(data: Checklist): ChecklistBadge | null {
       tone: 'danger',
       title:
         data.open_count > 0
-          ? `${checked}; ${data.open_count} more still to set up`
+          // "other", not "more": the open items are a different kind from the
+          // errored ones, and "more" invites reading them as more failures.
+          ? `${checked}; ${data.open_count} other ${plural(data.open_count)} still to set up`
           : checked,
     }
   }
