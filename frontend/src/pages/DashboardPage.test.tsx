@@ -4,7 +4,7 @@
 
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../api/client', async (importOriginal) => ({
@@ -14,7 +14,14 @@ vi.mock('../api/client', async (importOriginal) => ({
   getMe: vi.fn(),
 }))
 
+vi.mock('../api/checklist', () => ({
+  getChecklist: vi.fn(),
+  dismissItem: vi.fn(),
+  restoreItem: vi.fn(),
+}))
+
 import { getMe, getProperties, getSos } from '../api/client'
+import { getChecklist } from '../api/checklist'
 import { createAppRouter } from '../router'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT, HISJ_PROPERTY, makeSosReport } from '../test/fixtures'
@@ -42,6 +49,11 @@ beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['property_gm'] })
   vi.mocked(getProperties).mockResolvedValue([HISJ_PROPERTY])
+  // All clear by default so the setup card stays out of every other test in
+  // this file.
+  vi.mocked(getChecklist).mockResolvedValue({
+    items: [], open_count: 0, error_count: 0, all_clear: true,
+  })
   vi.mocked(getSos).mockResolvedValue(
     makeSosReport({
       total_operating_revenue: '28786.0000',
@@ -95,5 +107,65 @@ describe('DashboardPage hero panel', () => {
     const panel = screen.getByRole('region', { name: 'Today at a glance' })
     expect(within(panel).queryByText('0')).not.toBeInTheDocument()
     expect(within(panel).getAllByText('—')).toHaveLength(3)
+  })
+})
+
+// A first-run pointer to /setup, not a second checklist: it says how much is
+// left and gets out of the way for good once setup is finished.
+describe('DashboardPage — setup card', () => {
+  it('points at /setup while items are open', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [], open_count: 2, error_count: 0, all_clear: false,
+    })
+    renderDashboard()
+    const link = await screen.findByRole('link', { name: /finish setting up/i })
+    expect(link).toHaveAttribute('href', '/setup')
+    expect(screen.getByText('2 items still to set up')).toBeInTheDocument()
+  })
+
+  it('retires at all_clear', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [], open_count: 0, error_count: 0, all_clear: true,
+    })
+    renderDashboard()
+    // Anchor on settled dashboard data first: asserting absence on the very
+    // first tick would pass against a card that has simply not rendered yet.
+    await screen.findByText('$28,786')
+    await waitFor(() => expect(screen.queryByRole('link', { name: /finish setting up/i })).toBeNull())
+  })
+
+  // THE divergence case, and the reason the card gates on all_clear. An
+  // open_count-gated card would vanish here — at the one moment the operator
+  // needs to know something is wrong.
+  it('stays, and says nothing could be checked, when every probe failed', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [], open_count: 0, error_count: 5, all_clear: false,
+    })
+    renderDashboard()
+    expect(await screen.findByRole('link', { name: /finish setting up/i })).toBeInTheDocument()
+    expect(screen.getByText('Could not check 5 items')).toBeInTheDocument()
+    expect(screen.queryByText(/0 items/i)).toBeNull()
+  })
+
+  // Errors AND open items are two different facts. Two sentences, two
+  // numerals — never the 5 that folds "we could not check these" into "these
+  // are still to do".
+  it('keeps the unchecked count apart from the open count when both exist', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [], open_count: 3, error_count: 2, all_clear: false,
+    })
+    renderDashboard()
+    expect(
+      await screen.findByText('Could not check 2 items. 3 other items still to set up'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/5 items/i)).toBeNull()
+  })
+
+  it('counts one open item in the singular', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [], open_count: 1, error_count: 0, all_clear: false,
+    })
+    renderDashboard()
+    expect(await screen.findByText('1 item still to set up')).toBeInTheDocument()
   })
 })

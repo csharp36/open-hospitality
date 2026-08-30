@@ -1104,3 +1104,33 @@ export type PreviewResponse =
   | { status: 'ok'; payload: PreviewPayload }
   | { status: 'unsupported'; vendor: string; reason: string }
   | { status: 'unreadable'; hints: string[] }
+
+// --- Onboarding open-items checklist (Track B/B4) ----------------------------
+// Mirrors ItemModel / ChecklistModel in src/usali/checklist_api.py.
+
+export type ChecklistStatus = 'done' | 'open' | 'dismissed' | 'error'
+
+export interface ChecklistItem {
+  key: string
+  title: string
+  description: string
+  required: boolean
+  /** The SPA route that closes this item, or null when there is none yet —
+   *  in which case `unavailable_reason` says why (D-B4.8). Exactly one of the
+   *  two is set. */
+  where: string | null
+  unavailable_reason: string | null
+  status: ChecklistStatus
+  /** Populated only for `status: 'error'` — the probe's exception type. */
+  detail: string | null
+}
+
+export interface Checklist {
+  items: ChecklistItem[]
+  open_count: number
+  error_count: number
+  /** Zero open AND zero errors. The ONLY predicate any surface gates on: an
+   *  item we could not check is not a finished item, and `open_count` alone
+   *  goes to zero on a total probe failure. */
+  all_clear: boolean
+}

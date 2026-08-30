@@ -4,10 +4,13 @@
 // and the whole chrome is print:hidden — the wall-grid print view
 // (SchedulePage) shows ONLY the week grid.
 //
-// Nav is grouped: Dashboard on top, then Employee Management, then Accounting.
+// Nav is grouped: Dashboard on top, then Setup, then Employee Management,
+// then Accounting.
 // `soon: true` items are visible-but-inert placeholders for pages that land
 // later. Collapsed mode keeps every control's accessible name: labels go
 // sr-only (never unmounted), so tests and screen readers see the same nav.
+// The Setup link is the one nav entry whose accessible name carries data —
+// match it with { name: /^Setup/ } unless you are pinning the count.
 
 import { useState, type ComponentType, type SVGProps } from 'react'
 import { Link, Outlet } from '@tanstack/react-router'
@@ -17,15 +20,18 @@ import { currentTheme, toggleTheme, type Theme } from './lib/theme'
 import { GlobalPropertyProvider } from './lib/GlobalPropertyProvider'
 import { useGlobalProperty } from './lib/propertyContext'
 import { hasRole } from './lib/roles'
+import { badgeLabel, useChecklist, type ChecklistBadge } from './lib/useChecklist'
 import { useAuth } from './auth/authContext'
 import { getMe } from './api/client'
 import type { Me } from './api/types'
 import BuildStamp from './components/BuildStamp'
 import OrgPicker from './components/OrgPicker'
+import { badgeToneClasses } from './lib/badgeTones'
 import {
   BankIcon,
   BanknoteIcon,
   CalendarIcon,
+  ChecklistIcon,
   ClockIcon,
   CloseIcon,
   CollapseIcon,
@@ -50,6 +56,10 @@ import {
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
 
 const COLLAPSED_KEY = 'usali.sidebar-collapsed'
+
+// The one nav entry that carries a badge, so the route is named once rather
+// than spelled twice — the `SECTIONS` item and the render-time match.
+const SETUP_PATH = '/setup'
 
 // `show` gates by role exactly as the old top bar did — the link is a
 // convenience; enforcement stays server-side. `soon` renders a muted,
@@ -77,6 +87,15 @@ const SECTIONS: NavSection[] = [
   {
     label: null,
     items: [{ to: '/dashboard', label: 'Dashboard', icon: GaugeIcon }],
+  },
+  // Ungrouped and second, above both sections: setup belongs to neither
+  // Accounting nor Employee Management, and it never hides — the badge
+  // retires at all_clear but the page stays the home for reconnecting an
+  // integration later. No `show`: reading the checklist needs only the
+  // router's operator gate; the dismiss controls inside are gated separately.
+  {
+    label: null,
+    items: [{ to: SETUP_PATH, label: 'Setup', icon: ChecklistIcon }],
   },
   {
     label: 'Employee Management',
@@ -127,6 +146,58 @@ function primaryRoleLabel(me: Me | undefined): string | null {
   return found === undefined ? null : found[1]
 }
 
+// The pill is a glyph: '!' is punctuation and most screen readers announce
+// nothing for it at default verbosity, so on its own the one state
+// `badgeLabel` exists to signal would reach a screen-reader user as a bare
+// "Setup". `title` cannot stand in — on a span that already has text it is not
+// the accessible name, is not reliably announced, and is unreachable on touch.
+// So the sentence goes into the link's `aria-label` (see `setupLinkName`) and the
+// pill is hidden from the tree as the duplicate it is.
+function SetupBadge({ badge, collapsed }: { badge: ChecklistBadge; collapsed: boolean }) {
+  return (
+    <span
+      data-testid="setup-badge"
+      aria-hidden="true"
+      title={badge.title}
+      // Collapsed, the rail centres a single chip per row; an `ml-auto` pill
+      // would eat the free space and drag the Setup icon off that centreline,
+      // so it leaves the flow and sits over the chip's corner instead
+      // (`itemBase` is already `relative`).
+      className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badgeToneClasses[badge.tone]} ${
+        collapsed ? 'absolute right-1 top-0.5' : 'ml-auto'
+      }`}
+    >
+      {badge.text}
+    </span>
+  )
+}
+
+/**
+ * The Setup link's accessible name: the visible label first, so Label-in-Name
+ * (WCAG 2.5.3) still holds and "click Setup" still works by voice.
+ *
+ * `aria-label` rather than an sr-only sibling carrying the same sentence, for
+ * two reasons.
+ *
+ * sr-only text is real text: three suites mount this shell, and two of them
+ * query the checklist wording with `getByText`, which does not care that a
+ * node is visually hidden. Putting the words in the name only — never in the
+ * document — keeps the sidebar out of their results.
+ *
+ * And the two variants do not even agree on the name. In a browser they do:
+ * Tailwind's sr-only sets position:absolute, which blockifies computed
+ * display, so the accname algorithm inserts a separator. In jsdom no
+ * stylesheet loads, the span stays display:inline, and the sr-only variant
+ * computes "Setup3 items still to set up". `aria-label` is the only variant
+ * whose name is the same in the tests and in the product — which is the
+ * promise the header of this file makes.
+ */
+function setupLinkName(label: string, badge: ChecklistBadge | null): string | undefined {
+  // Colon, not a space: it gives a screen reader a prosodic break instead of
+  // a run-on, and `label` still prefixes the name, so Label-in-Name holds.
+  return badge === null ? undefined : `${label}: ${badge.title}`
+}
+
 function SidebarContent({
   me,
   theme,
@@ -148,6 +219,16 @@ function SidebarContent({
 }) {
   const roleLabel = primaryRoleLabel(me)
   const initials = (username ?? '?').slice(0, 2).toUpperCase()
+  // The mobile drawer mounts a second copy of this component while it is open;
+  // TanStack dedupes on the shared key, so that is still one fetch.
+  //
+  // No badge until the first successful read: it is an ambient pointer and
+  // cannot honestly report a number it does not have. A *later* background
+  // failure keeps the last-known count rather than flickering the pointer off
+  // — TanStack retains `data`, and that is deliberate. Either way the loud
+  // failure belongs on /setup, which is where the operator went to find out.
+  const checklist = useChecklist()
+  const badge = checklist.data === undefined ? null : badgeLabel(checklist.data)
 
   const itemBase = `group relative flex w-full items-center gap-2.5 rounded-lg py-[7px] text-sm font-medium transition-colors ${
     collapsed ? 'justify-center px-2' : 'pl-2 pr-2.5'
@@ -244,6 +325,7 @@ function SidebarContent({
                       </span>
                     )
                   }
+                  const isSetup = e.to === SETUP_PATH
                   return (
                     <Link
                       key={e.to}
@@ -253,11 +335,17 @@ function SidebarContent({
                       activeOptions={e.exact === true ? { exact: true } : undefined}
                       onClick={onNavigate}
                       title={collapsed ? e.label : undefined}
+                      aria-label={isSetup ? setupLinkName(e.label, badge) : undefined}
                     >
                       <span className={`${chipBase} group-hover:text-accent`}>
                         <IconGlyph className="shrink-0" />
                       </span>
                       <span className={labelClass}>{e.label}</span>
+                      {/* Deliberately NOT inside `labelClass`: collapsed, the
+                          count is the only thing still pointing at setup. */}
+                      {isSetup && badge !== null && (
+                        <SetupBadge badge={badge} collapsed={collapsed} />
+                      )}
                     </Link>
                   )
                 })}

@@ -215,7 +215,7 @@ roadmap:
       shown as an open item the operator closes when they choose, or never if
       they do not use it. An unconfigured integration reads as honestly off,
       never as a sample figure.
-    status: planned
+    status: shipped  # the checklist itself; the connect surfaces are OH-17
     tags: [onboarding, multi-tenancy]
 
   - id: OH-19

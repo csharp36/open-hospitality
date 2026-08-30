@@ -37,6 +37,10 @@ doc is linked rather than re-argued.
 - **Track B / B1** — invite-gated public signup wired to `provision_tenant`,
   first-property creation, PMS-interest capture, SMTP-backed invite and OTP
   email.
+- **Track B / B4** — the onboarding open-items checklist: seven setup items
+  probed on read, a permanent `/setup` page, and a sidebar count badge plus a
+  first-run dashboard card that retire once nothing is open *and* nothing
+  failed to check.
 - **Property config and core performance statistics** — room inventory,
   fiscal calendar, occupancy / ADR / RevPAR / TRevPAR with comparisons and
   drill-through.
@@ -117,21 +121,54 @@ What it requires:
    extending the existing config-selected-seam pattern that `crm_provider`
    already demonstrates per-org.
 
-Three separate features are waiting on this: connect-payroll, connect-QBO, and
-the open-items checklist that reports on them.
+Three separate connect surfaces are waiting on this: payroll, QuickBooks
+Online, and — since D-B4.8 — the demand feed. The first two need the whole
+per-tenant credential lift above. The third needs less of it, because
+`crm_provider` is already per-org, but its *credentials* are not
+(`delphi_subscription_key`, `tripleseat_api_key`, `config.py:58–61`) and no page
+in the SPA writes `crm_provider` at all — so a tenant has no way to turn it on,
+and turning it on would not give them their own feed.
 
-### 2.2 ⚠️ B4 — the open-items model does not exist (**OH-18**)
+The open-items checklist (§2.2) is **no longer** among them. It shipped, and it
+reports the absence honestly rather than waiting: `payroll`, `accounting` and
+`demand_feed` each carry `where: null` plus an `unavailable_reason` naming
+OH-17, so `/setup` renders them as non-links that say why there is nothing to
+click (D-B4.8). Restoring their `where` — and deleting the reason with the same
+edit — is part of OH-17's frontend work.
+`test_the_integration_items_have_no_connect_surface_yet`
+(`tests/test_checklist.py:215`) is the tripwire: it pins the set of null-`where`
+keys to exactly those three and asserts each reason names OH-17, so it fails in
+both directions — when OH-17 supplies a surface, and if a fourth item ever
+joins the class unnoticed.
+
+### 2.2 B4 — the open-items model (**OH-18**, shipped)
 
 [D8.2](design/2026-08-16-data-posture-progressive-onboarding-design.md) is
 explicit: there is no sandbox→prod flip; each integration carries its own
 lifecycle state per tenant, onboarding is a persisted resumable checklist, and
-**"fully prod" is not a state — it is zero open items.** A search of `src/` for
-`open_item` or `checklist` returns nothing. `OrgSettings` has no tenant status,
-no per-integration state, no checklist.
+**"fully prod" is not a state — it is zero open items.** When this document was
+written, a search of `src/` for `open_item` or `checklist` returned nothing.
 
-This is the container that onboarding UI, integration status, alert
-configuration, and billing-at-trial-end all hang from. Building it before them
-is what keeps them from each inventing their own tenant-state model.
+It exists now, backend and frontend, built to the
+[B4 design](design/2026-08-30-track-b-b4-open-items-checklist-design.md).
+`checklist.py` holds a closed registry of seven items, each owning a probe;
+status is **derived on read**, never stored (D-B4.1), so the only persisted
+rows are dismissals (`org_checklist_override`) — a stored `payroll: connected`
+would outlive the credential being revoked, the exact drift D8.3 forbids. There
+is still no tenant status column and no lifecycle enum on `organization`, also
+deliberately (D-B4.7): "fully prod" stays the derived predicate `all_clear`,
+which is what keeps D8's retired promotion model from growing back as a column.
+The frontend renders it on three surfaces sharing one query key, so they cannot
+disagree: `/setup`, which is permanent, and a sidebar count badge and a
+first-run dashboard card, which both retire on `all_clear` rather than on
+`open_count == 0`. The distinction matters exactly once — a total probe failure
+leaves `open_count` at zero while nothing is actually known, and gating on it
+would retire both surfaces at the moment the operator most needs them.
+
+What shipped is the **container**, not its consumers. Onboarding UI beyond
+`/setup`, per-integration connect surfaces (§2.1), alert configuration (§2.3)
+and billing-at-trial-end (§4) still hang from it and are still open; building it
+first is what keeps each of them from inventing its own tenant-state model.
 
 ### 2.3 Alerts and notifications as a product feature
 
@@ -252,7 +289,7 @@ most visible.
 
 | # | Work | Why here |
 |---|---|---|
-| 1 | **B4 — tenant state + open-items model** (§2.2) | The container onboarding UI, integration status, alerting, and billing all hang from. Everything downstream invents its own tenant-state model without it. |
+| 1 | **B4 — tenant state + open-items model** (§2.2) — **shipped** | The container onboarding UI, integration status, alerting, and billing all hang from. Everything downstream invents its own tenant-state model without it. |
 | 2 | **Per-tenant integration config + OAuth connect** (§2.1) | Unblocks connect-payroll, connect-QBO, and the honest "off, not mock" rendering D8.3 requires. The single biggest unlisted lift. |
 | 3 | **Ingestion-boundary redaction** (§2.4) | A compliance gate on the first real tenant's first real upload. Cheap now, expensive after. |
 | 4 | **Marketing site + open signup** (§1.1, §1.2) | Only worth opening the funnel once a tenant that walks in can reach a working, honestly-labelled portal. |
@@ -261,8 +298,9 @@ most visible.
 | 7 | Additional PMS, metrics remainders, chat (§4.2–§4.4) | Genuine follow-ons; none block a paying tenant. |
 
 Items 1 and 2 are unglamorous plumbing that three separate user-facing features
-are silently waiting on. They are the two things most likely to be
-under-scoped if planned from the feature side.
+are silently waiting on, and the two most likely to be under-scoped if planned
+from the feature side. (1) has landed; (2) has not, and the same risk still
+applies to it.
 
 ---
 
@@ -313,13 +351,19 @@ user-facing capability because the bot matches on `summary`:
 |---|---|---|---|
 | **OH-16** | Public marketing front door | `planned` | §1.1 |
 | **OH-17** | Connect your own accounting and payroll accounts | `planned` | §2.1 |
-| **OH-18** | Onboarding checklist of open setup items | `in-progress` — backend shipped, frontend pending | §2.2 |
+| **OH-18** | Onboarding checklist of open setup items | `shipped` | §2.2 |
 | **OH-19** | Subscription plans and billing | `planned` | §4 |
 | **OH-20** | Review and correct USALI transaction-code mapping | `considering` | §4.1 |
 | **OH-21** | Conversational interface to hotel performance | `considering` | §4.4 |
 
 None carry an `issue:` field yet — the field is optional, and no tracking issue
 exists for them. Add one as each is opened.
+
+**OH-18 drifted, and is now resynced.** It moved `planned` → `in-progress` in
+this document at `c154d45` without the yml following, so the catalogue read it
+as unstarted for two commits. Both now say `shipped`. Worth naming because §8
+claims the two are kept in sync: nothing enforces that, so a status edit here
+is only half an edit.
 
 **Also updated:** the file's header comment, which claimed `OH-1..OH-5` were the
 whole productization roadmap and `OH-6..OH-14` the analytics backlog — already
