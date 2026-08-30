@@ -37,7 +37,7 @@ from usali.auth import (
 )
 from usali.crm_feed import CrmFeedError
 from usali.crm_pull import latest_demand, store_pull
-from usali.models import AuditEvent, OrgSettings, Property
+from usali.models import AuditEvent, OrgIntegrationCredential, Property
 from usali.workforce import assignment_scope
 
 require_crm_scheduler = require_grants(ORG_ADMIN, PROPERTY_GM)
@@ -59,19 +59,19 @@ def _session(request: Request) -> Session:
 
 
 def _active_org_crm_provider(session: Session) -> str:
-    """The demand provider for the request's ACTIVE org (L5 decision 5):
-    the org's `org_settings.crm_provider`, or '' (feature OFF) when it has
-    no row. The session is org-bound, so both L2 walls confine this SELECT
-    to exactly the active org's row — there is no env fallback, and none for
-    org != 1 in particular (the mutant L5 kills). '' degrades exactly like
-    feature-off did process-wide before L5.
+    """The demand provider for the request's ACTIVE org. OH-17 Task 6 replaces
+    this with integrations.connected_provider; this interim body preserves the
+    exact semantics (row absent => '' => feature OFF).
 
-    The bare `select(OrgSettings)` yields AT MOST one row because the walls
-    filter it to the active org (org_id is the PK) — that single-row
-    guarantee is the walls', NOT an explicit LIMIT/WHERE here; do not add a
-    redundant filter."""
-    row = session.execute(select(OrgSettings)).scalar_one_or_none()
-    return row.crm_provider if row is not None else ""
+    The session is org-bound, so both L2 walls confine this SELECT to the
+    active org — there is no env fallback, and none for org != 1 in
+    particular (the mutant L5 kills)."""
+    row = session.execute(
+        select(OrgIntegrationCredential.provider).where(
+            OrgIntegrationCredential.integration == "demand_feed"
+        )
+    ).scalar_one_or_none()
+    return row or ""
 
 
 def _require_property_access(

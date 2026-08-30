@@ -464,44 +464,95 @@ class PmsInterestRequest(Base):
     )
 
 
-class OrgSettings(OrgScoped, Base):
-    """Per-org integration config (Pillar L decision 5). One row per org,
-    org-scoped by its OWN primary key — `org_id` is BOTH the PK and the FK
-    to `organization`, the same "org-scoped by its key" shape as
-    `Organization`. Only genuinely per-TENANT config lives here; process-wide
-    deployment config (DB URL, provider base URLs, encryption key) stays in
-    `Settings`.
+class OrgIntegrationCredential(OrgScoped, Base):
+    """One tenant's credentials for ONE integration (OH-17, D-OH17.1).
 
-    Subclasses `OrgScoped` so BOTH L2 walls confine it automatically — the
-    ORM criteria hook (`with_loader_criteria(OrgScoped, ...)`) and the RLS
-    policy (`l5a0orgsettings`) — but overrides `org_id` to be the primary
-    key (the mixin's default is a plain indexed FK). A read under the active
-    org's session therefore returns exactly that org's row, or none.
+    The row IS the connection: it carries the provider AND its credentials, so
+    the two cannot drift. A tenant structurally cannot pick a provider without
+    supplying credentials for it. This replaces `OrgSettings`, whose
+    `crm_provider` said WHICH provider while `Settings` held its keys — two
+    places, one of which was not even per-tenant.
 
-    `crm_provider`: '' | 'delphi' | 'tripleseat' — the demand feed this org
-    pulls from, EMPTY meaning the feature is OFF (the J4 loud-refuse posture,
-    now PER-ORG). A DB CHECK enforces the closed set (refuse-unknown). The
-    env `USALI_CRM_PROVIDER` seeds ORG 1's row only (a bridge default,
-    `ensure_default_org`); at runtime the value is read from THIS row, never
-    from env — a env fallback for org != 1 is the mutant L5 kills."""
+    `org_id` is part of the composite primary key and the FK to `organization`
+    (the `OrgChecklistOverride` shape), so both L2 walls confine it
+    automatically — the ORM criteria hook and the `org_wall` RLS policy.
 
-    __tablename__ = "org_settings"
-    # The CHECK is the SCHEMA MIRROR of usali.crm_feed.CRM_PROVIDERS (+ the
-    # '' OFF sentinel) — kept literal on purpose so the DB refuses an unknown
-    # provider independently of the app import. If CRM_PROVIDERS changes, this
-    # and the l5a0orgsettings migration CHECK change with it.
+    Secrets are `EncryptedString` (ADR-005, AES-256-GCM under a key the server
+    HOLDS). That regime and not ADR-004's blind vault because Intuit rotates
+    the QBO refresh token on every grant, server-side, with no browser in the
+    loop: the server must write the new token back, which a blind-at-rest
+    envelope cannot do (D-OH17.2).
+
+    Identifiers (`realm_id`, `company_id`, `client_id`) stay PLAINTEXT
+    deliberately — they are not secrets, and reading them during a support
+    conversation is worth more than encrypting a company id.
+
+    `connected_at` / `connected_by` record the write EVENT. No probe reads
+    them: a `verified_at` consulted as status would be the stored copy D-B4.1
+    forbids.
+
+    The CHECK is the SCHEMA MIRROR of `usali.integrations.PROVIDERS` — kept
+    literal on purpose so the DB refuses a malformed credential row
+    independently of the app import (the `org_checklist_override.item_key`
+    discipline). Its "must be NULL" half is not decoration: it is what stops a
+    stale `api_key` surviving a switch from Tripleseat to Delphi. If PROVIDERS
+    changes, this and the b3a0integcred migration CHECK change with it.
+    """
+
+    __tablename__ = "org_integration_credential"
     __table_args__ = (
         CheckConstraint(
-            "crm_provider IN ('', 'delphi', 'tripleseat')",
-            name="ck_org_settings_crm_provider",
+            "(integration = 'payroll' AND provider = 'gusto'"
+            "  AND api_token IS NOT NULL AND company_id IS NOT NULL"
+            "  AND refresh_token IS NULL AND realm_id IS NULL"
+            "  AND client_id IS NULL AND client_secret IS NULL"
+            "  AND subscription_key IS NULL AND api_key IS NULL)"
+            " OR (integration = 'payroll' AND provider = 'adp'"
+            "  AND client_id IS NOT NULL AND client_secret IS NOT NULL"
+            "  AND refresh_token IS NULL AND realm_id IS NULL"
+            "  AND api_token IS NULL AND company_id IS NULL"
+            "  AND subscription_key IS NULL AND api_key IS NULL)"
+            " OR (integration = 'accounting' AND provider = 'qbo'"
+            "  AND refresh_token IS NOT NULL AND realm_id IS NOT NULL"
+            "  AND api_token IS NULL AND company_id IS NULL"
+            "  AND client_id IS NULL AND client_secret IS NULL"
+            "  AND subscription_key IS NULL AND api_key IS NULL)"
+            " OR (integration = 'demand_feed' AND provider = 'delphi'"
+            "  AND subscription_key IS NOT NULL"
+            "  AND refresh_token IS NULL AND realm_id IS NULL"
+            "  AND api_token IS NULL AND company_id IS NULL"
+            "  AND client_id IS NULL AND client_secret IS NULL"
+            "  AND api_key IS NULL)"
+            " OR (integration = 'demand_feed' AND provider = 'tripleseat'"
+            "  AND api_key IS NOT NULL"
+            "  AND refresh_token IS NULL AND realm_id IS NULL"
+            "  AND api_token IS NULL AND company_id IS NULL"
+            "  AND client_id IS NULL AND client_secret IS NULL"
+            "  AND subscription_key IS NULL)",
+            name="ck_org_integration_credential_provider_fields",
         ),
     )
 
     org_id: Mapped[int] = mapped_column(
-        ForeignKey("organization.org_id", name="fk_org_settings_org"),
+        ForeignKey("organization.org_id", name="fk_org_integration_credential_org"),
         primary_key=True,
     )
-    crm_provider: Mapped[str] = mapped_column(String(20), server_default="")
+    integration: Mapped[str] = mapped_column(String(20), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(20))
+
+    realm_id: Mapped[str | None] = mapped_column(String(64))
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedString)
+    api_token: Mapped[str | None] = mapped_column(EncryptedString)
+    company_id: Mapped[str | None] = mapped_column(String(64))
+    client_id: Mapped[str | None] = mapped_column(String(128))
+    client_secret: Mapped[str | None] = mapped_column(EncryptedString)
+    subscription_key: Mapped[str | None] = mapped_column(EncryptedString)
+    api_key: Mapped[str | None] = mapped_column(EncryptedString)
+
+    connected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    connected_by: Mapped[str] = mapped_column(String(255))
 
 
 class OrgChecklistOverride(OrgScoped, Base):

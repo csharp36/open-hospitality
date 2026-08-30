@@ -25,7 +25,7 @@ from usali.models import (
     FiscalCalendar,
     IngestBatch,
     OrgChecklistOverride,
-    OrgSettings,
+    OrgIntegrationCredential,
     Property,
     RoleAssignment,
     RoomInventory,
@@ -177,7 +177,11 @@ def _probe_accounting(session: Session) -> bool:
 
 
 def _probe_demand_feed(session: Session) -> bool:
-    row = session.execute(select(OrgSettings.crm_provider)).scalar_one_or_none()
+    row = session.execute(
+        select(OrgIntegrationCredential.provider).where(
+            OrgIntegrationCredential.integration == "demand_feed"
+        )
+    ).scalar_one_or_none()
     return bool(row)
 
 
