@@ -18,10 +18,18 @@ import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import distinct, func, select
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
-from usali.models import OrgChecklistOverride
+from usali.models import (
+    FiscalCalendar,
+    IngestBatch,
+    OrgChecklistOverride,
+    OrgSettings,
+    Property,
+    RoleAssignment,
+    RoomInventory,
+)
 
 logger = logging.getLogger("usali.checklist")
 
@@ -92,4 +100,91 @@ def _status(item: ChecklistItem, status: str, *, detail: str | None = None) -> I
     )
 
 
-ITEMS: tuple[ChecklistItem, ...] = ()  # filled in Task 4
+def _every_property_has(session: Session, column: InstrumentedAttribute[str]) -> bool:
+    """True when the org has at least one property AND every one of them has a
+    row carrying `column`. The at-least-one guard matters: `all()` over an
+    empty property list is vacuously true, which would report a
+    partially-provisioned tenant as configured."""
+    properties = {pid for (pid,) in session.execute(select(Property.property_id))}
+    if not properties:
+        return False
+    covered = {pid for (pid,) in session.execute(select(distinct(column)))}
+    return properties <= covered
+
+
+def _probe_first_report(session: Session) -> bool:
+    return session.execute(select(IngestBatch.batch_id).limit(1)).first() is not None
+
+
+def _probe_room_inventory(session: Session) -> bool:
+    return _every_property_has(session, RoomInventory.property_id)
+
+
+def _probe_fiscal_calendar(session: Session) -> bool:
+    return _every_property_has(session, FiscalCalendar.property_id)
+
+
+def _probe_payroll(session: Session) -> bool:
+    """D-B4.3: deliberately ignores `settings.payroll_provider`. A
+    process-wide credential is not this tenant's connection, so the honest
+    answer for a real tenant is "not connected". OH-17 replaces this body."""
+    return False
+
+
+def _probe_accounting(session: Session) -> bool:
+    """D-B4.3, as `_probe_payroll`. OH-17 replaces this body."""
+    return False
+
+
+def _probe_demand_feed(session: Session) -> bool:
+    row = session.execute(select(OrgSettings.crm_provider)).scalar_one_or_none()
+    return bool(row)
+
+
+def _probe_team(session: Session) -> bool:
+    count = session.execute(
+        select(func.count(distinct(RoleAssignment.keycloak_subject)))
+    ).scalar_one()
+    return count > 1
+
+
+ITEMS: tuple[ChecklistItem, ...] = (
+    ChecklistItem(
+        key="first_report", title="Upload your first PMS report",
+        description="Drop a night-audit export to see your USALI statement.",
+        required=True, where="/upload", probe=_probe_first_report,
+    ),
+    ChecklistItem(
+        key="room_inventory", title="Set sellable room inventory",
+        description="Occupancy, ADR and RevPAR divide by this — they cannot be "
+                    "computed without it.",
+        required=True, where="/property-config", probe=_probe_room_inventory,
+    ),
+    ChecklistItem(
+        key="fiscal_calendar", title="Define the fiscal calendar",
+        description="Calendar-month or 4-4-5, per property.",
+        required=True, where="/property-config", probe=_probe_fiscal_calendar,
+    ),
+    ChecklistItem(
+        key="payroll", title="Connect payroll",
+        description="Optional. Compare estimated labor cost against the actual "
+                    "gross-to-net from your provider.",
+        required=False, where="/payroll", probe=_probe_payroll,
+    ),
+    ChecklistItem(
+        key="accounting", title="Connect QuickBooks Online",
+        description="Optional. Push the journal entry behind your statement.",
+        required=False, where="/qbo", probe=_probe_accounting,
+    ),
+    ChecklistItem(
+        key="demand_feed", title="Connect a demand feed",
+        description="Optional. Pull group and event demand from Delphi or Tripleseat.",
+        required=False, where="/schedule", probe=_probe_demand_feed,
+    ),
+    ChecklistItem(
+        key="team", title="Invite your team",
+        description="Optional. Add a second operator so you are not the only "
+                    "person who can log in.",
+        required=False, where="/employees", probe=_probe_team,
+    ),
+)

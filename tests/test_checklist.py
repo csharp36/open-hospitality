@@ -1,5 +1,16 @@
-from usali.checklist import ChecklistItem, evaluate
-from usali.models import Base, OrgChecklistOverride
+from datetime import date
+
+from tests.grants import grant_role
+from usali.checklist import ITEMS, ChecklistItem, evaluate
+from usali.models import (
+    Base,
+    FiscalCalendar,
+    IngestBatch,
+    OrgChecklistOverride,
+    OrgSettings,
+    Property,
+    RoomInventory,
+)
 
 
 def test_override_is_org_scoped_with_composite_pk():
@@ -101,4 +112,85 @@ def test_item_status_mirrors_checklist_item_fields():
 
 
 def test_evaluate_uses_the_module_registry_by_default(db_session, founding_org):
-    assert evaluate(db_session) == []
+    assert {r.key for r in evaluate(db_session)} == {item.key for item in ITEMS}
+
+
+def _status_of(db_session, key):
+    return {r.key: r for r in evaluate(db_session)}[key].status
+
+
+def test_registry_keys_match_the_schema_mirror(db_session):
+    """models.py's CHECK literal and ITEMS must not drift (design §5)."""
+    from usali.models import Base
+    table = Base.metadata.tables["org_checklist_override"]
+    [check] = [
+        c for c in table.constraints
+        if getattr(c, "name", None) == "ck_org_checklist_override_item_key"
+    ]
+    in_check = {
+        part.strip().strip("'")
+        for part in str(check.sqltext).split("(")[-1].rstrip(")").split(",")
+    }
+    assert in_check == {item.key for item in ITEMS}
+
+
+def test_first_report_is_open_then_done(db_session, founding_org):
+    assert _status_of(db_session, "first_report") == "open"
+    db_session.add(IngestBatch(org_id=1, pms_source="OPERA", report_type="trial_balance",
+                               source_file="f.pdf", file_hash="h"))
+    db_session.commit()
+    assert _status_of(db_session, "first_report") == "done"
+
+
+def test_room_inventory_needs_at_least_one_property(db_session, founding_org):
+    """An org with no properties must NOT satisfy the probe vacuously."""
+    assert _status_of(db_session, "room_inventory") == "open"
+
+
+def test_room_inventory_done_only_when_every_property_has_a_row(db_session, founding_org):
+    db_session.add_all([
+        Property(property_id="HISJ", org_id=1, name="H", pms_source="OPERA"),
+        Property(property_id="SSSJ", org_id=1, name="S", pms_source="OPERA"),
+    ])
+    db_session.add(RoomInventory(org_id=1, property_id="HISJ",
+                                 effective_date=date(2026, 1, 1), total_rooms=140))
+    db_session.commit()
+    assert _status_of(db_session, "room_inventory") == "open"  # SSSJ still missing
+    db_session.add(RoomInventory(org_id=1, property_id="SSSJ",
+                                 effective_date=date(2026, 1, 1), total_rooms=90))
+    db_session.commit()
+    assert _status_of(db_session, "room_inventory") == "done"
+
+
+def test_fiscal_calendar_done_when_every_property_has_a_row(db_session, founding_org):
+    db_session.add(Property(property_id="HISJ", org_id=1, name="H", pms_source="OPERA"))
+    db_session.commit()
+    assert _status_of(db_session, "fiscal_calendar") == "open"
+    db_session.add(FiscalCalendar(org_id=1, property_id="HISJ",
+                                  calendar_type="calendar_month",
+                                  fiscal_year_start_month=1, week_start_weekday=None))
+    db_session.commit()
+    assert _status_of(db_session, "fiscal_calendar") == "done"
+
+
+def test_demand_feed_reads_org_settings(db_session, founding_org):
+    db_session.merge(OrgSettings(org_id=1, crm_provider=""))
+    db_session.commit()
+    assert _status_of(db_session, "demand_feed") == "open"
+    db_session.merge(OrgSettings(org_id=1, crm_provider="delphi"))
+    db_session.commit()
+    assert _status_of(db_session, "demand_feed") == "done"
+
+
+def test_team_needs_a_second_subject(db_session, founding_org):
+    grant_role(db_session, "org_admin", sub="founder", org_id=1)
+    assert _status_of(db_session, "team") == "open"
+    grant_role(db_session, "accountant", sub="second-human", org_id=1)
+    assert _status_of(db_session, "team") == "done"
+
+
+def test_payroll_and_accounting_ignore_process_wide_settings(db_session, founding_org):
+    """D-B4.3: a deployment-wide credential is not THIS tenant's connection.
+    Both stay open until OH-17 gives them per-tenant config."""
+    assert _status_of(db_session, "payroll") == "open"
+    assert _status_of(db_session, "accounting") == "open"
