@@ -1197,6 +1197,18 @@ git commit -m "feat(oh17): TokenStore port so QBO rotation can outlive the proce
 > (a) is what the design promised; (b) is simpler and may be enough for pilot
 > throughput. Either is defensible — shipping the promise without the mechanism
 > is not.
+>
+> **RESOLVED: (b), 2026-08-30.** The disqualifier for (a) turned out to be
+> sharper than either option above states: the `TokenStore` port has no abort
+> step, and `QboClient._refresh` **raises on a non-200 grant without ever
+> calling `store()`** — so a transaction opened in `load()` leaks with the row
+> lock held. A failed grant is routine (a revoked token fails every attempt),
+> so (a) buys a rare protection with a common leak. (a) is not impossible in
+> principle — a `rotating()` context manager or an `abort()` method on the port
+> would make it work — but that reopens Task 4. The documented upgrade path if
+> contention ever matters is a caller-held advisory lock with `try/finally`,
+> NOT a `FOR UPDATE` inside `load()`. D-OH17.7, design §7 and §8, and
+> `qbo_client._refresh`'s comment were all corrected to match.
 
 
 **Files:**
@@ -1266,6 +1278,11 @@ Expected: FAIL — `AttributeError: module 'usali.integrations' has no attribute
 Append to `src/usali/integrations.py`:
 
 ```python
+# ⚠️ AS-PLANNED, NOT AS-SHIPPED. This block is superseded on two counts and is
+# kept only as a record of what was planned. (1) The `FOR UPDATE` was dropped —
+# see the RESOLVED note at the top of this task. (2) `store()`'s Core
+# `update()` carried no `org_id` and would have rewritten every org's token, in
+# plaintext. Read `src/usali/integrations.py` for the shipped implementation.
 class DbTokenStore:
     """The QBO refresh token, held on the tenant's credential row (D-OH17.7).
 
@@ -2595,29 +2612,23 @@ about.
 Add to `tests/test_integrations.py`:
 
 ```python
-def test_two_concurrent_pushes_do_not_fork_the_token_lineage(org_bound_factory, db_session):
-    """Design §8. QboClient's threading.Lock serializes THREADS in one
-    process; only DbTokenStore's SELECT ... FOR UPDATE reaches across
-    workers. Without the row lock both callers spend the same refresh token
-    and Intuit invalid_grants the loser."""
-    _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="t0")
-    db_session.commit()
-
-    barrier = threading.Barrier(2)
-    errors: list[Exception] = []
-
-    def push() -> None:
-        try:
-            barrier.wait(timeout=5)
-            client = integ.resolve_qbo(org_bound_factory)
-            client.post_journal_entry(_minimal_je(), request_id="r")
-        except Exception as exc:  # noqa: BLE001 - recorded, asserted below
-            errors.append(exc)
-
-    threads = [threading.Thread(target=push) for _ in range(2)]
-    for t in threads: t.start()
-    for t in threads: t.join(timeout=30)
-    assert errors == []
+# RETRACTED (2026-08-30) — do NOT write this test.
+#
+# It asserted the cross-process serialization D-OH17.7 originally promised.
+# Task 5 settled that question the other way (option (b)): `DbTokenStore` takes
+# NO row lock, because a `FOR UPDATE` inside `load()` covers none of the
+# `load() -> grant -> store()` critical section, and one spanning the grant
+# would leak a transaction on every FAILED grant — the common case, since a
+# revoked token fails every attempt. The design's D-OH17.7 and §8 were
+# corrected; this block is the third place the retracted claim lived.
+#
+# Writing it would assert a guarantee the code deliberately declines, and
+# `assert errors == []` would fail anyway: each thread calls `resolve_qbo` and
+# gets its OWN client, hence its own instance lock.
+#
+# What Task 12 should cover instead is already listed below: two-org
+# isolation, and the undecryptable-credential refusal. Durability is covered
+# by `test_a_rebuilt_client_can_still_refresh` (tests/test_qbo_push.py).
 
 
 def test_an_undecryptable_credential_refuses_loudly(org_bound_factory, db_session):
