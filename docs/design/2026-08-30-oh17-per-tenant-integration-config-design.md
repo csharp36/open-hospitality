@@ -194,13 +194,23 @@ that would fail on first use.
   what their adapters do today (`gusto_adapter.py:45`, `adp_adapter.py:58`,
   `delphi_adapter.py:73`, `tripleseat_adapter.py:68`).
 
-- **D-OH17.11 — The OAuth `state` is signed, single-use, and carries the org
-  (CONFIRMED 2026-08-30).** The Intuit callback arrives as a top-level browser
+- **D-OH17.11 — The OAuth `state` is signed and carries the org (CONFIRMED
+  2026-08-30).** The Intuit callback arrives as a top-level browser
   navigation with **no bearer token and no active-org header**, so
   `require_active_org` cannot run on it. `state` is therefore the only carrier
   of "which tenant is this for", and it must be unforgeable or it is a
-  cross-tenant credential-injection hole. It is an HMAC-signed, short-TTL,
-  single-use value bound to `(org_id, subject)`, consumed on first use.
+  cross-tenant credential-injection hole. It is an HMAC-signed, short-TTL
+  value bound to `(org_id, subject)`.
+
+  **Amended 2026-08-30 while planning:** an earlier draft also required
+  `state` to be single-use, consumed against a server-side nonce store. That
+  store is **not** built. Replay is already dead without it, because the other
+  half of the callback — Intuit's `code` — is single-use at Intuit: a replayed
+  `state` necessarily carries a spent `code`, and the token exchange refuses
+  it. A nonce table would add a row, a migration and a reaper to re-block
+  something already blocked. The HMAC key is HKDF-derived from
+  `field_encryption_key` under a fixed domain label — the `_photo_key`
+  precedent (`crypto.py:79-113`) — so no new deployment secret appears.
 
 - **D-OH17.12 — The B4 tripwire is deleted and replaced by its mirror image
   (CONFIRMED 2026-08-30).** `test_the_integration_items_have_no_connect_surface_yet`
