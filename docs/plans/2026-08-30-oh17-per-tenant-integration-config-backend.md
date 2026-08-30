@@ -967,19 +967,26 @@ git commit -m "feat(oh17): the provider registry and credential lookup"
 **Files:**
 - Modify: `src/usali/qbo_client.py:112-160` (docstring + `__init__`), `:170-180` (`_refresh`)
 - Modify: every construction site — `src/usali/server.py:130-139`, and the test/CLI callers found by the grep in Step 3
-- Test: `tests/test_qbo_client.py`
+- Test: `tests/test_qbo_push.py`
+
+> **Corrected before dispatch (2026-08-30).** This task originally named
+> `tests/test_qbo_client.py` and helpers `qbo_mock_url` / `_minimal_je`. **None
+> of those exist** — the same defect class as Task 2's `test_crm_api.py`. The
+> real QBO client tests live in `tests/test_qbo_push.py`, whose fixtures are
+> `mock_app` (an in-process ASGI mock, not a URL) and `qbo`, with
+> `_bootstrap_refresh_token(mock_app)` taking the app rather than a URL. A
+> journal entry is posted through `push_day(db_session, qbo, property_id=...,
+> business_date=DAY)`, not a bare `post_journal_entry`. The code below is
+> rewritten against those.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `tests/test_qbo_client.py`:
+Add to `tests/test_qbo_push.py`:
 
 ```python
-from usali.qbo_client import QboClient, StaticTokenStore
-
-
 class RecordingTokenStore:
     """A TokenStore that keeps its value, so a test can rebuild a client the
-    way a new process would and prove the lineage survived."""
+    way a NEW PROCESS would and prove the rotation lineage survived."""
 
     def __init__(self, token: str) -> None:
         self.token = token
@@ -993,19 +1000,40 @@ class RecordingTokenStore:
         self.stores.append(refresh_token)
 
 
-def test_rotation_is_written_through_to_the_store(qbo_mock_url):
-    """D-OH17.7. Today's client keeps the rotated token in memory only, so a
-    process restart loses it and the next push invalid_grants against a token
-    Intuit already consumed (qbo_client.py:112 documents this). The store is
-    what makes the lineage durable."""
-    store = RecordingTokenStore(_bootstrap_refresh_token(qbo_mock_url))
-    client = QboClient(qbo_mock_url, "cid", "csec", "realm", store)
-    client.post_journal_entry(_minimal_je(), request_id="r1")
+def _client_on(mock_app: Any, store: Any) -> QboClient:
+    return QboClient(
+        "http://mock-qbo", "client", "secret", REALM, store,
+        transport=SyncASGITransport(mock_app),
+    )
+
+
+def test_rotation_is_written_through_to_the_store(db_session, seed_six_pdfs, mock_app):
+    """D-OH17.7. The lazy first refresh consumes and rotates the bootstrap
+    token, so the store must have been written or the NEXT refresh is dead."""
+    store = RecordingTokenStore(_bootstrap_refresh_token(mock_app))
+    result = push_day(db_session, _client_on(mock_app, store),
+                      property_id="HISJ", business_date=DAY)
+    assert result.status == "pushed"
     assert store.stores, "the rotated refresh token was never persisted"
 
-    # Rebuild exactly as a fresh process would: same store, new client.
-    rebuilt = QboClient(qbo_mock_url, "cid", "csec", "realm", store)
-    rebuilt.post_journal_entry(_minimal_je(), request_id="r2")
+
+def test_a_rebuilt_client_can_still_refresh(db_session, seed_six_pdfs, mock_app):
+    """The regression test for the bug `qbo_client.py:112` documents against
+    itself: rotation used to live in client memory, so a process restart lost
+    it and the next push invalid_grant'd against a token Intuit had already
+    consumed. Rebuilding from the SAME store is exactly what a restart does."""
+    store = RecordingTokenStore(_bootstrap_refresh_token(mock_app))
+    first = push_day(db_session, _client_on(mock_app, store),
+                     property_id="HISJ", business_date=DAY)
+    assert first.status == "pushed"
+
+    # A fresh client, as a restarted process would build: same store, new
+    # instance, no in-memory state carried over.
+    rebuilt = _client_on(mock_app, store)
+    rebuilt._http.headers["X-Mock-Fault"] = "expired-once:test-401"
+    second = push_day(db_session, rebuilt, property_id="HISJ",
+                      business_date=DAY)
+    assert second.status in ("pushed", "already_pushed")
 
 
 def test_static_store_keeps_the_old_in_memory_behaviour():
@@ -1015,14 +1043,14 @@ def test_static_store_keeps_the_old_in_memory_behaviour():
     assert store.load() == "rotated"
 ```
 
-Reuse the existing `qbo_mock_url` fixture, `_bootstrap_refresh_token` and
-`_minimal_je` helpers already in `tests/test_qbo_client.py`. If a helper of
-that name is absent, use the module's existing equivalents — do not invent a
-second mock harness.
+Import `StaticTokenStore` alongside the existing `QboClient` import. The
+`X-Mock-Fault: expired-once` header is the existing idiom for forcing a 401 →
+refresh → retry (`tests/test_qbo_push.py:319`); it is what makes the rebuilt
+client actually exercise a refresh rather than riding a cached access token.
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `uv run pytest tests/test_qbo_client.py -k token_store or rotation -v`
+Run: `uv run pytest tests/test_qbo_push.py -k rotation or rebuilt or static_store -v`
 Expected: FAIL — `ImportError: cannot import name 'StaticTokenStore'`
 
 - [ ] **Step 3: Add the port and rewire `__init__` / `_refresh`**
@@ -1101,13 +1129,13 @@ it compiling here by wrapping it the same way.
 
 - [ ] **Step 5: Run the tests**
 
-Run: `uv run pytest tests/test_qbo_client.py tests/test_qbo_push.py -v`
+Run: `uv run pytest tests/test_qbo_push.py tests/test_portal_qbo_api.py -v`
 Expected: PASS
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add src/usali/qbo_client.py tests/test_qbo_client.py
+git add src/usali/qbo_client.py tests/test_qbo_push.py
 git commit -m "feat(oh17): TokenStore port so QBO rotation can outlive the process"
 ```
 
