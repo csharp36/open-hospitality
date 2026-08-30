@@ -4,7 +4,7 @@
 // falls back to the dashboard on a first visit.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
 
@@ -13,7 +13,14 @@ vi.mock('./api/client', async (importOriginal) => ({
   getMe: vi.fn(),
 }))
 
+vi.mock('./api/checklist', () => ({
+  getChecklist: vi.fn(),
+  dismissItem: vi.fn(),
+  restoreItem: vi.fn(),
+}))
+
 import { getMe } from './api/client'
+import { getChecklist } from './api/checklist'
 import { createAppRouter } from './router'
 import { AuthContext, type AuthContextValue } from './auth/authContext'
 import { AUTHED_CONTEXT } from './test/fixtures'
@@ -30,16 +37,26 @@ function renderApp(auth: AuthContextValue = AUTHED_CONTEXT, initialPath = '/sos'
   )
 }
 
+// File-scoped rather than per-describe: the sidebar reads the checklist on
+// every authenticated page, so every test in this file mounts that query and
+// an unstubbed one would resolve undefined. `all_clear` by default so the
+// badge stays out of the way of the tests that are not about it.
+beforeEach(() => {
+  vi.mocked(getMe).mockResolvedValue({ subject: '', username: '', roles: [] })
+  vi.mocked(getChecklist).mockResolvedValue({
+    items: [],
+    open_count: 0,
+    error_count: 0,
+    all_clear: true,
+  })
+})
+
+afterEach(() => {
+  document.documentElement.classList.remove('dark')
+  localStorage.clear()
+})
+
 describe('app shell', () => {
-  beforeEach(() => {
-    vi.mocked(getMe).mockResolvedValue({ subject: '', username: '', roles: [] })
-  })
-
-  afterEach(() => {
-    document.documentElement.classList.remove('dark')
-    localStorage.clear()
-  })
-
   it('renders the top nav and the SOS page at /sos', async () => {
     renderApp()
     // The Open Hospitality wordmark rides the header — "Open" is the
@@ -149,5 +166,60 @@ describe('app shell', () => {
     expect(screen.queryByText('Employee Profile')).not.toBeInTheDocument()
     // A single entry, and it is the real one — not a link plus a dead twin.
     expect(screen.getAllByText('Weekly Schedule')).toHaveLength(1)
+  })
+})
+
+describe('app shell — setup nav', () => {
+  it('shows the Setup entry with an open-item count', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [],
+      open_count: 3,
+      error_count: 0,
+      all_clear: false,
+    })
+    renderApp()
+    expect(await screen.findByRole('link', { name: /setup/i })).toBeInTheDocument()
+    // Scoped to the badge: '3' is a bare numeral in a whole app shell.
+    expect(within(await screen.findByTestId('setup-badge')).getByText('3')).toBeInTheDocument()
+  })
+
+  it('keeps the entry but drops the badge at all_clear', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [],
+      open_count: 0,
+      error_count: 0,
+      all_clear: true,
+    })
+    renderApp()
+    expect(await screen.findByRole('link', { name: /setup/i })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByTestId('setup-badge')).toBeNull())
+  })
+
+  // THE divergence case, at the badge.
+  it('badges "!" — not "0", not nothing — when every probe failed', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [],
+      open_count: 0,
+      error_count: 4,
+      all_clear: false,
+    })
+    renderApp()
+    expect(await screen.findByTestId('setup-badge')).toHaveTextContent('!')
+  })
+
+  // The count is the whole reason a collapsed sidebar still points at setup,
+  // so the badge must not ride along when the label goes sr-only.
+  it('keeps the badge out of sr-only when the sidebar is collapsed', async () => {
+    localStorage.setItem('usali.sidebar-collapsed', '1')
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [],
+      open_count: 2,
+      error_count: 0,
+      all_clear: false,
+    })
+    renderApp()
+    const badge = await screen.findByTestId('setup-badge')
+    expect(badge).not.toHaveClass('sr-only')
+    expect(badge.closest('.sr-only')).toBeNull()
   })
 })

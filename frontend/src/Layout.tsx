@@ -4,7 +4,8 @@
 // and the whole chrome is print:hidden — the wall-grid print view
 // (SchedulePage) shows ONLY the week grid.
 //
-// Nav is grouped: Dashboard on top, then Employee Management, then Accounting.
+// Nav is grouped: Dashboard on top, then Setup, then Employee Management,
+// then Accounting.
 // `soon: true` items are visible-but-inert placeholders for pages that land
 // later. Collapsed mode keeps every control's accessible name: labels go
 // sr-only (never unmounted), so tests and screen readers see the same nav.
@@ -17,6 +18,7 @@ import { currentTheme, toggleTheme, type Theme } from './lib/theme'
 import { GlobalPropertyProvider } from './lib/GlobalPropertyProvider'
 import { useGlobalProperty } from './lib/propertyContext'
 import { hasRole } from './lib/roles'
+import { badgeLabel, useChecklist } from './lib/useChecklist'
 import { useAuth } from './auth/authContext'
 import { getMe } from './api/client'
 import type { Me } from './api/types'
@@ -26,6 +28,7 @@ import {
   BankIcon,
   BanknoteIcon,
   CalendarIcon,
+  ChecklistIcon,
   ClockIcon,
   CloseIcon,
   CollapseIcon,
@@ -77,6 +80,15 @@ const SECTIONS: NavSection[] = [
   {
     label: null,
     items: [{ to: '/dashboard', label: 'Dashboard', icon: GaugeIcon }],
+  },
+  // Ungrouped and second, above both sections: setup belongs to neither
+  // Accounting nor Employee Management, and it never hides — the badge
+  // retires at all_clear but the page stays the home for reconnecting an
+  // integration later. No `show`: reading the checklist needs only the
+  // router's operator gate; the dismiss controls inside are gated separately.
+  {
+    label: null,
+    items: [{ to: '/setup', label: 'Setup', icon: ChecklistIcon }],
   },
   {
     label: 'Employee Management',
@@ -148,6 +160,13 @@ function SidebarContent({
 }) {
   const roleLabel = primaryRoleLabel(me)
   const initials = (username ?? '?').slice(0, 2).toUpperCase()
+  // Both copies of this component (desktop aside + mobile drawer) mount the
+  // hook; TanStack dedupes on the shared key, so it is still one fetch.
+  // No badge while pending or failed: it is an ambient pointer and cannot
+  // honestly report a number it does not have. The loud failure belongs on
+  // /setup, which is where the operator went to find out.
+  const checklist = useChecklist()
+  const badge = checklist.data === undefined ? null : badgeLabel(checklist.data)
 
   const itemBase = `group relative flex w-full items-center gap-2.5 rounded-lg py-[7px] text-sm font-medium transition-colors ${
     collapsed ? 'justify-center px-2' : 'pl-2 pr-2.5'
@@ -258,6 +277,21 @@ function SidebarContent({
                         <IconGlyph className="shrink-0" />
                       </span>
                       <span className={labelClass}>{e.label}</span>
+                      {/* Deliberately NOT inside `labelClass`: collapsed, the
+                          count is the only thing still pointing at setup. */}
+                      {e.to === '/setup' && badge !== null && (
+                        <span
+                          data-testid="setup-badge"
+                          title={badge.title}
+                          className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
+                            badge.tone === 'danger'
+                              ? 'bg-danger-red-soft text-danger-red'
+                              : 'bg-warn-amber-soft text-warn-amber'
+                          }`}
+                        >
+                          {badge.text}
+                        </span>
+                      )}
                     </Link>
                   )
                 })}
