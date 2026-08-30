@@ -43,16 +43,18 @@ ERROR = "error"
 
 @dataclass(frozen=True)
 class ChecklistItem:
-    """D-B4.8 pairs the last two fields: `where is None` ⟺
+    """D-B4.8 pairs `where` with `unavailable_reason`: `where is None` ⟺
     `unavailable_reason is not None`. An item either routes somewhere that can
     actually close it, or it says why it cannot be closed yet — never both
-    (a link the reason contradicts) and never neither (a dead end)."""
+    (a link the reason contradicts) and never neither (a dead end).
+    (`probe` sits between them only because a dataclass cannot put a defaulted
+    field before a non-defaulted one.)"""
 
     key: str
     title: str
     description: str
     required: bool
-    where: str | None  # the SPA route that closes this item, or None
+    where: str | None  # the SPA route that closes this item
     probe: Probe
     unavailable_reason: str | None = None
 
@@ -126,7 +128,8 @@ def _status(item: ChecklistItem, status: str, *, detail: str | None = None) -> I
         key=item.key, title=item.title, description=item.description,
         required=item.required, where=item.where, status=status, detail=detail,
         # Unconditional: the reason is a static property of the item, not of
-        # this evaluation, so an `error` row carries it too.
+        # this evaluation. `demand_feed` can be `done` while still carrying
+        # one, so the string must read correctly against any status.
         unavailable_reason=item.unavailable_reason,
     )
 
@@ -188,9 +191,10 @@ def _probe_team(session: Session) -> bool:
 # One constant, not three near-identical strings: the three integration items
 # share a single cause, and D-B4.8's point is that this is one class rather
 # than three special cases. OH-17 deletes it along with the `where=None`s.
+# Deliberately says nothing about dismissing: `demand_feed` can probe `done`
+# today, and "you can dismiss this" is false next to a Done badge (D-B4.4).
 _OH17_REASON = (
-    "No connect surface yet — per-tenant integration setup arrives with "
-    "OH-17. You can dismiss this if you do not plan to connect it."
+    "No connect surface yet — per-tenant integration setup arrives with OH-17."
 )
 
 ITEMS: tuple[ChecklistItem, ...] = (

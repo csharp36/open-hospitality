@@ -218,12 +218,11 @@ def test_the_integration_items_have_no_connect_surface_yet():
     and drops the reason, and this assertion fails loudly rather than leaving
     a stale "coming later" string on a working page."""
     by_key = {i.key: i for i in ITEMS}
-    for key in ("payroll", "accounting", "demand_feed"):
-        assert by_key[key].where is None
-        assert "OH-17" in (by_key[key].unavailable_reason or "")
-    # Everything else still routes.
-    for key in ("first_report", "room_inventory", "fiscal_calendar", "team"):
-        assert by_key[key].where is not None
+    no_surface = {i.key for i in ITEMS if i.where is None}
+    assert no_surface == {"payroll", "accounting", "demand_feed"}
+    for key in no_surface:
+        assert by_key[key].unavailable_reason is not None
+        assert "OH-17" in by_key[key].unavailable_reason
 
 
 def _row(key, status, *, required=False):
