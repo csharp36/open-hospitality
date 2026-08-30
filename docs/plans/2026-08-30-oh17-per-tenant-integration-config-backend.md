@@ -978,6 +978,19 @@ git commit -m "feat(oh17): the provider registry and credential lookup"
 > journal entry is posted through `push_day(db_session, qbo, property_id=...,
 > business_date=DAY)`, not a bare `post_journal_entry`. The code below is
 > rewritten against those.
+>
+> **Corrected AGAIN during execution.** That rewrite was still wrong, in the
+> way that matters most: it pushed `HISJ` twice, but `push_day`
+> (`qbo_push.py:305-307`) short-circuits on an already-pushed ledger row with a
+> matching `request_hash` and **returns before ever calling the client**. The
+> rebuilt client would never have refreshed — never opened a connection — so
+> the test would have passed against an implementation that dropped the
+> rotation entirely. A vacuous test for the exact bug the task exists to fix.
+> (The tuple also contained `"already_pushed"`; the real literal is
+> `"already-pushed"`, with a hyphen.) The shipped test pushes **`SSSJ`**, a
+> genuinely new (property, date) that reaches QBO, asserts `== "pushed"`, and
+> pins the rotation COUNT — so it fails if no refresh happened. Do not
+> "simplify" it back to one property.
 
 - [ ] **Step 1: Write the failing test**
 
