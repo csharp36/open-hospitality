@@ -323,6 +323,28 @@ git commit -m "feat(oh17): org_integration_credential model, retiring OrgSetting
 > `OrgSettings` are therefore folded in here, because "the schema change lands
 > everywhere and the suite is green again" is one job, not two. Old Task 8 is
 > now a pointer to this task.
+>
+> **Execution notes (2026-08-30), recorded because they contradict the steps
+> below.** Four things in this task were wrong as written:
+> 1. `tests/orgworld.py:29` is a SECOND collection-breaker — `conftest.py`
+>    imports `build_two_tenant_world` from it too. Steps 1-2 cannot fail for
+>    their stated reason until BOTH it and `property_registry.py` are fixed,
+>    so Step 8 and the orgworld half of Step 10 have to run first.
+> 2. Step 7 is unreachable for the same reason: by the time collection works
+>    the seed is already rewritten, so the seed tests pass on first run.
+>    Mutation testing was substituted — each test was proved to bite by
+>    breaking the seed three different ways and watching the right test fail.
+> 3. Step 9 names `tests/test_crm_api.py`, **which does not exist**. The crm
+>    seam coverage lives in `test_j4_crm_pull.py`, `test_j5_demand_surface.py`
+>    and `test_l5_per_org_stores.py`.
+> 4. Step 11 under-enumerated: dropping the table also invalidated
+>    `tests/test_j3_crm_adapters.py:353` and
+>    `tests/test_l1_org_wall_migration.py:176`. Both fixed.
+>
+> Also load-bearing and easy to miss: `Settings.qbo_realm_id` /
+> `qbo_refresh_token` default to `"mock"`, not `None`. Had either been `None`,
+> the CHECK's `realm_id IS NOT NULL` would make `ensure_default_org` raise in
+> every test using the `founding_org` fixture.
 
 **Files:**
 - Create: `migrations/versions/b3a0integcred_org_integration_credential.py`
