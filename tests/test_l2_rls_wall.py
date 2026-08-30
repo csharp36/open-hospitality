@@ -437,14 +437,17 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     m1a0propcfg adds three more (room_inventory, out_of_order_room,
     fiscal_calendar), each with its own RLS, for the same reason.
     m2a0perffoundations adds two more (property_stat_config,
-    ingestion_coverage), each with its own RLS, for the same reason."""
+    ingestion_coverage), each with its own RLS, for the same reason.
+    B4 adds one more (org_checklist_override) with its own RLS in the
+    b2a0checklist migration, enumerated here for the same reason."""
     assert len(_l2.RLS_TABLES) == 44
     # The full org-scoped inventory at head = L2's 44 + L5's org_settings +
     # m1a0propcfg's three property-config tables +
-    # m2a0perffoundations's two performance-foundation tables.
+    # m2a0perffoundations's two performance-foundation tables +
+    # B4's org_checklist_override.
     expected = set(_l2.RLS_TABLES) | {
         "org_settings", "room_inventory", "out_of_order_room", "fiscal_calendar",
-        "property_stat_config", "ingestion_coverage",
+        "property_stat_config", "ingestion_coverage", "org_checklist_override",
     }
     with db_engine.connect() as conn:
         policied = {

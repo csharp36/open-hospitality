@@ -31,6 +31,7 @@ def test_tables_registered():
         "otp_challenge",
         "pms_interest_request",
         "org_settings",
+        "org_checklist_override",
         "property",
         "property_detection_alias",
         "department",
