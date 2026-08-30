@@ -160,6 +160,13 @@ def test_room_inventory_done_only_when_every_property_has_a_row(db_session, foun
                                  effective_date=date(2026, 1, 1), total_rooms=90))
     db_session.commit()
     assert _status_of(db_session, "room_inventory") == "done"
+    # Effective-dating means a property legitimately has MANY inventory rows
+    # (a renovation inserts a new one rather than updating). distinct() is
+    # what makes the subset check tolerate that; without it this would fail.
+    db_session.add(RoomInventory(org_id=1, property_id="HISJ",
+                                 effective_date=date(2026, 6, 1), total_rooms=132))
+    db_session.commit()
+    assert _status_of(db_session, "room_inventory") == "done"
 
 
 def test_fiscal_calendar_done_when_every_property_has_a_row(db_session, founding_org):
