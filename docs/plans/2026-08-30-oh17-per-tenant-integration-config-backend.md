@@ -1749,6 +1749,21 @@ and in this document stay aligned.
 
 ## Task 9: A real `verify()` on each adapter
 
+> **The plan's ADP `verify()` was itself a silent no-op (found in execution,
+> 2026-08-30).** Step 4 specified `self._token()` as ADP's verification.
+> `AdpAdapter._token()` returns the **cached bearer** when one exists, so on any
+> adapter that has already made a call, `verify()` returns without touching the
+> network — a verification that proves nothing, wearing the shape of one. That
+> is precisely `capabilities()`'s failure mode, reintroduced inside the fix for
+> it. The shipped `verify()` clears `self._access_token` first. Harmless for the
+> connect path (a fresh adapter), and correct if that ever changes.
+>
+> Also: the CRM snippet used a single `REF` constant. There is no such thing —
+> `tests/test_j3_crm_adapters.py` carries `DELPHI_HOTEL_REF` (`"DELPHI-HISJ"`)
+> and `TRIPLESEAT_LOCATION_ID` (`501`, an int, passed as a string because the
+> Tripleseat adapter refuses a non-numeric ref). One constant cannot serve both.
+
+
 **Files:**
 - Modify: `src/usali/payroll_provider.py` (protocol + `InMemoryPayrollProvider`)
 - Modify: `src/usali/crm_feed.py` (protocol + `InMemoryCrmFeed`)
