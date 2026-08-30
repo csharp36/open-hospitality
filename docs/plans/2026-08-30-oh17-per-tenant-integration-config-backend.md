@@ -2791,14 +2791,28 @@ git commit -m "feat(oh17): QBO OAuth connect flow with signed state"
 > credentials), and mis-binding a factory kills all three on their positive
 > controls.
 >
-> **Known gap, deliberately not closed here.** `has_credential` — the
-> checklist probe — now propagates `CredentialUnreadable` rather than
-> answering False, because False is precisely the silent re-open this
-> exception exists to prevent. No checklist surface catches it, so a rotated
-> key makes the checklist refuse rather than lie. That is not a regression
-> (it raised a raw `InvalidTag` before), but the checklist is read on every
-> page load, so a follow-up should let a checklist item render as
-> connected-but-blocked.
+> **Correction (2026-08-30): the checklist "gap" this note first claimed is
+> not a gap, and no follow-up is needed.** `has_credential` does propagate
+> `CredentialUnreadable` rather than answering False — False is precisely the
+> silent re-open the exception exists to prevent — but every probe runs
+> inside `evaluate`'s per-item guard (`checklist.py:85`, "design §8: loud, but
+> contained"), and `has_credential` is reached ONLY from
+> `_probe_payroll`/`_probe_accounting`/`_probe_demand_feed`; the sole other
+> entry point is `checklist_api.py:52`, which calls `evaluate`. So the item
+> derives to `status: "error"` with `detail: "CredentialUnreadable"`,
+> `summarize` blocks `all_clear` on `error_count`, and `ChecklistPage` renders
+> "Could not check" in the danger tone with the detail beside it. There is no
+> page-load 500 and nothing degrades but that one item.
+>
+> That is the honest outcome and better than a connected-but-blocked badge
+> would have been: `done` would be a green badge over an unreadable
+> credential, `open` would re-open a finished item and invite a pointless
+> reconnect, and `error` names the real cause. B4's design §8 anticipated this
+> class. Pinned by
+> `test_checklist.py::test_an_unreadable_credential_reads_as_could_not_check`,
+> which also holds the containment half (`team`, probed after the failure and
+> touching the database, still evaluates); folding the refusal back into "not
+> connected" makes that item read `open` and kills the test.
 
 
 **Files:**

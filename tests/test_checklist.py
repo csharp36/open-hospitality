@@ -1,5 +1,6 @@
 from datetime import date
 
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from tests.orgworld import set_demand_feed
 from tests.test_integrations import _connect
@@ -239,6 +240,57 @@ def test_payroll_and_accounting_read_the_credential_row(db_session, unconnected_
     _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="tok")
     assert _status_of(db_session, "payroll") == "done"
     assert _status_of(db_session, "accounting") == "done"
+
+
+def test_an_unreadable_credential_reads_as_could_not_check(db_session, unconnected_org):
+    """ADR-005's rotation hazard meeting D-B4.1's derived status.
+
+    `integrations.CredentialUnreadable` (OH-17 Task 12) is raised when a
+    stored credential cannot be decrypted — a rotated `field_encryption_key`,
+    with no envelope or key version to fall back on. It reaches the checklist
+    through `has_credential`, and lands in `evaluate`'s per-item guard
+    (checklist.py:85), so the item derives to `error` with the exception NAME
+    as its detail.
+
+    That is the honest answer, and both alternatives are lies. `done` would
+    put a green badge over a credential nothing can read. `open` — which is
+    what a `resolve_*` returning None would have produced — silently re-opens
+    a finished item and invites the operator to reconnect an integration that
+    is fine, while the rotation is never named anywhere. `error` says the one
+    true thing: this could not be checked, and here is what went wrong.
+
+    The second half is CONTAINMENT (design §8). `team` is probed AFTER
+    demand_feed and issues a real query, so it is the item that would break
+    if one unreadable credential poisoned the walk — one broken integration
+    must not take the whole checklist down with it."""
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("delphi-key"))
+    _connect(db_session, "payroll", "gusto", api_token="t", company_id="c")
+    # Two distinct subjects, so `team` derives to a definite `done` rather
+    # than a bare "not error" — the containment assertion below is stronger
+    # when the later probe reaches a real answer.
+    grant_role(db_session, "org_admin", sub="first-subject")
+    grant_role(db_session, "property_gm", sub="second-subject")
+
+    rows = evaluate(db_session)
+    by_key = {r.key: r for r in rows}
+    assert by_key["demand_feed"].status == "error"
+    assert by_key["demand_feed"].detail == "CredentialUnreadable"
+    # Stated as its own assertion because these are the two failures that
+    # matter, and a future change could reach either without touching the
+    # line above.
+    assert by_key["demand_feed"].status not in ("done", "open")
+
+    summary = summarize(rows)
+    assert summary.all_clear is False
+    assert summary.error_count == 1
+
+    # Containment: everything else still evaluates on its own terms — the
+    # readable credential, the absent one, and the probe that runs after the
+    # failure and touches the database.
+    assert by_key["payroll"].status == "done"
+    assert by_key["accounting"].status == "open"
+    assert by_key["team"].status == "done"
 
 
 def _row(key, status, *, required=False):
