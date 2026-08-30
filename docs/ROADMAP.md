@@ -359,11 +359,11 @@ user-facing capability because the bot matches on `summary`:
 None carry an `issue:` field yet — the field is optional, and no tracking issue
 exists for them. Add one as each is opened.
 
-**One row is now ahead of the yml.** OH-18 has since moved `planned` →
-`in-progress` → `shipped` in this document (§2.2) while `.github/roadmap.yml`
-still reads `planned`. The status column above is what *this* document asserts,
-which is where the two are meant to disagree — but the yml edit has genuinely
-not been made, and should be, so the catalogue stops reading OH-18 as unstarted.
+**OH-18 drifted, and is now resynced.** It moved `planned` → `in-progress` in
+this document at `c154d45` without the yml following, so the catalogue read it
+as unstarted for two commits. Both now say `shipped`. Worth naming because §8
+claims the two are kept in sync: nothing enforces that, so a status edit here
+is only half an edit.
 
 **Also updated:** the file's header comment, which claimed `OH-1..OH-5` were the
 whole productization roadmap and `OH-6..OH-14` the analytics backlog — already

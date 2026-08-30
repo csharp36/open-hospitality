@@ -147,6 +147,21 @@ MOD  frontend/src/pages/DashboardPage.tsx       # Task 7 — the card
 MOD  frontend/src/pages/DashboardPage.test.tsx  # Task 7
 ```
 
+### Where this diverged from what shipped
+
+Recorded rather than retrofitted, following the backend plan's practice.
+
+| Planned | Shipped | Why |
+|---|---|---|
+| `useChecklist.test.ts` | `.tsx` | the sketched `wrapper` returns JSX, which will not parse in a `.ts` file |
+| — | `src/lib/badgeTones.ts` (new) | the tone→class map moved out of `ui.tsx`: exporting a `Record` trips `react/only-export-components`, which `allowConstantExport` covers only for literal primitives |
+| — | `src/components/ui.tsx` (mod) | re-exports the `BadgeTone` type so the three existing importers stay put |
+| — | `src/api/client.ts` (mod) | `authHeaders` / `raiseApiError` / `redirectToLogin` widened to `export`. Not cosmetic: `redirectToLogin`'s `redirecting` latch is module state, so a duplicate would fire login once per in-flight 401 |
+| Task 4 subtitle "Nothing here blocks reporting." | "The checklist never blocks you — the required items are what reporting needs." | the planned string was false: `rooms_available` fails loud without inventory, so two of the three required items are on the page *because* they block reporting |
+| Task 5 control on every optional item | withheld once `status === 'done'` | D-B4.4 makes that write a silent no-op; design §7 amended to match |
+| Task 6 badge markup | plus `aria-label` on the link | the badge span alone made the link's accessible name `"Setup3"` / `"Setup!"`, and `!` announces as nothing |
+| Tasks 4/6/7 each composing count copy | one `badgeLabel().title`, three surfaces | the card's private helper shipped the noun "things" (used nowhere else in the product) and an unpinned `1 setup items` |
+
 ---
 
 ## Task 1 — D-B4.8 on the wire: nullable `where` + `unavailable_reason`

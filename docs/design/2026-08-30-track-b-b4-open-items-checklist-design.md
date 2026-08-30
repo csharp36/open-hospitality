@@ -257,8 +257,16 @@ Refusals, per the fail-loud posture of
   Management). Required and optional items grouped separately; an item links
   to the route named by `where`, or — when `where` is null — renders as a
   non-link showing its `unavailable_reason` (D-B4.8). Optional items carry a
-  dismiss control regardless, because dismissal is the one action available on
-  an item that cannot yet be connected.
+  dismiss control regardless of whether they have a `where`, because dismissal
+  is the one action available on an item that cannot yet be connected — but
+  **not once they are `done`** (amended 2026-08-30 during the frontend build).
+  D-B4.4 makes a dismissal lose to a probe that says `done`, so that write
+  stores a row and changes nothing visible: a control whose click does nothing
+  is the same small dishonesty D-B4.8 exists to remove, one level up in the UI.
+  It IS still offered on an `error` item — §8's handler reports `error` before
+  the override is consulted, so a dismissal there masks no failing probe, and
+  withholding the only available action during an outage would recreate the
+  dead end.
 - **Dashboard card** — rendered while **`all_clear` is false** (NOT while
   `open_count > 0`: on a total probe failure `open_count` is zero while
   nothing is actually known, and gating on it would retire the card exactly
