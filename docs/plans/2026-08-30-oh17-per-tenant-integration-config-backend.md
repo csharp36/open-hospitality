@@ -728,11 +728,14 @@ COUNT `OrgSettings` rows to assert per-org isolation — count
 `OrgIntegrationCredential` rows scoped to `integration == "demand_feed"`
 instead, so the assertion keeps meaning the same thing.
 
-- [ ] **Step 11: Fix the stale comment in `crm_feed.py:50`**
+- [ ] **Step 11: Fix the two stale references to the retired table**
 
-It names "the org_settings CHECK (models.OrgSettings and the l5a0orgsettings
-migration)" as the schema mirror of `CRM_PROVIDERS`. That table is gone;
-the mirror is now the `ck_org_integration_credential_provider_fields` CHECK on
+`src/usali/crm_feed.py:50` and the docstring of `build_two_tenant_world`
+(`tests/orgworld.py:47`, "org 1 already exists with its `org_settings` row").
+
+`crm_feed.py:50` names "the org_settings CHECK (models.OrgSettings and the
+l5a0orgsettings migration)" as the schema mirror of `CRM_PROVIDERS`. That table
+is gone; the mirror is now `ck_org_integration_credential_provider_fields` on
 `org_integration_credential`. A comment pointing at a dropped table is worse
 than none.
 
@@ -2419,12 +2422,21 @@ need a task of their own rather than a line in someone else's.
 Add to `tests/test_integrations.py`:
 
 ```python
-def test_one_org_cannot_read_anothers_credentials(two_org_world):
+def _factory_for(db_engine, org_id):
+    """An org-bound session factory — the precedent at
+    tests/test_l2_rls_wall.py:224. Built explicitly rather than taken from a
+    fixture because `two_tenant_world` returns a SimpleNamespace of ids
+    (org2_id, org2_admin, org2_emp_id), not session factories."""
+    return OrgBoundSessionFactory(make_session_factory(db_engine), org_id)
+
+
+def test_one_org_cannot_read_anothers_credentials(db_engine, two_tenant_world):
     """The claim OH-17 has to earn: a tenant's credentials are unreachable
     from another tenant's session. Asserted through BOTH walls, because the
     ORM criteria hook is SELECT-only (tenancy.py:18-21) and a table whose RLS
     policy was forgotten would still pass an ORM-only test."""
-    org_a, org_b = two_org_world
+    org_a = _factory_for(db_engine, 1)
+    org_b = _factory_for(db_engine, two_tenant_world.org2_id)
     with org_a() as session:
         _connect(session, "demand_feed", "delphi", subscription_key="a-secret")
         session.commit()
@@ -2435,10 +2447,11 @@ def test_one_org_cannot_read_anothers_credentials(two_org_world):
         )).scalar_one() == 0
 
 
-def test_one_org_cannot_overwrite_anothers_credentials(two_org_world):
-    """The RLS WITH CHECK half: a write naming another org's id is refused,
-    not silently redirected."""
-    org_a, org_b = two_org_world
+def test_one_org_cannot_overwrite_anothers_credentials(db_engine, two_tenant_world):
+    """The RLS WITH CHECK half: a write naming another org's row is refused or
+    invisible, never silently redirected."""
+    org_a = _factory_for(db_engine, 1)
+    org_b = _factory_for(db_engine, two_tenant_world.org2_id)
     with org_a() as session:
         _connect(session, "payroll", "gusto", api_token="t", company_id="c")
         session.commit()
@@ -2451,8 +2464,14 @@ def test_one_org_cannot_overwrite_anothers_credentials(two_org_world):
         assert integ.credential_for(session, "payroll").api_token == "t"
 ```
 
-Build `two_org_world` on the existing two-org fixture in
-`tests/test_l2_rls_wall.py` — do not create a second one.
+`db_engine` must be the APP-ROLE engine for the RLS half to mean anything — a
+superuser session bypasses RLS entirely. Use `app_role_engine`
+(`tests/conftest.py:95`) wherever the assertion is about the database wall
+rather than the ORM hook, exactly as `tests/test_l2_rls_wall.py` does.
+
+
+`two_tenant_world` already exists in `tests/conftest.py:107` — use it, do not
+create a second two-org fixture.
 
 - [ ] **Step 2: Run test to verify it fails**
 
