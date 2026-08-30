@@ -1609,6 +1609,28 @@ git commit -m "feat(oh17): resolve every integration from the active org"
 
 ## Task 7: The checklist edit, and retiring the tripwire
 
+> **Two defects found in execution (2026-08-30).**
+> 1. **The prescribed test used the wrong fixture.** Step 1's
+>    `test_payroll_and_accounting_read_the_credential_row(db_session, founding_org)`
+>    cannot work: `founding_org` calls `ensure_default_org`, which
+>    unconditionally seeds org 1's payroll and accounting rows (D-OH17.15). So
+>    the opening `== "open"` assertions fail, and the following `_connect(...)`
+>    calls hit an `IntegrityError` on the `(org_id, integration)` primary key
+>    rather than testing anything. Use `unconnected_org`, now promoted to
+>    `tests/conftest.py` since two modules need it.
+> 2. **This task's file list contradicted its own Step 5.** The list scopes the
+>    task to `checklist.py` and `test_checklist.py`, but
+>    `tests/test_checklist_api.py::test_get_carries_the_unavailable_reason`
+>    pins the OLD `where is None` / `"OH-17" in unavailable_reason` state and
+>    fails the moment the fix lands — while Step 5 instructs running that very
+>    file and expecting PASS. It was updated to assert the new state.
+>
+> Also verified rather than assumed: the design's claim that
+> `ChecklistPage.tsx` needs no change **holds** — it branches generically on
+> `item.where === null`, with no per-key logic for the three integration items.
+> That is D-B4.8's payoff, and it is now confirmed rather than hoped.
+
+
 **Files:**
 - Modify: `src/usali/checklist.py:167-186` (probes), `:189-192` (`_OH17_REASON`), `:213-231` (three items)
 - Modify: `tests/test_checklist.py:198-224`
