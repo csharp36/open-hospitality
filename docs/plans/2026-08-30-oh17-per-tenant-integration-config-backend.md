@@ -311,12 +311,30 @@ git commit -m "feat(oh17): org_integration_credential model, retiring OrgSetting
 
 ---
 
-## Task 2: The migration
+## Task 2: The migration, the seed bridge, and the `OrgSettings` call-site migration
+
+> **Amended mid-execution (2026-08-30).** As first written this task was the
+> migration alone, and the seed bridge was Task 8. That sequencing was WRONG:
+> `tests/conftest.py` imports `ensure_default_org` from
+> `mapping/property_registry.py`, which imports `OrgSettings` — so from the
+> moment Task 1 deleted that model, **the entire suite failed to collect**, not
+> merely the RLS tests Task 1 predicted. Tasks 2-7 would each have run blind.
+> The seed bridge (old Task 8) and the six test files that construct
+> `OrgSettings` are therefore folded in here, because "the schema change lands
+> everywhere and the suite is green again" is one job, not two. Old Task 8 is
+> now a pointer to this task.
 
 **Files:**
 - Create: `migrations/versions/b3a0integcred_org_integration_credential.py`
 - Modify: `tests/test_l4_org_grants.py:358`
 - Modify: `tests/test_l2_rls_wall.py:449-451`
+- Modify: `src/usali/mapping/property_registry.py:23`, `:109-121` (the seed)
+- Modify: `src/usali/crm_feed.py:50` (a comment naming the retired table)
+- Modify: the six test files that construct `OrgSettings` — `tests/orgworld.py:29,52`,
+  `tests/test_l5_per_org_stores.py:47,217`, `tests/test_j4_crm_pull.py:38,55`,
+  `tests/test_checklist.py:10,184,187`, `tests/test_l7_two_org_walk.py:35,59,61,74`,
+  `tests/test_j5_demand_surface.py:29,39`
+- Test: `tests/test_property_registry.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -552,12 +570,184 @@ org-scoped table (org_settings)…" with:
 Run: `uv run pytest tests/test_integrations.py tests/test_l2_rls_wall.py tests/test_l4_org_grants.py tests/test_migration_on_populated_data.py -v`
 Expected: PASS
 
+- [ ] **Step 6: Write the failing test**
+
+Add to `tests/test_property_registry.py`:
+
+```python
+def test_the_seed_writes_a_payroll_row_under_the_bare_defaults(db_session):
+    """D-OH17.15. scripts/e2e_backend.py:399 relies on the Gusto defaults
+    being a WORKING local config with no env set — a seed rule that only
+    fired on non-default env would silently break payrun.spec.ts."""
+    ensure_default_org(db_session)
+    row = db_session.execute(text(
+        "SELECT provider FROM org_integration_credential "
+        "WHERE org_id = 1 AND integration = 'payroll'"
+    )).scalar_one()
+    assert row == "gusto"
+
+
+def test_the_seed_writes_no_demand_feed_row_when_the_provider_is_unset(db_session):
+    """'' is the OFF sentinel, and it stays off — demo.sh sets it explicitly."""
+    ensure_default_org(db_session)
+    assert db_session.execute(text(
+        "SELECT count(*) FROM org_integration_credential "
+        "WHERE integration = 'demand_feed'"
+    )).scalar_one() == 0
+
+
+def test_a_reseed_does_not_overwrite_an_operator_set_row(db_session):
+    """The crm_ref find-or-create posture: a bare re-seed must never blank a
+    credential an operator connected by hand."""
+    ensure_default_org(db_session)
+    db_session.execute(text(
+        "UPDATE org_integration_credential SET company_id = 'operator-chosen' "
+        "WHERE integration = 'payroll'"
+    ))
+    db_session.commit()
+    ensure_default_org(db_session)
+    assert db_session.execute(text(
+        "SELECT company_id FROM org_integration_credential "
+        "WHERE integration = 'payroll'"
+    )).scalar_one() == "operator-chosen"
+```
+
+- [ ] **Step 7: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_property_registry.py -k seed -v`
+Expected: FAIL — zero rows; the seed still writes `org_settings`
+
+- [ ] **Step 8: Replace the seed block**
+
+In `src/usali/mapping/property_registry.py`, change the import at `:23` from
+`OrgSettings` to `OrgIntegrationCredential`, and replace the
+`insert(OrgSettings)` block (`:109-121`) with:
+
+```python
+    # OH-17 (D-OH17.15): seed org 1's integration credentials from the
+    # process-wide env, ON FIRST INSERT ONLY — the crm_ref / wage_jurisdiction
+    # find-or-create posture, so a bare re-seed never blanks a credential an
+    # operator connected by hand. At runtime every adapter reads THIS row,
+    # never env; an env fallback for org != 1 is the mutant L5 killed.
+    #
+    # This is a BRIDGE, not a connect action: it reproduces exactly what each
+    # default means today and does NOT run the connect endpoint's verification.
+    # Do NOT "improve" it into seeding only when env differs from the committed
+    # mock defaults — scripts/e2e_backend.py:399 states that the Gusto defaults
+    # ARE the working local config with no env set, and that rule would break
+    # payrun.spec.ts silently.
+    settings = get_settings()
+    seeds: list[dict[str, Any]] = [
+        {
+            "org_id": org_id, "integration": "payroll",
+            "provider": settings.payroll_provider,
+            "connected_by": _SEED_SUBJECT,
+            **(
+                {"api_token": settings.gusto_api_token,
+                 "company_id": settings.gusto_company_id}
+                if settings.payroll_provider == "gusto"
+                else {"client_id": settings.adp_client_id,
+                      "client_secret": settings.adp_client_secret}
+            ),
+        },
+        {
+            "org_id": org_id, "integration": "accounting", "provider": "qbo",
+            "realm_id": settings.qbo_realm_id,
+            "refresh_token": settings.qbo_refresh_token,
+            "connected_by": _SEED_SUBJECT,
+        },
+    ]
+    # The demand feed keeps its OFF sentinel: '' means no row at all, so an
+    # unset USALI_CRM_PROVIDER still produces demo_seed.py's honest "skipped"
+    # note rather than a connection to nothing.
+    if settings.crm_provider == "delphi":
+        seeds.append({
+            "org_id": org_id, "integration": "demand_feed", "provider": "delphi",
+            "subscription_key": settings.delphi_subscription_key,
+            "connected_by": _SEED_SUBJECT,
+        })
+    elif settings.crm_provider == "tripleseat":
+        seeds.append({
+            "org_id": org_id, "integration": "demand_feed",
+            "provider": "tripleseat", "api_key": settings.tripleseat_api_key,
+            "connected_by": _SEED_SUBJECT,
+        })
+    for values in seeds:
+        session.execute(
+            insert(OrgIntegrationCredential)
+            .values(**values)
+            .on_conflict_do_nothing(index_elements=["org_id", "integration"])
+        )
+```
+
+Add near the module constants:
+
+```python
+# The `connected_by` recorded for env-seeded rows: no human connected these,
+# and attributing them to one would be a lie in the audit trail.
+_SEED_SUBJECT = "seed:env"
+```
+
+Add `from typing import Any` to the imports if absent.
+
+- [ ] **Step 9: Run the tests**
+
+Run: `uv run pytest tests/test_property_registry.py tests/test_crm_api.py -v`
+Expected: PASS
+
+- [ ] **Step 10: Migrate the six test files that construct `OrgSettings`**
+
+Each sets org 1's `crm_provider`; under the new schema that means inserting or
+removing a `demand_feed` credential row. Add ONE shared helper rather than six
+open-coded inserts — `tests/orgworld.py` is the natural home since it already
+holds the two-org fixtures:
+
+```python
+def set_demand_feed(session, provider: str, *, org_id: int = 1) -> None:
+    """Point one org's demand feed at `provider`, or disconnect it when
+    `provider` is ''. The OH-17 replacement for `update(OrgSettings)
+    .values(crm_provider=...)`: the credential row IS the connection, so
+    'off' is the ABSENCE of a row rather than an empty string."""
+    session.execute(
+        delete(OrgIntegrationCredential).where(
+            OrgIntegrationCredential.org_id == org_id,
+            OrgIntegrationCredential.integration == "demand_feed",
+        )
+    )
+    if provider:
+        secret = ("subscription_key" if provider == "delphi" else "api_key")
+        session.add(OrgIntegrationCredential(
+            org_id=org_id, integration="demand_feed", provider=provider,
+            connected_by="test", **{secret: "mock"},
+        ))
+    session.flush()
+```
+
+Then repoint the six call sites. Note `tests/test_l7_two_org_walk.py:61,74`
+COUNT `OrgSettings` rows to assert per-org isolation — count
+`OrgIntegrationCredential` rows scoped to `integration == "demand_feed"`
+instead, so the assertion keeps meaning the same thing.
+
+- [ ] **Step 11: Fix the stale comment in `crm_feed.py:50`**
+
+It names "the org_settings CHECK (models.OrgSettings and the l5a0orgsettings
+migration)" as the schema mirror of `CRM_PROVIDERS`. That table is gone;
+the mirror is now the `ck_org_integration_credential_provider_fields` CHECK on
+`org_integration_credential`. A comment pointing at a dropped table is worse
+than none.
+
+- [ ] **Step 12: Run the FULL suite — it must collect and pass**
+
+Run: `uv run pytest -q && uv run mypy src && uv run ruff check src tests`
+Expected: PASS. This is the task's real acceptance criterion: the suite has
+not been collectable since Task 1, and this is where that ends.
+
 - [ ] **Step 6: Commit**
 
 ```bash
 git add migrations/versions/b3a0integcred_org_integration_credential.py \
-        tests/test_l2_rls_wall.py tests/test_l4_org_grants.py tests/test_integrations.py
-git commit -m "feat(oh17): b3a0integcred migration, dropping org_settings"
+        tests/ src/usali/mapping/property_registry.py src/usali/crm_feed.py
+git commit -m "feat(oh17): b3a0integcred migration, seed bridge, and call-site migration"
 ```
 
 ---
@@ -1371,143 +1561,13 @@ git commit -m "feat(oh17): the three integration items get a connect surface"
 
 ---
 
-## Task 8: The org-1 seed bridge
+## Task 8: The org-1 seed bridge — MERGED INTO TASK 2
 
-**Files:**
-- Modify: `src/usali/mapping/property_registry.py:23` (import), `:109-121` (the seed)
-- Test: `tests/test_property_registry.py`
-
-- [ ] **Step 1: Write the failing test**
-
-Add to `tests/test_property_registry.py`:
-
-```python
-def test_the_seed_writes_a_payroll_row_under_the_bare_defaults(db_session):
-    """D-OH17.15. scripts/e2e_backend.py:399 relies on the Gusto defaults
-    being a WORKING local config with no env set — a seed rule that only
-    fired on non-default env would silently break payrun.spec.ts."""
-    ensure_default_org(db_session)
-    row = db_session.execute(text(
-        "SELECT provider FROM org_integration_credential "
-        "WHERE org_id = 1 AND integration = 'payroll'"
-    )).scalar_one()
-    assert row == "gusto"
-
-
-def test_the_seed_writes_no_demand_feed_row_when_the_provider_is_unset(db_session):
-    """'' is the OFF sentinel, and it stays off — demo.sh sets it explicitly."""
-    ensure_default_org(db_session)
-    assert db_session.execute(text(
-        "SELECT count(*) FROM org_integration_credential "
-        "WHERE integration = 'demand_feed'"
-    )).scalar_one() == 0
-
-
-def test_a_reseed_does_not_overwrite_an_operator_set_row(db_session):
-    """The crm_ref find-or-create posture: a bare re-seed must never blank a
-    credential an operator connected by hand."""
-    ensure_default_org(db_session)
-    db_session.execute(text(
-        "UPDATE org_integration_credential SET company_id = 'operator-chosen' "
-        "WHERE integration = 'payroll'"
-    ))
-    db_session.commit()
-    ensure_default_org(db_session)
-    assert db_session.execute(text(
-        "SELECT company_id FROM org_integration_credential "
-        "WHERE integration = 'payroll'"
-    )).scalar_one() == "operator-chosen"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `uv run pytest tests/test_property_registry.py -k seed -v`
-Expected: FAIL — zero rows; the seed still writes `org_settings`
-
-- [ ] **Step 3: Replace the seed block**
-
-In `src/usali/mapping/property_registry.py`, change the import at `:23` from
-`OrgSettings` to `OrgIntegrationCredential`, and replace the
-`insert(OrgSettings)` block (`:109-121`) with:
-
-```python
-    # OH-17 (D-OH17.15): seed org 1's integration credentials from the
-    # process-wide env, ON FIRST INSERT ONLY — the crm_ref / wage_jurisdiction
-    # find-or-create posture, so a bare re-seed never blanks a credential an
-    # operator connected by hand. At runtime every adapter reads THIS row,
-    # never env; an env fallback for org != 1 is the mutant L5 killed.
-    #
-    # This is a BRIDGE, not a connect action: it reproduces exactly what each
-    # default means today and does NOT run the connect endpoint's verification.
-    # Do NOT "improve" it into seeding only when env differs from the committed
-    # mock defaults — scripts/e2e_backend.py:399 states that the Gusto defaults
-    # ARE the working local config with no env set, and that rule would break
-    # payrun.spec.ts silently.
-    settings = get_settings()
-    seeds: list[dict[str, Any]] = [
-        {
-            "org_id": org_id, "integration": "payroll",
-            "provider": settings.payroll_provider,
-            "connected_by": _SEED_SUBJECT,
-            **(
-                {"api_token": settings.gusto_api_token,
-                 "company_id": settings.gusto_company_id}
-                if settings.payroll_provider == "gusto"
-                else {"client_id": settings.adp_client_id,
-                      "client_secret": settings.adp_client_secret}
-            ),
-        },
-        {
-            "org_id": org_id, "integration": "accounting", "provider": "qbo",
-            "realm_id": settings.qbo_realm_id,
-            "refresh_token": settings.qbo_refresh_token,
-            "connected_by": _SEED_SUBJECT,
-        },
-    ]
-    # The demand feed keeps its OFF sentinel: '' means no row at all, so an
-    # unset USALI_CRM_PROVIDER still produces demo_seed.py's honest "skipped"
-    # note rather than a connection to nothing.
-    if settings.crm_provider == "delphi":
-        seeds.append({
-            "org_id": org_id, "integration": "demand_feed", "provider": "delphi",
-            "subscription_key": settings.delphi_subscription_key,
-            "connected_by": _SEED_SUBJECT,
-        })
-    elif settings.crm_provider == "tripleseat":
-        seeds.append({
-            "org_id": org_id, "integration": "demand_feed",
-            "provider": "tripleseat", "api_key": settings.tripleseat_api_key,
-            "connected_by": _SEED_SUBJECT,
-        })
-    for values in seeds:
-        session.execute(
-            insert(OrgIntegrationCredential)
-            .values(**values)
-            .on_conflict_do_nothing(index_elements=["org_id", "integration"])
-        )
-```
-
-Add near the module constants:
-
-```python
-# The `connected_by` recorded for env-seeded rows: no human connected these,
-# and attributing them to one would be a lie in the audit trail.
-_SEED_SUBJECT = "seed:env"
-```
-
-Add `from typing import Any` to the imports if absent.
-
-- [ ] **Step 4: Run the tests**
-
-Run: `uv run pytest tests/test_property_registry.py tests/test_crm_api.py -v`
-Expected: PASS
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/usali/mapping/property_registry.py tests/test_property_registry.py
-git commit -m "feat(oh17): seed org 1's credentials from env on first insert"
-```
+Folded into Task 2 mid-execution. See the amendment note there: the suite
+could not collect while `property_registry.py` still imported the deleted
+`OrgSettings`, so the seed had to land with the migration rather than five
+tasks later. Kept as a numbered stub so the task numbering in the commit log
+and in this document stay aligned.
 
 ---
 
