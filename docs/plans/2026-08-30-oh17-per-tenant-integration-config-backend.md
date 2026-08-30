@@ -1361,7 +1361,7 @@ from sqlalchemy import select, update
 from usali.adp_adapter import AdpAdapter
 from usali.config import get_settings
 from usali.crm_feed import CrmFeed
-from usali.db import SessionFactory
+from usali.tenancy import SessionFactory
 from usali.delphi_adapter import DelphiAdapter
 from usali.gusto_adapter import GustoAdapter
 from usali.payroll_provider import PayrollProvider
@@ -1369,9 +1369,9 @@ from usali.qbo_client import QboClient
 from usali.tripleseat_adapter import TripleseatAdapter
 ```
 
-If `SessionFactory` is not exported from `usali.db`, import it from wherever
-`server.py` imports it — check `grep -n "SessionFactory" src/usali/server.py`
-and match that import exactly.
+`SessionFactory` lives in `usali.tenancy` (verified — `server.py:54` imports it
+from there alongside `FOUNDING_ORG_ID` and `OrgBoundSessionFactory`). An
+earlier draft of this task said `usali.db`; that is wrong.
 
 - [ ] **Step 4: Run the tests**
 
