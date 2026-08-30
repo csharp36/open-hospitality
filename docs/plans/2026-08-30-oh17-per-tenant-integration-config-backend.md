@@ -1156,6 +1156,25 @@ git commit -m "feat(oh17): TokenStore port so QBO rotation can outlive the proce
 
 ## Task 5: Adapter resolution
 
+> **The plan's `DbTokenStore.store()` had a cross-tenant bug. Do not restore it
+> (found in execution, 2026-08-30).** This task originally specified
+> `update(OrgIntegrationCredential).where(integration == ACCOUNTING)` — a Core
+> UPDATE carrying **no `org_id`**. Two independent failures, both silent:
+> 1. `tenancy._stamp_wall` operates on `session.new` — **ORM INSERTs only**.
+>    UPDATEs ride the DB wall alone. On an RLS-bypassing connection (the
+>    superuser the entire test suite runs as) that statement rewrites **every
+>    org's** accounting refresh token.
+> 2. A Core/`text()` UPDATE bypasses the `EncryptedString` bind processor, so
+>    the rotated token lands on disk in **plaintext** — an ADR-005 violation no
+>    test in the plan would have caught.
+>
+> The shipped `store()` reads the row via `credential_for` and mutates the
+> mapped attribute, so the unit of work emits `WHERE org_id = ? AND
+> integration = ?` from the composite PK and the bind processor runs. Both
+> reasons are recorded in the code. **Never reach for a Core `update()` or
+> `text()` UPDATE on an `OrgScoped` table without an explicit `org_id`.**
+
+
 > **Open design question, raised by Task 4's review (2026-08-30) — settle it,
 > do not inherit it.** D-OH17.7 says `DbTokenStore` takes `SELECT … FOR UPDATE`
 > so two concurrent pushes cannot fork the rotation lineage across processes.
