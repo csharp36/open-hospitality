@@ -446,18 +446,24 @@ Connect and disconnect both write an `AuditEvent`
 
 `authorize` builds the Intuit consent URL and returns it (the SPA navigates;
 it does not 302, so the fetch seam and its `redirectToLogin` latch stay
-untouched). `state` is HMAC-signed over `(org_id, subject, nonce, expiry)`
-per D-OH17.11.
+untouched). `state` is HMAC-signed over `(org_id, subject, expiry)` per
+D-OH17.11.
+
+There is **no nonce**. An earlier draft of this section signed one and
+consumed it server-side; D-OH17.11's 2026-08-30 amendment removed it, because
+Intuit's `code` is already single-use at Intuit and a replayed `state`
+therefore carries a spent code that the exchange refuses. This paragraph is
+the one that has to say so, because "consume the nonce" read as a shipping
+instruction long after the decision above had retired it.
 
 `callback` is mounted **outside** `operator_gates` — it arrives as a top-level
 browser navigation with no bearer token, so `require_operator` and
 `require_active_org` would both refuse it. It therefore does its own
-authorization entirely from `state`: verify the signature, check the TTL,
-consume the nonce, and bind an org-scoped session from the org id inside it.
-This is the one route in the system whose tenant identity comes from a signed
-parameter rather than a validated token, and that is exactly why the
-signature, the TTL and the single-use consumption are all load-bearing rather
-than defence in depth.
+authorization entirely from `state`: verify the signature, check the TTL, and
+bind an org-scoped session from the org id inside it. This is the one route in
+the system whose tenant identity comes from a signed parameter rather than a
+validated token, and that is exactly why the signature and the TTL are
+load-bearing rather than defence in depth.
 
 ## 6. Frontend
 

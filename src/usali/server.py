@@ -27,6 +27,8 @@ from usali.crm_feed import CrmFeed
 from usali.db import make_engine, make_session_factory
 from usali.detect import detect_report_signature
 from usali.ingestion import ProcessingError, process_file
+from usali.integrations_api import callback_router as integrations_callback_router
+from usali.integrations_api import qbo_redirect_uri
 from usali.integrations_api import router as integrations_router
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminClient
 from usali.face_enrollment import router as face_enrollment_router
@@ -46,7 +48,7 @@ from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
-from usali.qbo_client import QboClient
+from usali.qbo_client import QboClient, exchange_authorization_code
 from usali.schedule_api import router as schedule_router
 from usali.signup_api import router as signup_router
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory, SessionFactory
@@ -122,6 +124,29 @@ def _parse_preview_sync(data: bytes) -> dict[str, object]:
     if vendor is not None:
         return {"status": "unsupported", "vendor": vendor, "reason": "vendor_not_supported"}
     return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
+
+
+def _exchange_qbo_code_from_settings(code: str) -> str:
+    """The default QBO code-exchange seam (OH-17 Task 11): trade Intuit's
+    single-use authorization code for the tenant's refresh token.
+
+    Settings and NOT the credential row, unlike every other integration seam
+    in `create_app`: `client_id`/`client_secret` here are OUR Intuit
+    APPLICATION's, deployment config shared by every tenant, and the whole
+    point of this call is that the tenant has no credential row yet — the
+    token it returns is what creates one.
+
+    `redirect_uri` comes from the same `qbo_redirect_uri` the consent URL
+    used, because Intuit compares the two byte-for-byte.
+    """
+    settings = get_settings()
+    return exchange_authorization_code(
+        code,
+        base_url=settings.qbo_base_url,
+        client_id=settings.qbo_client_id,
+        client_secret=settings.qbo_client_secret,
+        redirect_uri=qbo_redirect_uri(settings),
+    )
 
 
 def _shared(build: Callable[[], _T]) -> Callable[[], _T]:
@@ -276,6 +301,7 @@ def create_app(
     verify_integration: (
         Callable[[str, str, dict[str, Any], str | None], None] | None
     ) = None,
+    exchange_qbo_code: Callable[[str], str] | None = None,
 ) -> FastAPI:
     settings = get_settings()
     # There is NO provider-name fail-fast here any more (OH-17). Two used to
@@ -391,6 +417,15 @@ def create_app(
     app.state.verify_integration = (
         verify_integration or integrations.verify_credentials
     )
+    # The QBO consent-flow code exchange (OH-17 Task 11). The second seam here
+    # that is not a resolution, and the one that CREATES a credential row:
+    # `connect` refuses a pasted refresh token (D-OH17.10), so this is the
+    # only path by which `accounting` is ever connected. Tests inject a spy;
+    # wiring the default to a stub returning a constant would make the whole
+    # OAuth flow false in production with the suite green, which is why the
+    # default is pinned by a test of its own — the same hole
+    # `verify_integration` above closes for D-OH17.8.
+    app.state.exchange_qbo_code = exchange_qbo_code or _exchange_qbo_code_from_settings
     # Face engine seam (F3). Tests inject a fake; the default loads the ONNX
     # models lazily on the first face route and is SHARED for the app's
     # lifetime (two onnxruntime sessions per process, not per request).
@@ -409,6 +444,15 @@ def create_app(
     # org_admin through its own `require_integration_admin` — the read too,
     # unlike the checklist — so the outer gate here is only authentication.
     app.include_router(integrations_router, dependencies=operator_gates)
+    # The Intuit OAuth callback, and it is included with NO dependencies on
+    # purpose (D-OH17.11): it arrives as a top-level browser navigation with
+    # no bearer token and no active-org header, so both gates above would
+    # refuse it. Its ONLY authorization is the HMAC-signed `state` it verifies
+    # itself, which is why it is a separate router — "ungated" is then a fact
+    # about this line rather than a comment somebody can quietly falsify by
+    # adding `dependencies=` here. Do not merge it back into
+    # `integrations_router`; do not add gates to it.
+    app.include_router(integrations_callback_router)
     # Face-template enrollment (F3). Route-level require_onboarder narrows to
     # org_admin/property_gm — require_operator is only the outer gate.
     app.include_router(face_enrollment_router, dependencies=operator_gates)

@@ -2,7 +2,10 @@
 
 A deliberately small, synchronous httpx client that speaks exactly the slice
 of Intuit's API the push needs: the OAuth2 refresh grant and journal-entry
-create. Faithful to the real-Intuit behaviors the mock enforces:
+create, plus (since OH-17) the one-shot ``authorization_code`` grant that
+CONNECTS a tenant — `exchange_authorization_code`, a module function rather
+than a client method because it runs before any client exists. Faithful to
+the real-Intuit behaviors the mock enforces:
 
 - Token refresh uses HTTP Basic auth (client_id:client_secret) and Intuit
   ROTATES the refresh token on every grant — the rotated token is written
@@ -104,6 +107,73 @@ def _error_message(resp: httpx.Response) -> str:
     if isinstance(payload.get("error"), str):
         return str(payload["error"])
     return resp.text[:200]
+
+
+def exchange_authorization_code(
+    code: str,
+    *,
+    base_url: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+    transport: httpx.BaseTransport | None = None,
+) -> str:
+    """Trade Intuit's authorization `code` for the tenant's refresh token
+    (OH-17, D-OH17.10/11) — the other half of the consent flow, and the ONLY
+    way `accounting` can be connected.
+
+    Lives here rather than in the router so it shares `_TOKEN_PATH` and
+    `_error_message` with `QboClient._refresh`: the token endpoint and the
+    Intuit fault shapes are one fact about the provider, and a second copy is
+    a second thing to get wrong when Intuit moves either.
+
+    Not a `QboClient` method, and not built on one, because there is no client
+    yet: a client needs a `TokenStore`, and the token this call returns is
+    what the store will hold. The client is constructed later, per request,
+    from the credential row this token lands in (`integrations.resolve_qbo`).
+
+    `code` is SINGLE-USE at Intuit. That is load-bearing beyond tidiness: it
+    is precisely why D-OH17.11's `state` needs no server-side nonce store — a
+    replayed state necessarily carries a spent code and this call refuses it
+    with `invalid_grant`. Do not add a caching or retry layer around it; a
+    retry of a consumed code is a guaranteed failure, and a cache of the
+    result would resurrect the replay window the design closed.
+
+    `redirect_uri` must be the BYTE-IDENTICAL string sent to the consent
+    endpoint — Intuit compares them exactly, and a mismatch fails here, long
+    after the URL looked fine. One expression feeds both call sites
+    (`integrations_api.qbo_redirect_uri`).
+
+    Raises `QboError` on any non-200 or a response carrying no refresh token,
+    so a spent or bogus code is an ordinary refusal the router turns into a
+    400 rather than a 500.
+    """
+    basic = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode("ascii")
+    with httpx.Client(
+        base_url=base_url, transport=transport, headers={"Accept": "application/json"}
+    ) as http:
+        resp = http.post(
+            _TOKEN_PATH,
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+            },
+            headers={"Authorization": f"Basic {basic}"},
+        )
+        if resp.status_code != 200:
+            raise QboError(
+                resp.status_code,
+                f"authorization-code grant failed: {_error_message(resp)}",
+            )
+        payload = resp.json()
+    token = payload.get("refresh_token") if isinstance(payload, dict) else None
+    if not isinstance(token, str) or not token:
+        # A 200 with no refresh token would otherwise become a KeyError 500,
+        # or — worse — an empty string stored as this tenant's credential,
+        # which reads as "connected" to the checklist's presence probe.
+        raise QboError(200, "authorization-code grant returned no refresh_token")
+    return token
 
 
 class TokenStore(Protocol):

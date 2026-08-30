@@ -35,6 +35,14 @@ _PHOTO_MASTER_ORG_ID = 1
 # photo test.
 _PHOTO_HKDF_INFO = b"usali-punch-photo-key-v1"
 
+# Domain-separation label for the OAuth `state` signing key (OH-17,
+# D-OH17.11). A fixed info string so this derivation can never collide with
+# the photo keys' — same master, different purpose, and the labels are what
+# keep them apart. Changing this string invalidates every state signed under
+# the old one, which is harmless (they live 10 minutes) but is the only thing
+# it does; it is not a rotation mechanism for the master key.
+_OAUTH_STATE_HKDF_INFO = b"usali-integration-oauth-state-v1"
+
 
 def _key() -> bytes:
     raw = base64.b64decode(get_settings().field_encryption_key)
@@ -105,6 +113,31 @@ def _photo_key(org_id: int) -> bytes:
         salt=str(org_id).encode("ascii"),
         info=_PHOTO_HKDF_INFO,
     ).derive(master)
+
+
+def oauth_state_key() -> bytes:
+    """The HMAC key protecting the integration OAuth `state` parameter
+    (OH-17, D-OH17.11).
+
+    HKDF-derived from the master field-encryption key rather than configured
+    separately — the `_photo_key` precedent directly above: OH-17 introduces
+    no new deployment secret, and production already fail-fasts on the
+    committed dev-default master (`config._refuse_dev_secrets_in_prod`), so
+    this key inherits that guard for free.
+
+    Derived and NOT the master itself, which would be the tempting
+    one-liner: `state` signing and PII decryption would then be the same
+    compromise, and a forged state is a cross-tenant credential injection
+    (`integrations_api.callback`). The fixed info label is what separates
+    them; there is no salt because there is exactly one such key
+    process-wide — unlike the photo keys, which are per-org and salt on the
+    org id."""
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=_OAUTH_STATE_HKDF_INFO,
+    ).derive(_key())
 
 
 def encrypt_photo(data: bytes, org_id: int) -> bytes:

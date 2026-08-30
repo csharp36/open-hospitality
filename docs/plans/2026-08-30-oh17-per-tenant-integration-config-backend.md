@@ -2381,6 +2381,56 @@ git commit -m "feat(oh17): connect/disconnect endpoints that verify before persi
 
 ## Task 11: The QBO OAuth pair
 
+> **Six defects, found in execution 2026-08-30. Two of them are security
+> defects in the security-critical half of this task.**
+>
+> 1. **`hmac.compare_digest` on `str` crashes on non-ASCII.** `state` is an
+>    attacker-supplied query parameter, and `compare_digest` raises
+>    `TypeError` when either `str` holds a non-ASCII character — so
+>    `?state=1:s:1:é` answers **500** where every other bad state answers 400.
+>    A 500 is a refusal shape no other failure mode produces: the plan's own
+>    "one refusal for every failure mode" rule, broken by a two-byte query
+>    parameter, on an unauthenticated route. Shipped comparing **bytes**;
+>    pinned by three non-ASCII cases in `test_a_malformed_state_is_refused`.
+> 2. **A required `state` parameter is itself an oracle.** Step 5's
+>    `def callback(request, code: str, realmId: str, state: str)` makes a
+>    MISSING `state` FastAPI's **422 naming the field** — distinguishable from
+>    the 400 that forged, expired and malformed all get, which is exactly what
+>    the docstring two lines below forbids. Shipped with all three optional and
+>    one 400; pinned by `test_every_bad_state_is_refused_the_exact_same_way`.
+> 3. **`rsplit(":", 3)` mis-parses any subject containing a colon** — it takes
+>    the org id off the wrong end, `int()` raises, and a perfectly valid state
+>    is refused as though forged. Keycloak subjects are UUIDs so nothing breaks
+>    today, but the failure is silent and looks like an attack. Shipped
+>    MAC-first: `rpartition` for the signature, then parse the payload the
+>    signature has already vouched for.
+> 4. **The plan's test file cannot run.** No `from sqlalchemy import text`;
+>    `oauth_client` is never defined; `TestClient` follows redirects by
+>    default, so `assert resp.status_code in (200, 307)` sees the SPA
+>    fallback's 404 in a test app with no `frontend/dist`; and the row query is
+>    unfiltered by org, so under `founding_org` it reads the D-OH17.15 seed row
+>    rather than what the callback wrote (the same fixture trap that has now
+>    bitten four tasks).
+> 5. **Step 5 re-implements `_store_credential` inline** — its own `pg_insert`
+>    over `ALL_CREDENTIAL_FIELDS` — instead of calling the helper Task 10
+>    factored out for it. Correct, but a second upsert to keep in step with the
+>    CHECK. Shipped calling the helper; `_audit` now takes a `subject` rather
+>    than a `Principal`, because the callback has no principal to hand it.
+> 6. **Step 6 asks `server.py` to reuse `QboClient._TOKEN_PATH` and
+>    `_error_message`, both module-private.** Shipped instead as a public
+>    `qbo_client.exchange_authorization_code(...)` beside them (with a
+>    `transport` seam, so the REAL function is driven over `qbo_mock`), and a
+>    thin `_exchange_qbo_code_from_settings` wrapper in `server.py`. The plan
+>    also omits `redirect_uri` from the grant, which real Intuit requires and
+>    compares byte-for-byte against the consent URL — one `qbo_redirect_uri`
+>    now feeds both call sites.
+>
+> **And one unsatisfiable instruction.** The task brief asks for a test that
+> dies when `hmac.compare_digest` becomes `==`. No behavioural test can: the
+> two agree on every input and differ only in how long they take to disagree.
+> Pinned with a source assertion (`test_the_signature_is_compared_in_constant
+> _time`) instead, which is the only thing that can hold it.
+
 **Files:**
 - Modify: `src/usali/crypto.py` (add `oauth_state_key`)
 - Modify: `src/usali/config.py` (add `qbo_authorize_url`)

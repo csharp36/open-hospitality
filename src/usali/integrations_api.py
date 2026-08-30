@@ -30,18 +30,26 @@ bug once. Nor may any refusal become an existence oracle: an unknown
 integration under an unauthorized caller is a 403, never a 404.
 """
 
+import hashlib
+import hmac
+import time
 from datetime import datetime, timezone
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from usali.auth import ORG_ADMIN, Principal, request_session_factory, require_grants
+from usali.config import Settings, get_settings
 from usali.crm_feed import CrmFeedError
+from usali.crypto import oauth_state_key
 from usali.integrations import (
+    ACCOUNTING,
     ALL_CREDENTIAL_FIELDS,
     INTEGRATIONS,
     CannotVerify,
@@ -51,9 +59,15 @@ from usali.integrations import (
 from usali.models import AuditEvent, OrgIntegrationCredential, Property
 from usali.payroll_provider import ProviderError
 from usali.qbo_client import QboError
-from usali.tenancy import current_org_id
+from usali.tenancy import OrgBoundSessionFactory, current_org_id
 
 router = APIRouter(prefix="/api/integrations")
+
+# The Intuit callback ONLY. Its own router because `create_app` includes
+# `router` above with `operator_gates`, and the callback must be included with
+# NONE — see the `callback` docstring. Splitting the routers is what makes
+# "ungated" a property of the MOUNT rather than a comment nobody enforces.
+callback_router = APIRouter(prefix="/api/integrations")
 
 require_integration_admin = require_grants(ORG_ADMIN)
 
@@ -216,8 +230,13 @@ def _store_credential(
     )
 
 
-def _audit(session: Session, principal: Principal, action: str, integration: str) -> None:
-    session.add(AuditEvent(actor_subject=principal.subject, action=action,
+def _audit(session: Session, subject: str, action: str, integration: str) -> None:
+    """Takes the SUBJECT, not a `Principal`: the OAuth callback has no
+    principal to hand over (no bearer token reaches it — D-OH17.11) and its
+    actor comes out of the verified `state` instead. One audit shape for all
+    four verbs rather than a second `session.add(AuditEvent(...))` that could
+    drift on `resource_type`."""
+    session.add(AuditEvent(actor_subject=subject, action=action,
                            resource_type="integration", resource_id=integration))
 
 
@@ -287,7 +306,7 @@ def connect(
             session, integration, body.provider, supplied, spec.fields,
             principal.subject,
         )
-        _audit(session, principal, "integration_connected", integration)
+        _audit(session, principal.subject, "integration_connected", integration)
         session.commit()
     return Response(status_code=204)
 
@@ -313,6 +332,242 @@ def disconnect(
                 OrgIntegrationCredential.integration == integration
             )
         )
-        _audit(session, principal, "integration_disconnected", integration)
+        _audit(session, principal.subject, "integration_disconnected", integration)
         session.commit()
     return Response(status_code=204)
+
+
+# --------------------------------------------------------------------------
+# The QBO OAuth pair (OH-17 Task 11, D-OH17.10/D-OH17.11)
+#
+# `connect` above REFUSES 'qbo' (CannotVerify): Intuit rotates the refresh
+# token on every grant, so a pasted one cannot be checked without spending it
+# and leaving the stored copy dead. Completing the consent flow is therefore
+# the ONLY way `accounting` can be connected, and these two routes are what
+# make that checklist item closeable at all.
+# --------------------------------------------------------------------------
+
+_QBO = "qbo"
+
+# How long a signed `state` stays valid. Ten minutes is a consent screen plus
+# an Intuit login plus a fumbled password — long enough that no honest
+# operator meets an expiry, short enough that a state captured from a browser
+# history, a proxy log or a Referer is dead before it can be used. It is not a
+# session lifetime: nothing legitimate holds one of these across a coffee.
+_STATE_TTL_SECONDS = 600
+
+# Where the callback lands the operator when the grant completes. A SPA route,
+# so the browser that followed Intuit's redirect ends up back in the connect
+# UI with the result visible rather than looking at a JSON body.
+_CONNECTED_REDIRECT = "/integrations?connected=accounting"
+
+
+def qbo_redirect_uri(settings: Settings) -> str:
+    """The one redirect URI, for both the consent request and the code
+    exchange.
+
+    ONE function because Intuit compares the two byte-for-byte and answers a
+    mismatch with `invalid_grant` at exchange time — long after the consent
+    URL looked perfectly fine — so two f-strings that "obviously" agree are a
+    bug waiting for someone to add a trailing slash to one of them.
+
+    Built from `public_base_url` and NEVER from the request. A request's Host
+    (or X-Forwarded-Host) is attacker-controlled behind a proxy, and a
+    redirect_uri derived from it would ask Intuit to deliver the tenant's
+    authorization code to the attacker's domain. `public_base_url` exists for
+    exactly this class of problem (it already backs the signup links).
+
+    This is deliberately NOT a setting of its own: a second knob is a second
+    thing to get out of sync with the value registered in the Intuit app
+    dashboard, and the path half is ours, not the deployment's.
+    """
+    return f"{settings.public_base_url}/api/integrations/accounting/callback"
+
+
+def sign_state(*, org_id: int, subject: str, now: float | None = None) -> str:
+    """`org_id:subject:expiry:hmac` (D-OH17.11).
+
+    The callback has no bearer token and no active-org header, so this string
+    is the ONLY carrier of "which tenant is this grant for". Everything the
+    callback is allowed to do is derived from what verifies out of here.
+
+    Deliberately NOT single-use against a nonce store. Replay is already dead:
+    the other half of the callback is Intuit's `code`, which is single-use AT
+    INTUIT, so a replayed state necessarily carries a spent code and the token
+    exchange refuses it. A nonce table would add a row, a migration and a
+    reaper to re-block something already blocked. (The design doc's §5 prose
+    predates this amendment; D-OH17.11 itself carries it.)
+
+    The MAC covers `org_id`, `subject` AND `expiry` together — not the org
+    alone. An unsigned expiry is no expiry, and an unsigned subject lets a
+    grant be attributed to anyone.
+    """
+    expiry = int((now if now is not None else time.time()) + _STATE_TTL_SECONDS)
+    payload = f"{org_id}:{subject}:{expiry}"
+    mac = hmac.new(oauth_state_key(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}:{mac}"
+
+
+def verify_state(state: str) -> tuple[int, str] | None:
+    """(org_id, subject), or None for anything wrong.
+
+    ONE None for every failure mode on purpose — forged, expired, malformed
+    and missing must be indistinguishable to the caller, or the refusal
+    becomes an oracle about other tenants' in-flight grants. That is also why
+    nothing in here raises: a ValueError would surface as a 500 whose shape
+    tells the caller which check it tripped.
+
+    The MAC is checked FIRST and everything else afterwards, so no parse of
+    attacker-controlled bytes happens until the signature has vouched for
+    them.
+    """
+    payload, separator, mac = state.rpartition(":")
+    if not separator:
+        return None
+    expected = hmac.new(
+        oauth_state_key(), payload.encode(), hashlib.sha256
+    ).hexdigest()
+    # compare_digest, never ==: a timing-variable comparison on a MAC is the
+    # textbook forgery oracle. Compared as BYTES because `state` is
+    # attacker-supplied and `hmac.compare_digest` raises TypeError on a str
+    # holding non-ASCII — which would be a 500 distinguishable from this
+    # function's single refusal.
+    if not hmac.compare_digest(mac.encode(), expected.encode()):
+        return None
+    # Past this point the bytes are ours: the split below cannot be steered,
+    # because any re-split of a signed payload re-serialises to that same
+    # signed string.
+    org_raw, _, rest = payload.partition(":")
+    subject, _, expiry_raw = rest.rpartition(":")
+    try:
+        if int(expiry_raw) < time.time():
+            return None
+        return int(org_raw), subject
+    except ValueError:
+        return None
+
+
+class AuthorizeUrlModel(BaseModel):
+    url: str
+
+
+@router.get("/accounting/authorize")
+def authorize(
+    request: Request,
+    principal: Principal = Depends(require_integration_admin),
+) -> AuthorizeUrlModel:
+    """The Intuit consent URL for the ACTIVE org.
+
+    Returns the URL rather than 302-ing: the SPA navigates the top-level
+    window itself, so the fetch seam in `api/client.ts` and its one-shot
+    `redirectToLogin` latch are never asked to follow a cross-origin redirect.
+
+    Gated exactly like every other route here, and that matters more than it
+    looks: this endpoint MINTS the signatures the ungated callback trusts. An
+    org_admin gate here is what stops anyone from obtaining a valid `state`
+    for an org they do not administer without having to forge one.
+    """
+    settings = get_settings()
+    with _session(request) as session:
+        # The org comes from the request's validated active org — the same
+        # binding every other route writes under — and is then sealed into
+        # the state. Nothing later re-derives it.
+        org_id = current_org_id(session)
+        _audit(session, principal.subject, "integration_authorize_started", ACCOUNTING)
+        session.commit()
+    params = urlencode({
+        "client_id": settings.qbo_client_id,
+        "response_type": "code",
+        "scope": "com.intuit.quickbooks.accounting",
+        "redirect_uri": qbo_redirect_uri(settings),
+        "state": sign_state(org_id=org_id, subject=principal.subject),
+    })
+    return AuthorizeUrlModel(url=f"{settings.qbo_authorize_url}?{params}")
+
+
+@callback_router.get("/accounting/callback")
+def callback(
+    request: Request,
+    code: str | None = Query(default=None),
+    realm_id: str | None = Query(default=None, alias="realmId"),
+    state: str | None = Query(default=None),
+) -> Response:
+    """Complete the grant and store the tenant's realm + refresh token.
+
+    Mounted OUTSIDE the operator gates (`server.create_app` includes
+    `callback_router` with no dependencies): this arrives as a top-level
+    browser navigation with no bearer token and no active-org header, so
+    `require_operator` and `require_active_org` would both refuse it. All of
+    its authorization therefore comes from the signed `state` — which is why
+    the signature and the TTL are load-bearing here rather than defence in
+    depth, and why the org-bound session below is built from the org INSIDE
+    the state and from nothing else. Do NOT "helpfully" read an org from a
+    query parameter, a header or a cookie here: any of those is a
+    cross-tenant credential injection with no forgery required at all.
+
+    Every parameter is OPTIONAL in the signature and refused in the body on
+    purpose. Declared required, a missing `state` would be FastAPI's 422
+    naming the field — a refusal no other failure mode produces, and so an
+    oracle distinguishing "you sent nothing" from "your state did not
+    verify".
+
+    Nothing is written until Intuit has honoured the code, so a refused grant
+    leaves no row — the same verify-before-persist rule D-OH17.8 puts on the
+    paste path, arrived at here for free because the exchange IS the
+    verification.
+    """
+    verified = verify_state(state or "")
+    if verified is None:
+        raise HTTPException(status_code=400, detail="invalid authorization state")
+    org_id, subject = verified
+    if not code or not realm_id:
+        # Only reachable by a caller holding a VALID state, so naming what is
+        # missing discloses nothing. Real Intuit sends `error=access_denied`
+        # here when the operator declines consent.
+        raise HTTPException(
+            status_code=400, detail="QuickBooks returned no authorization code"
+        )
+    try:
+        refresh_token: str = request.app.state.exchange_qbo_code(code)
+    except QboError as exc:
+        # The client never puts a response body in a QboError, so this cannot
+        # leak Intuit's payload; the status and Intuit's own fault message are
+        # what an operator needs to tell "you declined" from "that code is
+        # already spent".
+        raise HTTPException(
+            status_code=400, detail=f"QuickBooks refused the grant: {exc}"
+        ) from exc
+
+    # The spec, never a literal field list: `_store_credential` nulls every
+    # column this provider does not use, which is what stops a previous
+    # provider's secret surviving a re-connect. `spec_for` is Optional in the
+    # type system only — ('accounting', 'qbo') is in PROVIDERS and mirrored by
+    # the DB CHECK — so this branch exists to refuse loudly rather than store
+    # a half-nulled row if PROVIDERS ever loses the pair.
+    spec = spec_for(ACCOUNTING, _QBO)
+    if spec is None:  # pragma: no cover - PROVIDERS would have to drop qbo
+        raise HTTPException(
+            status_code=500, detail="accounting/qbo is not a known provider pair"
+        )
+
+    # The org-bound factory is built from the VERIFIED org and the app's
+    # UNBOUND base factory — the callback has no `request.state.session_factory`
+    # (that is `require_active_org`'s doing, and it did not run). Both L2 walls
+    # then confine the write, and `_store_credential` takes its `org_id` from
+    # this session's context, so the upsert's UPDATE arm can only ever reach
+    # this org's row.
+    factory = OrgBoundSessionFactory(request.app.state.db_session_factory, org_id)
+    with factory() as session:
+        _store_credential(
+            session, ACCOUNTING, _QBO,
+            {"realm_id": realm_id, "refresh_token": refresh_token},
+            spec.fields, subject,
+        )
+        # The actor is the subject sealed into the state — the operator who
+        # started the grant — because there is no principal on this request.
+        _audit(session, subject, "integration_connected", ACCOUNTING)
+        session.commit()
+    # No secret and no code on this redirect: it travels through the browser's
+    # history and every proxy in between (the module docstring's rule, applied
+    # to the one route that holds a freshly minted token).
+    return RedirectResponse(url=_CONNECTED_REDIRECT, status_code=307)
