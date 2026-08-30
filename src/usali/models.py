@@ -504,6 +504,47 @@ class OrgSettings(OrgScoped, Base):
     crm_provider: Mapped[str] = mapped_column(String(20), server_default="")
 
 
+class OrgChecklistOverride(OrgScoped, Base):
+    """A dismissed onboarding open item (Track B/B4, D-B4.1). The ONLY
+    persisted checklist state: every item's done/open status is DERIVED by
+    probing what is actually configured, so there is no stored status to go
+    stale. Presence of a row means dismissed; un-dismissing is a row delete
+    (no `state` column — with one legal value it could only say one thing).
+
+    `org_id` is part of the composite primary key and the FK to
+    `organization`, the `OrgSettings` "org-scoped by its own key" shape. Both
+    L2 walls therefore confine it automatically — the ORM criteria hook and
+    the `org_wall` RLS policy.
+
+    A dismissal LOSES to a probe that says done (D-B4.4): `checklist.evaluate`
+    consults this table only when the probe reports the item still open.
+    """
+
+    __tablename__ = "org_checklist_override"
+    # The CHECK is the SCHEMA MIRROR of the keys in usali.checklist.ITEMS —
+    # kept literal on purpose so the DB refuses an unknown key independently
+    # of the app import (the org_settings.crm_provider discipline). Adding an
+    # item means editing ITEMS *and* this literal plus its migration.
+    __table_args__ = (
+        CheckConstraint(
+            "item_key IN ('first_report', 'room_inventory', 'fiscal_calendar', "
+            "'payroll', 'accounting', 'demand_feed', 'team')",
+            name="ck_org_checklist_override_item_key",
+        ),
+    )
+
+    org_id: Mapped[int] = mapped_column(
+        ForeignKey("organization.org_id", name="fk_org_checklist_override_org"),
+        primary_key=True,
+    )
+    item_key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    note: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_by: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class Property(OrgScoped, Base):
     """The DB system of record for a property. `property_id` is the SAME short
     code ("HISJ"/"SSSJ") already denormalized across every fact/stage table, so
