@@ -1,5 +1,7 @@
 """OH-17: per-tenant integration credentials (design D-OH17.1, D-OH17.5)."""
 
+import base64
+
 import pytest
 from sqlalchemy import String, text
 from sqlalchemy.exc import IntegrityError
@@ -9,6 +11,7 @@ from usali.crypto import EncryptedString
 from usali.mapping.property_registry import ensure_default_org
 from usali.models import Base, OrgIntegrationCredential
 from usali.qbo_client import QboClient
+from usali.tenancy import FOUNDING_ORG_ID
 
 
 def test_the_table_is_registered():
@@ -231,7 +234,16 @@ def unconnected_org(db_session):
     The org row itself must stay: every `_connect` below carries org_id = 1
     and would otherwise die on `fk_org_integration_credential_org`."""
     ensure_default_org(db_session)
-    db_session.execute(text("DELETE FROM org_integration_credential"))
+    # SCOPED to org 1 explicitly. `db_session` truncates first, so nothing
+    # else can be here in-suite and the WHERE is redundant TODAY — but this
+    # commit's headline lesson is that an org-scoped write carrying no org_id
+    # is confined by RLS alone, and `db_session` runs as the superuser, which
+    # bypasses RLS. An unscoped DELETE sitting in the same diff is the thing
+    # a future two-org test copies.
+    db_session.execute(
+        text("DELETE FROM org_integration_credential WHERE org_id = :org"),
+        {"org": FOUNDING_ORG_ID},
+    )
     db_session.commit()
 
 
@@ -377,3 +389,77 @@ def test_credentials_are_encrypted_at_rest(db_session, unconnected_org):
     raw = _raw_column(db_session, "demand_feed", "subscription_key")
     assert raw != "s3cret"
     assert "s3cret" not in raw
+
+
+def test_each_payroll_credential_lands_in_its_own_slot(
+    org_bound_factory, db_session, unconnected_org
+):
+    """Asserting the adapter's TYPE catches a mis-keyed constructor argument
+    (that is a TypeError) but not a SWAPPED one: `api_token=row.company_id,
+    company_id=row.api_token` builds a perfectly good GustoAdapter that
+    authenticates with the company id. Only the two-field providers can have
+    this bug — Delphi and Tripleseat carry a single credential each, so there
+    is nothing to swap and no assertion of this kind is worth its coupling
+    there.
+
+    The observables are private because that is where the values actually go;
+    the alternative is asserting on an outbound request, which would need a
+    transport double per provider to prove a two-line mapping. The deliberately
+    distinguishable values are what make the swap visible."""
+    _connect(db_session, "payroll", "gusto", api_token="tok-A", company_id="co-B")
+    gusto = integ.resolve_payroll(org_bound_factory)
+    assert gusto._company_id == "co-B"
+    assert gusto._http.headers["Authorization"] == "Bearer tok-A"
+
+    # Scoped, for the same reason `unconnected_org` scopes its delete.
+    db_session.execute(
+        text("DELETE FROM org_integration_credential WHERE org_id = :org"),
+        {"org": FOUNDING_ORG_ID},
+    )
+    db_session.commit()
+    _connect(db_session, "payroll", "adp", client_id="id-A", client_secret="sec-B")
+    adp = integ.resolve_payroll(org_bound_factory)
+    # ADP folds both into one base64 blob, so the ORDER inside it is the only
+    # place a swap shows up at all.
+    basic = adp._basic_auth.removeprefix("Basic ")
+    assert base64.b64decode(basic).decode() == "id-A:sec-B"
+
+
+@pytest.mark.parametrize(
+    ("resolve", "integration", "provider", "fields"),
+    [
+        ("resolve_payroll", "payroll", "gusto", {"api_token": "t", "company_id": "c"}),
+        ("resolve_qbo", "accounting", "qbo", {"realm_id": "r", "refresh_token": "t"}),
+        ("resolve_crm_feed", "demand_feed", "delphi", {"subscription_key": "s"}),
+    ],
+)
+def test_an_unknown_provider_raises_instead_of_reading_as_disconnected(
+    org_bound_factory, db_session, unconnected_org, monkeypatch,
+    resolve, integration, provider, fields,
+):
+    """The three `raise RuntimeError` branches, which the comments beside them
+    call load-bearing and which nothing else reaches.
+
+    They are unreachable through the DB by design — the CHECK is the schema
+    mirror of PROVIDERS, so a row naming an unknown provider cannot be
+    inserted. That is exactly why the branch needs a test rather than being
+    deleted as dead: it guards the state where someone has added a provider to
+    the CHECK (and its migration) and forgotten this module. Returning None
+    there would read as "not connected", and the tenant's connected
+    integration would silently stop running instead of failing by name.
+
+    So the row is real and legal, and only the PROVIDER is falsified, on the
+    object `credential_for` hands back — the narrowest lie that reaches the
+    branch."""
+    _connect(db_session, integration, provider, **fields)
+    real = integ.credential_for
+
+    def rogue(session, wanted):
+        row = real(session, wanted)
+        if row is not None:
+            row.provider = "someday-provider"
+        return row
+
+    monkeypatch.setattr(integ, "credential_for", rogue)
+    with pytest.raises(RuntimeError, match="someday-provider"):
+        getattr(integ, resolve)(org_bound_factory)

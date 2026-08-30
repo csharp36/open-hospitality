@@ -212,17 +212,20 @@ class QboClient:
         # or the NEXT refresh fails with invalid_grant. Through the store, so
         # the token has a durable home and the lineage CAN outlive this
         # process (D-OH17.7). `post_journal_entry` holds the instance lock
-        # around this, which serializes THREADS here.
+        # around this, so threads sharing THIS client are serialized here.
         #
-        # PROCESSES are deliberately NOT serialized (settled 2026-08-30; see
-        # `integrations.DbTokenStore`). The critical section is
-        # load() -> grant -> store(), which no lock taken inside either method
-        # can cover, and this method is exactly why one spanning them is
-        # unsafe: the `raise` above leaves without ever calling `store()`, so a
-        # lock opened by `load()` would have no release path on the routine
-        # failure of an expired or revoked token. Two workers pushing for one
-        # tenant at once can therefore both spend the same token; the loser
-        # gets invalid_grant here and its push fails visibly, while the
+        # Concurrent refreshes are otherwise NOT serialized, and that is a
+        # decision (settled 2026-08-30; see `integrations.DbTokenStore`). The
+        # lock above is per-INSTANCE, and D-OH17.6 removes the memoizer that
+        # made concurrent callers share one client — so this covers less than
+        # it looks like it does. The critical section is
+        # load() -> grant -> store(), which no lock taken inside either store
+        # method can cover, and this method is exactly why one spanning them
+        # is unsafe: the `raise` above leaves without ever calling `store()`,
+        # so a lock opened by `load()` would have no release path on the
+        # routine failure of an expired or revoked token. Two concurrent
+        # pushes for one tenant can therefore both spend the same token; the
+        # loser gets invalid_grant here and its push fails visibly, while the
         # winner's rotated token is in the row, so a retry succeeds.
         self._tokens.store(payload["refresh_token"])
 

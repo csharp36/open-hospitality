@@ -161,14 +161,25 @@ that would fail on first use.
   attempt), so that shape would trade a rare protection for a common leaked
   connection and a locked row.
 
-  So the standing guarantee is: durable, per-tenant, serialized within a
-  process by `QboClient`'s instance lock. Two workers pushing for one tenant
-  at the same instant can both spend the same token; the loser's grant returns
-  `invalid_grant`, its push fails visibly, and the winner's rotated token is in
-  the row, so a retry succeeds. These are month-end operator actions, not a
-  request path, so the exposure is small and recoverable. If it ever stops
-  being small, the fix is an **advisory lock taken and released around the
-  whole refresh by the caller** — which can use `try/finally` — not a
+  This is a SCOPE judgement, not an impossibility. `TokenStore` could grow a
+  `rotating()` context manager (or an `abort()`) and get its `try/finally`,
+  and (a) would then work as originally written. The port shape was frozen
+  the task before, and reopening it to buy protection against a month-end
+  race did not earn its way in.
+
+  So the standing guarantee is **durability and per-tenant scope, and nothing
+  more**. It is tempting to add "and serialized in-process by `QboClient`'s
+  instance lock" — do not: that lock is per-INSTANCE, so it serializes only
+  callers sharing one client, and **D-OH17.6 above deletes the `_shared`
+  memoizer that was the reason they did**. Once each operator action builds
+  its own client, two simultaneous pushes in one worker fork the lineage
+  exactly as two workers would. In every case both spend the same token, the
+  loser's grant returns `invalid_grant` and its push fails visibly, and the
+  winner's rotated token is in the row, so a retry succeeds — nothing is
+  silently lost. These are month-end operator actions, not a request path, so
+  the exposure is small and recoverable. If it ever stops being small, the fix
+  is a lock taken and released around the **whole refresh by the caller** —
+  the `rotating()` port change above, or a Postgres advisory lock — never a
   `FOR UPDATE` smuggled into `load()`.
 
 - **D-OH17.8 — The probe is a presence check; honesty is enforced on the
@@ -502,9 +513,12 @@ Per ADR-010, every degradation is loud and named.
 - **Invalid, expired, replayed or missing OAuth `state`** → 400 with a fixed
   message, and no row written. It must not distinguish those cases: the
   difference is an oracle about other tenants' in-flight grants.
-- **Concurrent QBO pushes** → serialized WITHIN a process by `QboClient`'s
-  instance lock; across processes they are NOT serialized (D-OH17.7, revised).
-  Both can spend the same refresh token; the loser's grant returns
+- **Concurrent QBO pushes** → NOT serialized, in one process or across them
+  (D-OH17.7, revised). `QboClient`'s lock is per-INSTANCE, and D-OH17.6
+  removes the `_shared` memoizer that made concurrent callers share one
+  instance — so once each operator action builds its own client, two
+  simultaneous pushes in a single worker fork the lineage exactly as two
+  workers would. Both spend the same refresh token; the loser's grant returns
   `invalid_grant` and its push fails visibly, while the winner's rotated token
   is in the row, so a retry succeeds. ACCEPTED, not mitigated: these are
   month-end operator actions, and the alternative held a row lock across an

@@ -17,7 +17,8 @@ The `resolve_*` functions take an org-bound SESSION FACTORY, not a session:
 rotated refresh token back in its own short transaction (D-OH17.7). All three
 take the same shape so no call site has to remember which is which. Read
 `DbTokenStore`'s docstring before relying on the rotation guarantee: it is
-durable and per-tenant, but it does NOT serialize across processes, and that
+durable and per-tenant, and it serializes NOTHING — not across processes and,
+once D-OH17.6 removes the shared-client memoizer, not within one either. That
 is a decision rather than an omission.
 """
 
@@ -165,24 +166,35 @@ class DbTokenStore:
 
     WHAT THIS DOES NOT DO — read this before trusting it (settled 2026-08-30,
     superseding D-OH17.7's original "under a row lock" wording). It does NOT
-    serialize concurrent refreshes ACROSS PROCESSES. The critical section is
-    `load()` -> outbound grant -> `store()`; a `SELECT ... FOR UPDATE` taken
-    inside `load()` and released when that short session closes covers none of
-    it, and a lock that spanned the grant would mean holding a transaction and
-    a row lock open across a network call — leaked on every FAILED grant,
-    because the port has no abort step and `QboClient._refresh` raises without
-    ever calling `store()`. Refresh failure is routine (a revoked or expired
-    token fails every grant), so that trade buys a rare protection with a
-    common leak. Deliberately not taken.
+    serialize concurrent refreshes. The critical section is `load()` ->
+    outbound grant -> `store()`; a `SELECT ... FOR UPDATE` taken inside
+    `load()` and released when that short session closes covers none of it,
+    and a lock that spanned the grant would have NO RELEASE PATH on failure:
+    `QboClient._refresh` raises on a bad grant and returns without ever
+    calling `store()`. Refresh failure is routine — a revoked or expired token
+    fails every grant — so that shape would leak a connection and strand a
+    locked row on the common failure while protecting against a rare one.
 
-    So the standing guarantee is: durable, per-tenant, and serialized WITHIN a
-    process by `QboClient`'s instance lock. Two workers pushing for the same
-    tenant at the same instant can both spend the same token; the loser's
-    grant returns `invalid_grant`, its push fails visibly, and the winner's
-    rotated token is in the row, so a retry succeeds. That is recoverable and
-    rare — these are month-end operator actions, not a request path. If it
-    ever stops being rare, the fix is an advisory lock taken and released
-    around the whole refresh by the CALLER (which can use try/finally), not a
+    That is a scope judgement, not an impossibility: `TokenStore` could grow a
+    `rotating()` context manager (or an `abort()`) and get its try/finally.
+    The port shape was frozen in the task before this one, and reopening it
+    to buy protection against a month-end race did not earn its way in.
+
+    THE STANDING GUARANTEE IS DURABILITY AND PER-TENANT SCOPE — nothing more.
+    Do NOT add "and serialized in-process by `QboClient`'s instance lock" back
+    to this list, however true it looks: that lock is per-INSTANCE, so it
+    serializes only callers sharing ONE client, and D-OH17.6 deletes the
+    `server._shared` memoizer that was the reason they did. Once each operator
+    action builds its own client, two concurrent pushes inside a single
+    process fork the lineage exactly as two processes would.
+
+    In every one of those cases the outcome is the same and is ACCEPTED: both
+    callers spend the same token, the loser's grant returns `invalid_grant`
+    and its push fails visibly, and the winner's rotated token is in the row,
+    so a retry succeeds. Nothing is silently lost. These are month-end
+    operator actions, not a request path. If that ever stops holding, the fix
+    is a lock taken and released around the WHOLE refresh by the caller — the
+    `rotating()` port change above, or a Postgres advisory lock — never a
     `FOR UPDATE` smuggled into `load()`."""
 
     def __init__(self, factory: SessionFactory) -> None:
@@ -263,6 +275,14 @@ def resolve_qbo(factory: SessionFactory) -> QboClient | None:
         row = credential_for(session, ACCOUNTING)
         if row is None:
             return None
+        if row.provider != "qbo":
+            # Accounting has exactly one provider today, so unlike its two
+            # siblings this guard has no second branch to dispatch to — but it
+            # is the SAME rule, and it is here precisely because this is the
+            # function where a second one (a Xero, say) would be added. Built
+            # unconditionally, a QboClient over a non-QBO row would send our
+            # Intuit application credentials to whatever that provider is.
+            raise RuntimeError(f"unknown accounting provider {row.provider!r}")
         realm_id = row.realm_id or ""
     return QboClient(
         settings.qbo_base_url,
