@@ -76,7 +76,8 @@ configured, and the checklist reports on setup without gating it.
 
 Three pieces:
 
-1. **`src/usali/checklist.py`** — the `ITEMS` closed set plus the probes.
+1. **`src/usali/checklist.py`** — the `ITEMS` closed set plus the probes, pure
+   over a `Session` and free of HTTP concerns.
 2. **The probes** — one scoped query each, run under the caller's
    already-org-bound session, so both tenancy walls apply for free. A probe
    *cannot* observe another tenant's rows even if written carelessly.
@@ -84,7 +85,7 @@ Three pieces:
    dismissal.
 
 ```
-GET /portal/checklist
+GET /api/checklist
   └─ for each item in ITEMS:
        done = item.probe(session)          # one scoped query
        if done:                 status = "done"          # D-B4.4
@@ -161,10 +162,15 @@ forgets the policy.
 ## 6. API
 
 ```
-GET    /portal/checklist                    operator-gated (router default)
-PUT    /portal/checklist/{key}/dismissal    require_grants(ORG_ADMIN)
-DELETE /portal/checklist/{key}/dismissal    require_grants(ORG_ADMIN)
+GET    /api/checklist                    operator-gated (router default)
+PUT    /api/checklist/{key}/dismissal    require_grants(ORG_ADMIN)
+DELETE /api/checklist/{key}/dismissal    require_grants(ORG_ADMIN)
 ```
+
+The router lives in its own module, `src/usali/checklist_api.py`, mounted in
+`server.py` beside the other feature routers (`crm_api`,
+`property_config_api`, `sick_leave_api`). It is NOT added to `portal_api.py`,
+which is past 1200 lines already.
 
 `GET` returns:
 
