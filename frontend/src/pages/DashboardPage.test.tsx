@@ -96,12 +96,7 @@ describe('DashboardPage hero panel', () => {
   // reads as "nobody is checking in", which is a different fact from "we do
   // not know yet".
   it('shows an em dash, not zero, when the day has no statistics', async () => {
-    // All clear by default so the setup card stays out of every other test in
-  // this file.
-  vi.mocked(getChecklist).mockResolvedValue({
-    items: [], open_count: 0, error_count: 0, all_clear: true,
-  })
-  vi.mocked(getSos).mockResolvedValue(
+    vi.mocked(getSos).mockResolvedValue(
       makeSosReport({ statistics: [], total_operating_revenue: '28786.0000' }),
     )
     renderDashboard()
