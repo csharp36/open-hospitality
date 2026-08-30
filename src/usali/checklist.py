@@ -165,21 +165,31 @@ def _probe_fiscal_calendar(session: Session) -> bool:
 
 
 def _probe_payroll(session: Session) -> bool:
-    """OH-17 (D-OH17.8): the tenant's OWN credential row, not
-    `settings.payroll_provider`. A presence check, not a live provider call —
-    the checklist is read on every page load via the sidebar badge, and a
-    probe that dialled out would put the SPA's critical path behind a provider.
-    A credential that does not authenticate never becomes a row, because the
-    connect endpoint verifies before it writes."""
+    """OH-17 (D-OH17.8): the tenant's OWN payroll credential row, not
+    `settings.payroll_provider` — a process-wide credential is not this
+    tenant's connection. See `has_credential`'s docstring for why this is a
+    presence check rather than a live provider call."""
     return has_credential(session, PAYROLL)
 
 
 def _probe_accounting(session: Session) -> bool:
-    """D-OH17.8, as `_probe_payroll`."""
+    """D-OH17.8, as `_probe_payroll`, for the accounting credential."""
     return has_credential(session, ACCOUNTING)
 
 
 def _probe_demand_feed(session: Session) -> bool:
+    """`has_credential` picks out the one row (if any) this org holds for the
+    demand-feed slot — the same filter `crm_api._active_org_crm_provider`
+    uses (both delegate to `integrations.credential_for`), so the checklist
+    and the pull endpoint agree on what "connected" means.
+
+    "OFF" used to be `org_settings.crm_provider == ''`, an explicit sentinel
+    value on an always-present row. Under `OrgIntegrationCredential` there is
+    no sentinel: OFF is the ABSENCE of a row entirely (D-OH17.1 — a tenant
+    cannot hold a provider without its credentials, so an unconnected org
+    simply has no row for this integration). See `has_credential`'s
+    docstring for why this is a presence check rather than a live provider
+    call."""
     return has_credential(session, DEMAND_FEED)
 
 
