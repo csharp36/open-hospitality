@@ -108,6 +108,12 @@ def _every_property_has(session: Session, column: InstrumentedAttribute[str]) ->
     properties = {pid for (pid,) in session.execute(select(Property.property_id))}
     if not properties:
         return False
+    # distinct() is NOT redundant with the set comprehension below, though a
+    # test cannot tell them apart: room_inventory is effective-dated, so one
+    # property carries a row per change. DISTINCT bounds what Postgres sends
+    # to one row per property; without it the wire carries every historical
+    # row and Python throws them away. Behaviour is identical either way —
+    # which is why no cheap test guards this. Do not "simplify" it out.
     covered = {pid for (pid,) in session.execute(select(distinct(column)))}
     return properties <= covered
 

@@ -133,6 +133,17 @@ than a common path.
 `demand_feed` is the only item that can answer truthfully today, because
 `crm_provider` is the one integration already modelled per-org.
 
+**Known gap (recorded 2026-08-30, found in review):** `demand_feed`'s `where`
+points at `/schedule`, but that page only *displays* demand already pulled —
+nothing in the SPA sets `org_settings.crm_provider`. There is no connect
+surface for it anywhere today. So the one item a tenant could genuinely close
+is the one with no UI to close it. This is accepted for the backend slice
+rather than papered over: the item reports its true status, and the operator
+is simply routed somewhere unhelpful. **The frontend plan must resolve it** —
+either by routing the item to a real connect control, or by rendering it
+without an actionable link and saying why. **OH-17** is what eventually
+supplies that surface for all three integrations.
+
 ## 5. Data model
 
 ```
