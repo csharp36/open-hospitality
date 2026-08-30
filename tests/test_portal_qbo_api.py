@@ -31,6 +31,7 @@ from sqlalchemy import Engine, update
 from sqlalchemy.orm import Session
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from usali.db import make_session_factory
 from usali.mapping.property_registry import DEFAULT_ORG_ALIAS
@@ -396,6 +397,43 @@ def test_an_unconnected_tenant_gets_a_503_naming_the_connect_surface(
     detail = r.json()["detail"]
     assert "/integrations" in detail
     assert "USALI_QBO" not in detail
+
+
+def test_an_unreadable_accounting_credential_gets_its_own_named_503(
+    db_engine, db_session, tmp_path
+):
+    """ADR-005: rotating `field_encryption_key` leaves this tenant's stored
+    refresh token undecryptable. That is NOT the state above — the row is
+    there and the Intuit authorization is intact — so it must not be answered
+    with "not connected", which would send the operator to re-authorize a
+    connection that is fine while the real cause is never named.
+
+    Nor may it be a 500: the decrypt fails while the row is LOADED, deep
+    inside `resolve_qbo`, so without an explicit refusal this arrives as an
+    unhandled `InvalidTag` in the middle of a push.
+
+    The same world as the test above, plus one unreadable row — the only
+    difference between the two is which refusal the tenant is given."""
+    db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS,
+                                name="Org"))
+    db_session.add(Property(property_id="HISJ", org_id=1, name="HISJ",
+                            pms_source="OPERA", wage_jurisdiction="US-CA"))
+    db_session.commit()
+    grant_role(db_session, "accountant")
+    plant_credential(db_session, "accounting", "qbo", realm_id="realm-9",
+                     refresh_token=unreadable_ciphertext("intuit-token"))
+
+    client = _make_client(db_engine, tmp_path, None)
+    r = client.post("/api/qbo/push", json={"property": "HISJ", "date": DAY})
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "accounting" in detail
+    assert "decrypted" in detail
+    assert "not connected" not in detail
+    # Nothing about the credential itself reaches the wire — not the value
+    # nobody can read, and not the realm it points at.
+    assert "intuit-token" not in detail
+    assert "realm-9" not in detail
 
 
 def test_default_qbo_factory_builds_lazily(db_engine, db_session, founding_org, tmp_path):

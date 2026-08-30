@@ -41,6 +41,7 @@ from usali.crm_feed import CrmFeedError
 from usali.crm_pull import latest_demand, store_pull
 from usali.integrations import (
     DEMAND_FEED,
+    CredentialUnreadable,
     connected_provider,
     not_connected_detail,
 )
@@ -147,8 +148,20 @@ def refresh_demand(
         # predicate: either half being absent means OFF, and the J7 review
         # found the divergent state (name present, seam yields None) was the
         # one nobody tested.
-        provider_name = _active_org_crm_provider(session)
-        feed = request.app.state.get_crm_feed(request_session_factory(request))
+        try:
+            provider_name = _active_org_crm_provider(session)
+            feed = request.app.state.get_crm_feed(request_session_factory(request))
+        except CredentialUnreadable as exc:
+            # ADR-005: the feed IS connected; its subscription key just cannot
+            # be decrypted any more (a rotated `field_encryption_key`).
+            # Refused on the SAME audited path as feature-off but with its own
+            # detail — reporting it as "not connected" would send an operator
+            # to reconnect a feed that is fine and never name the rotation.
+            #
+            # BOTH reads are inside the block, not just the seam: the row is
+            # decrypted when it is LOADED, so the name lookup on the line
+            # above is the first thing to meet the failure.
+            refused(503, str(exc))
         if provider_name == "" or feed is None:
             refused(503, not_connected_detail(DEMAND_FEED))
         if prop.crm_ref is None:
@@ -248,8 +261,17 @@ def get_demand(
         if session.get(Property, property_id) is None:
             raise HTTPException(status_code=404, detail="property not found")
 
-        provider_name = _active_org_crm_provider(session)
-        feed = request.app.state.get_crm_feed(request_session_factory(request))
+        try:
+            provider_name = _active_org_crm_provider(session)
+            feed = request.app.state.get_crm_feed(request_session_factory(request))
+        except CredentialUnreadable as exc:
+            # The ONE case this surface does not degrade for (ADR-005). Off
+            # degrades because there is no capability story to label the
+            # history with; an UNREADABLE credential has a provider, a
+            # history, and a cause worth naming. `configured: false` here
+            # would read as "the feed is switched off" to a scheduler and
+            # would hide the stored days behind that.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if provider_name == "" or feed is None:
             # Stored history is deliberately NOT served while off: with
             # no configured provider there is no capability story to

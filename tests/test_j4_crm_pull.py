@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from tests.orgworld import set_demand_feed
 from usali.config import get_settings
@@ -340,6 +341,51 @@ def test_feature_off_is_a_loud_503_naming_the_integrations_page(
         select(AuditEvent).where(AuditEvent.action == "crm_refresh_refused")
     ).scalar_one()
     assert refused.resource_id == "HISJ"
+
+
+
+def test_an_unreadable_credential_is_a_named_503_not_feature_off(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    """ADR-005 meets the pull. The demand feed IS connected — the row is
+    there — but `field_encryption_key` has been rotated, so its subscription
+    key cannot be decrypted.
+
+    It must NOT be reported as feature-off (the test above): that wording
+    tells an operator to connect a feed that is already connected, and hides
+    the rotation. And it must not be a 500 — the decrypt fails while the row
+    is loaded, on the FIRST read the handler does (`_active_org_crm_provider`,
+    before the seam is even called), so the refusal has to cover both reads.
+
+    The audit assertion is load-bearing for the same reason it is above: it
+    proves the 503 came from `refused()` inside the handler and not from an
+    exception handler somewhere upstream."""
+    monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
+    _seed(db_session)  # no demand_feed row: the env is empty
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("delphi-key"))
+    verifier, mint = make_authkit()
+    app = create_app(
+        inbox_dir=tmp_path / "inbox", processed_dir=tmp_path / "processed",
+        failed_dir=tmp_path / "failed",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(),
+    )
+    c = TestClient(app)
+
+    r = c.post("/api/crm/refresh", headers=_admin(mint),
+               json={"property": "HISJ"})
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "demand_feed" in detail
+    assert "decrypted" in detail
+    assert "not connected" not in detail
+    assert "delphi-key" not in detail
+    assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
+    assert db_session.execute(
+        select(AuditEvent).where(AuditEvent.action == "crm_refresh_refused")
+    ).scalars().all()
 
 
 def test_a_provider_failure_is_502_audited_and_writes_nothing(

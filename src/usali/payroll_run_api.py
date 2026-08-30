@@ -25,7 +25,12 @@ from sqlalchemy.orm import Session
 
 from usali.auth import ORG_ADMIN, PAYROLL_ADMIN, Principal, request_session_factory, require_grants
 from usali.config import get_settings
-from usali.integrations import PAYROLL, ResolvedPayroll, not_connected_detail
+from usali.integrations import (
+    PAYROLL,
+    CredentialUnreadable,
+    ResolvedPayroll,
+    not_connected_detail,
+)
 from usali.models import (
     AuditEvent,
     Department,
@@ -82,9 +87,18 @@ def _provider(request: Request) -> ResolvedPayroll:
     `create_run` must resolve BEFORE its duplicate-period 409 because
     `execute_pay_run` raises that conflict and needs the adapter to get there.
     Do not "make these consistent" by hoisting `fetch_results`' call."""
-    resolved: ResolvedPayroll | None = request.app.state.get_payroll_provider(
-        request_session_factory(request)
-    )
+    try:
+        resolved: ResolvedPayroll | None = request.app.state.get_payroll_provider(
+            request_session_factory(request)
+        )
+    except CredentialUnreadable as exc:
+        # ADR-005: connected, but the stored credential cannot be decrypted
+        # (a rotated `field_encryption_key`). Its own refusal, never the
+        # "connect Gusto or ADP" one below — that wording would have an
+        # operator re-enter credentials that were never the problem, and the
+        # next period would fail identically. `str(exc)` names the
+        # integration and the likely cause and carries no credential.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if resolved is None:
         raise HTTPException(
             status_code=503, detail=not_connected_detail(PAYROLL)

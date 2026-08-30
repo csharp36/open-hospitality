@@ -53,6 +53,7 @@ from usali.integrations import (
     ALL_CREDENTIAL_FIELDS,
     INTEGRATIONS,
     CannotVerify,
+    CredentialUnreadable,
     credential_for,
     spec_for,
 )
@@ -120,7 +121,20 @@ def get_integrations(
         # as long as nothing expires them. Not a risk worth carrying for the
         # two lines it would save.
         for integration in INTEGRATIONS:
-            row = credential_for(session, integration)
+            try:
+                row = credential_for(session, integration)
+            except CredentialUnreadable as exc:
+                # ADR-005: a rotated `field_encryption_key` makes the row
+                # undecryptable, and loading it decrypts every secret column
+                # at once — so this page is where an operator meets the
+                # rotation. Refusing the WHOLE page, by name, beats rendering
+                # the readable integrations and this one as `connected:
+                # false`: that is the lie `CredentialUnreadable` exists to
+                # prevent, and it would be told on the very surface someone
+                # came to for an explanation. The remedy the message names
+                # still works while this refuses — `connect` below upserts
+                # without ever reading the old row.
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             if row is None:
                 items.append(IntegrationModel(
                     integration=integration, connected=False, provider=None,

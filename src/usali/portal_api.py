@@ -57,7 +57,11 @@ from usali.fiscal import (
     require_config,
     resolve_period,
 )
-from usali.integrations import ACCOUNTING, not_connected_detail
+from usali.integrations import (
+    ACCOUNTING,
+    CredentialUnreadable,
+    not_connected_detail,
+)
 from usali.inventory import InventoryInconsistent, InventoryNotConfigured
 from usali.models import Property, QboPushLedger
 from usali.performance import (
@@ -117,9 +121,18 @@ def _get_qbo_client(request: Request) -> QboClient:
     handler body, after their refusals. Pinned by
     tests/test_workforce_api.py::test_qbo_push_property_scope_enforced.
     """
-    client: QboClient | None = request.app.state.get_qbo_client(
-        request_session_factory(request)
-    )
+    try:
+        client: QboClient | None = request.app.state.get_qbo_client(
+            request_session_factory(request)
+        )
+    except CredentialUnreadable as exc:
+        # ADR-005: the row is there and the Intuit authorization is intact —
+        # only the ciphertext is unreadable, because `field_encryption_key`
+        # was rotated. Beside the `None` branch and NOT folded into it: this
+        # tenant must not be told to connect an accounting integration it
+        # already has. `str(exc)` names the integration and the likely cause
+        # and carries no credential material (see `CredentialUnreadable`).
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     if client is None:
         raise HTTPException(
             status_code=503, detail=not_connected_detail(ACCOUNTING)

@@ -35,6 +35,7 @@ from usali.photo_store import InMemoryPhotoStore
 from usali.server import create_app
 from usali.tenancy import ORG_INFO_KEY
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from tests.test_payroll_run import (
     _OPENER,
@@ -395,6 +396,35 @@ def test_an_unconnected_tenant_gets_a_503_naming_the_connect_surface(
     assert "/integrations" in detail
     assert "USALI_PAYROLL_PROVIDER" not in detail
     # Nothing was written: a refused run is not a draft row left behind.
+    assert db_session.execute(select(PayRun)).scalars().all() == []
+
+
+def test_an_unreadable_payroll_credential_gets_its_own_named_503(
+    db_engine, db_session, tmp_path
+):
+    """ADR-005: the tenant IS connected to Gusto — the row is there, the token
+    was accepted at connect time — but `field_encryption_key` has been rotated
+    since, so nothing can read it. A different refusal from the one above, on
+    purpose: telling this operator to "connect Gusto or ADP" would have them
+    re-enter credentials to fix a key rotation, and the pay run would fail the
+    same way the next period.
+
+    Still a 503 and still before any write: a pay run must not half-run into
+    an adapter built from a credential nobody could decrypt."""
+    _two_employees_16h_each(db_session)
+    plant_credential(db_session, "payroll", "gusto", company_id="co-1",
+                     api_token=unreadable_ciphertext("gusto-token"))
+    verifier, mint = make_authkit()
+    c = _unconnected_client(db_engine, tmp_path, verifier)
+    pa = {"Authorization": f"Bearer {mint(roles=['payroll_admin'], sub='pa')}"}
+
+    r = c.post("/api/payroll/runs", headers=pa, json=_BODY)
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "payroll" in detail
+    assert "decrypted" in detail
+    assert "not connected" not in detail
+    assert "gusto-token" not in detail
     assert db_session.execute(select(PayRun)).scalars().all() == []
 
 

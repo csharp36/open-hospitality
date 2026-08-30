@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from tests.test_integrations import _connect
 from usali import integrations
@@ -195,6 +196,30 @@ def test_no_secret_is_ever_on_the_wire(integrations_client, db_session):
     # cannot pass by the endpoint returning nothing at all.
     assert "realm-9" in body
     assert "c1" in body
+
+
+def test_an_unreadable_credential_refuses_by_name_rather_than_500ing(
+    integrations_client, db_session
+):
+    """ADR-005 reaches the connect surface too. A rotated
+    `field_encryption_key` makes the row undecryptable, and the read decrypts
+    every column the moment it loads the row — so without a refusal this page
+    is an unhandled `InvalidTag`, on the ONE surface an operator would go to
+    in order to understand what broke.
+
+    The whole page refuses rather than rendering the readable two: the
+    alternative is showing the unreadable integration as `connected: false`,
+    which is the lie `CredentialUnreadable` exists to prevent. The remedy the
+    message names still works while this 503s — `connect` upserts without
+    ever reading the old row."""
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("sentinel-key"))
+
+    r = integrations_client.get("/api/integrations")
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "demand_feed" in detail
+    assert "sentinel-key" not in detail
 
 
 def test_a_non_admin_cannot_read(integrations_client_gm):

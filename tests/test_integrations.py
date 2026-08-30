@@ -8,9 +8,12 @@ from sqlalchemy.exc import IntegrityError
 
 from usali import integrations as integ
 from usali.crypto import EncryptedString
+from usali.db import make_session_factory
 from usali.models import Base, OrgIntegrationCredential
 from usali.qbo_client import QboClient
-from usali.tenancy import FOUNDING_ORG_ID
+from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory
+
+from tests.credentials import plant_credential, unreadable_ciphertext
 
 
 def test_the_table_is_registered():
@@ -444,3 +447,249 @@ def test_an_unknown_provider_raises_instead_of_reading_as_disconnected(
     monkeypatch.setattr(integ, "credential_for", rogue)
     with pytest.raises(RuntimeError, match="someday-provider"):
         getattr(integ, resolve)(org_bound_factory)
+
+
+# ------------------------------------------- two-org isolation (Task 12)
+#
+# The claim OH-17 has to earn: one tenant's credentials are unreachable from
+# another tenant's session. Everything below runs on `app_role_engine` — the
+# RLS-bound, non-owner `usali_app` role — and NOT on the `db_engine`
+# superuser these tests otherwise use. That is the whole point of this
+# section: the ORM criteria hook is SELECT-only (tenancy.py, decision 2), so
+# `update()`/`delete()` ride the DATABASE wall alone, and a superuser
+# connection BYPASSES RLS no matter what the policy says. On `db_engine`
+# these tests would pass over a table whose `org_wall` policy was never
+# created — certifying a wall nobody checked.
+#
+# Each test carries a POSITIVE CONTROL (the org DOES see / DID change its own
+# row) beside every cross-org assertion. An isolation test that passes
+# because the query returned nothing for an unrelated reason — the wrong org
+# bound, an empty table, a filter that never matched — is worse than no test.
+
+
+def _app_factory_for(app_role_engine, org_id):
+    """An org-bound session factory over the APP-ROLE engine.
+
+    The precedent is `test_l2_rls_wall.test_the_app_factory_binds_the_founding_org`
+    (which builds the same wrapper over `db_engine`, because its subject is the
+    ORM hook rather than RLS). Built explicitly here rather than taken from a
+    fixture because `two_tenant_world` returns a SimpleNamespace of ids
+    (org2_id, org2_admin, org2_emp_id), not session factories — and
+    `org_bound_factory` is pinned to the founding org over the superuser
+    engine, which is neither org 2 nor RLS-bound."""
+    return OrgBoundSessionFactory(make_session_factory(app_role_engine), org_id)
+
+
+def _connect_bound(factory, integration, provider, **fields):
+    """Connect one integration for whichever org `factory` is bound to.
+
+    Deliberately NOT `_connect` above: that helper hardcodes `org_id=1`, which
+    on an org-2-bound session is refused by the write wall
+    (`tenancy.OrgContextMismatch`). Omitting org_id entirely is the correct
+    shape — `_stamp_wall` stamps it from the session's own context, which is
+    exactly how a request-path INSERT lands in the right tenant."""
+    with factory() as session:
+        session.add(OrgIntegrationCredential(
+            integration=integration, provider=provider,
+            connected_by="test-subject", **fields,
+        ))
+        session.commit()
+
+
+def _visible(session, where="TRUE", **params):
+    """How many credential rows this session can SEE, through raw SQL.
+
+    `text()` bypasses the ORM wall entirely (tenancy.py's module docstring
+    says so), so this counts what the DATABASE wall alone permits — the half
+    an ORM-only assertion cannot reach."""
+    return session.execute(
+        text(f"SELECT count(*) FROM org_integration_credential WHERE {where}"),  # noqa: S608
+        params,
+    ).scalar_one()
+
+
+def test_one_org_cannot_read_anothers_credentials(app_role_engine, two_tenant_world):
+    """Both walls, both directions.
+
+    `two_tenant_world` leaves org 1 connected to all three integrations (the
+    D-OH17.15 seed bridge plants payroll + accounting; the world adds a delphi
+    demand feed) and org 2 connected to nothing — so org 2 gets the credential
+    org 1 does not have, and each side has something the other must not see.
+    """
+    org_a = _app_factory_for(app_role_engine, FOUNDING_ORG_ID)
+    org_b = _app_factory_for(app_role_engine, two_tenant_world.org2_id)
+    _connect_bound(org_b, integ.DEMAND_FEED, "tripleseat", api_key="org2-only-secret")
+
+    with org_a() as session:
+        # Positive control: org 1 sees its OWN feed, decrypted. Without this,
+        # every assertion below would also pass on a session that could see
+        # nothing at all.
+        mine = integ.credential_for(session, integ.DEMAND_FEED)
+        assert mine.provider == "delphi"
+        assert _visible(session) > 0
+        # The ORM half (credential_for) and the RLS half (raw SQL) of the same
+        # claim: org 2's tripleseat row is not here by either route.
+        assert mine.api_key is None
+        assert _visible(session, "provider = 'tripleseat'") == 0
+        assert _visible(session, "org_id <> :org", org=FOUNDING_ORG_ID) == 0
+
+    with org_b() as session:
+        mine = integ.credential_for(session, integ.DEMAND_FEED)
+        assert mine.provider == "tripleseat"
+        assert mine.api_key == "org2-only-secret"  # positive control
+        # Org 1 holds payroll and accounting rows; org 2 must read its own
+        # absence, never org 1's presence.
+        assert integ.credential_for(session, integ.PAYROLL) is None
+        assert integ.credential_for(session, integ.ACCOUNTING) is None
+        assert integ.has_credential(session, integ.PAYROLL) is False
+        assert _visible(session) == 1
+        assert _visible(session, "org_id <> :org", org=two_tenant_world.org2_id) == 0
+
+
+def test_one_org_cannot_overwrite_anothers_credentials(app_role_engine, two_tenant_world):
+    """The RLS wall STANDING ALONE, on the statement shape the ORM hook does
+    not cover: a bare `UPDATE` with no org_id in its WHERE. The application
+    wall is SELECT-only, so nothing but the policy's USING clause confines
+    this — which is why it runs as the app role.
+
+    The unscoped UPDATE below is the ATTACK, not a pattern: an org-scoped
+    write carrying no org_id is precisely what this branch's `store()` hazard
+    warns against. Do not copy it into production code."""
+    org_a = _app_factory_for(app_role_engine, FOUNDING_ORG_ID)
+    org_b = _app_factory_for(app_role_engine, two_tenant_world.org2_id)
+    _connect_bound(org_b, integ.DEMAND_FEED, "tripleseat", api_key="k")
+
+    with org_b() as session:
+        session.execute(text(
+            "UPDATE org_integration_credential SET connected_by = 'stolen'"
+        ))
+        session.commit()
+
+    with org_a() as session:
+        # `connected_by` and not a secret column on purpose: the CHECK pins
+        # WHICH credential columns each provider may carry, so an UPDATE
+        # setting `api_key` would be refused for org 1's delphi row on the
+        # constraint — and would pass this test for the wrong reason.
+        assert _visible(session, "connected_by = 'stolen'") == 0
+        assert _visible(session) > 0
+
+    with org_b() as session:
+        # Positive control: the UPDATE really did run and really did match a
+        # row. Without it, a statement that matched nothing anywhere (a typo,
+        # a rolled-back transaction) would leave this test green.
+        assert _visible(session, "connected_by = 'stolen'") == 1
+
+
+def test_one_org_cannot_delete_anothers_credentials(app_role_engine, two_tenant_world):
+    """The other half of the SELECT-only gap. A cross-tenant DELETE is the
+    worse of the two — it destroys a connection rather than corrupting one,
+    and leaves the victim's checklist item re-opened with nothing to explain
+    it."""
+    org_a = _app_factory_for(app_role_engine, FOUNDING_ORG_ID)
+    org_b = _app_factory_for(app_role_engine, two_tenant_world.org2_id)
+    _connect_bound(org_b, integ.DEMAND_FEED, "tripleseat", api_key="k")
+
+    with org_a() as session:
+        before = _visible(session)
+        assert before > 0
+
+    with org_b() as session:
+        session.execute(text("DELETE FROM org_integration_credential"))
+        session.commit()
+
+    with org_a() as session:
+        assert _visible(session) == before
+    with org_b() as session:
+        assert _visible(session) == 0  # positive control: it deleted its OWN
+
+
+# --------------------------------- the undecryptable credential (Task 12)
+
+
+# (integration, provider, the plain companion columns the CHECK demands, the
+# secret column whose ciphertext is unreadable, the resolver that must refuse)
+_UNREADABLE_CASES = [
+    ("resolve_payroll", integ.PAYROLL, "gusto", "api_token", {"company_id": "c"}),
+    ("resolve_qbo", integ.ACCOUNTING, "qbo", "refresh_token", {"realm_id": "r"}),
+    ("resolve_crm_feed", integ.DEMAND_FEED, "delphi", "subscription_key", {}),
+]
+
+
+@pytest.mark.parametrize(
+    ("resolve", "integration", "provider", "secret", "plain"),
+    _UNREADABLE_CASES,
+    ids=[case[1] for case in _UNREADABLE_CASES],
+)
+def test_an_undecryptable_credential_refuses_loudly(
+    org_bound_factory, db_session, unconnected_org,
+    resolve, integration, provider, secret, plain,
+):
+    """Design §7. ADR-005 records that rotating `field_encryption_key` makes
+    existing ciphertext undecryptable, and that there is no envelope or key
+    version to fall back on; this is where a tenant meets that.
+
+    It must be a NAMED refusal — never a fallback to env, and above all never
+    a silent "not connected". Folding it into `None` would re-open the
+    checklist item and invite the operator to reconnect an integration that is
+    fine, while the real cause is never surfaced (ADR-010: absence degrades to
+    a NAMED blocker). All three resolvers, because each reads a different
+    secret column and a per-branch `try` is exactly the kind of thing that
+    gets added to two of three."""
+    plant_credential(db_session, integration, provider,
+                **{secret: unreadable_ciphertext("s3cret")}, **plain)
+
+    with pytest.raises(integ.CredentialUnreadable) as caught:
+        getattr(integ, resolve)(org_bound_factory)
+
+    assert caught.value.integration == integration
+    detail = str(caught.value)
+    assert integration in detail
+    # It carries no secret — not the plaintext (which nobody here can read
+    # anyway) and not the stored ciphertext, which is still bearer material
+    # to anyone holding the old key.
+    assert "s3cret" not in detail
+
+
+def test_a_credential_that_is_not_ciphertext_at_all_refuses_the_same_way(
+    org_bound_factory, db_session, unconnected_org
+):
+    """The other shape the same column can hold: a value that is not even
+    valid base64 — a hand-edited row, a half-restored backup, a column
+    written before ADR-005 by something that did not encrypt.
+
+    It refuses identically ON PURPOSE. `decrypt_str` raises `binascii.Error`
+    here and `InvalidTag` for a rotated key; a refusal that named only the
+    latter would let this one through as a raw 500 in the middle of a push."""
+    plant_credential(db_session, integ.DEMAND_FEED, "delphi",
+                subscription_key="not-valid-ciphertext")
+    with pytest.raises(integ.CredentialUnreadable):
+        integ.resolve_crm_feed(org_bound_factory)
+
+
+def test_the_token_store_refuses_an_unreadable_token(
+    org_bound_factory, db_session, unconnected_org
+):
+    """`DbTokenStore` reads the same column mid-push and has its own
+    `IntegrationNotConfigured` for absence — an unreadable token is NOT
+    absence, and must not be reported as it. `store()` refuses too: it reads
+    the row before writing, so it meets the same failure."""
+    plant_credential(db_session, integ.ACCOUNTING, "qbo", realm_id="r",
+                refresh_token=unreadable_ciphertext("tok-0"))
+    store = integ.DbTokenStore(org_bound_factory)
+    with pytest.raises(integ.CredentialUnreadable):
+        store.load()
+    with pytest.raises(integ.CredentialUnreadable):
+        store.store("rotated")
+
+
+def test_an_unreadable_credential_is_not_reported_as_disconnected(
+    db_session, unconnected_org
+):
+    """The distinction, stated once directly: `connected_provider` must not
+    answer '' — the OFF sentinel — for a row that exists but cannot be read.
+    '' is what `crm_api` tests for feature-off, so folding the two together
+    would degrade a broken key into a silent "demand feed is switched off"."""
+    plant_credential(db_session, integ.DEMAND_FEED, "delphi",
+                subscription_key=unreadable_ciphertext("s"))
+    with pytest.raises(integ.CredentialUnreadable):
+        integ.connected_provider(db_session, integ.DEMAND_FEED)

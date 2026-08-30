@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from tests.orgworld import set_demand_feed
 from usali.config import get_settings
@@ -227,6 +228,40 @@ def test_feature_off_degrades_to_not_configured(
                          "event_covers": False},
         "days": [],
     }
+
+
+def test_an_unreadable_credential_refuses_instead_of_degrading(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    """The ONE case this surface does not degrade for (ADR-005).
+
+    Feature-off degrades because a surface with no configured provider has
+    nothing honest to say. An UNREADABLE credential is a different fact: the
+    feed is connected, its history is stored, and the deployment simply cannot
+    read the key any more. Rendering `configured: false` here would tell a
+    scheduler the feed is switched off, hide the stored days behind that lie,
+    and invite an operator to reconnect a feed that is fine — so this one
+    refuses by name."""
+    monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
+    _seed(db_session)  # no demand_feed row: the env is empty
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("delphi-key"))
+
+    verifier, mint = make_authkit()
+    app = create_app(
+        inbox_dir=tmp_path / "inbox", processed_dir=tmp_path / "processed",
+        failed_dir=tmp_path / "failed",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(),
+    )
+    c = TestClient(app)
+    r = c.get("/api/crm/demand", headers=_gm(mint), params=_WINDOW)
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "demand_feed" in detail
+    assert "decrypted" in detail
+    assert "delphi-key" not in detail
 
 
 def test_window_refusals(db_engine, db_session, tmp_path, crm_on):

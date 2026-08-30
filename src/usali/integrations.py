@@ -22,9 +22,13 @@ since D-OH17.6 removed the shared-client memoizer, not within one either. That
 is a decision rather than an omission.
 """
 
+from binascii import Error as Base64Error
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
+from cryptography.exceptions import InvalidTag
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -147,6 +151,73 @@ def spec_for(integration: str, provider: str) -> ProviderSpec | None:
     return None
 
 
+class CredentialUnreadable(Exception):
+    """A stored credential could not be DECRYPTED (ADR-005).
+
+    Rotating `field_encryption_key` makes every existing ciphertext
+    undecryptable — there is no envelope and no key version to fall back on
+    yet — and this is the exception a tenant meets when that has happened.
+
+    Deliberately NOT folded into "not connected" (`resolve_*` returning None,
+    `connected_provider` returning ''). A tenant whose credential is merely
+    unreadable would otherwise see the checklist item re-open and be invited
+    to reconnect an integration that is perfectly fine, while the real cause —
+    a key rotation, a half-restored backup — is never surfaced anywhere.
+    ADR-010: absence degrades to a NAMED blocker, and this is a different
+    blocker from absence, so it gets its own name.
+
+    Reconnecting IS the remedy the message names, and it genuinely works:
+    `integrations_api.connect` upserts the row without ever reading the old
+    one, so a credential re-entered under the current key replaces the
+    unreadable ciphertext.
+
+    The message carries the integration and the likely cause and NOTHING
+    else. Never put the offending value in it: ciphertext sealed under a
+    rotated key is still bearer material to whoever holds that key."""
+
+    def __init__(self, integration: str) -> None:
+        super().__init__(
+            f"{integration} credentials could not be decrypted — the field "
+            "encryption key may have been rotated; reconnect "
+            f"{integration} on /integrations"
+        )
+        self.integration = integration
+
+
+# What a failed decrypt actually raises. `EncryptedString.process_result_value`
+# calls `crypto.decrypt_str`, which fails two ways and only two:
+#   * InvalidTag   — structurally perfect ciphertext, wrong key. THE ADR-005
+#                    rotation case, and the only one the design names.
+#   * binascii.Error — the column does not even decode as base64: a
+#                    hand-edited row, a half-restored backup, a value written
+#                    by something that never encrypted. Named here too because
+#                    a refusal that covered only the first would let this one
+#                    through as a raw 500 in the middle of a push, which is
+#                    the failure mode this whole exception exists to end.
+# NOT bare ValueError, though binascii.Error is one: `crypto._key()` raises
+# ValueError for a MISCONFIGURED key ("must decode to 32 bytes"), and that is
+# a deployment fault affecting every tenant and every column — it must stay a
+# loud 500 rather than be reported to one tenant as "reconnect your feed".
+_UNREADABLE: tuple[type[Exception], ...] = (InvalidTag, Base64Error)
+
+
+@contextmanager
+def _named_if_unreadable(integration: str) -> Iterator[None]:
+    """Translate a decryption failure into `CredentialUnreadable`.
+
+    Wrapped around BOTH the query and the field reads, because the raise can
+    surface at either: `EncryptedString` decrypts in
+    `process_result_value`, which runs while the result row is turned into the
+    ORM object — so today it lands on `session.execute`. Make one of those
+    columns `deferred()` and it moves to first attribute access instead, with
+    no other visible change. The block spanning both is what makes that
+    refactor safe."""
+    try:
+        yield
+    except _UNREADABLE as exc:
+        raise CredentialUnreadable(integration) from exc
+
+
 def credential_for(
     session: Session, integration: str
 ) -> OrgIntegrationCredential | None:
@@ -155,12 +226,22 @@ def credential_for(
     The session is org-bound, so both L2 walls confine this SELECT to exactly
     the active org — there is no org_id parameter to pass wrong, and no env
     fallback for org != 1 in particular (the mutant L5 killed). The WHERE
-    narrows to the integration only; the org half is the walls'."""
-    return session.execute(
-        select(OrgIntegrationCredential).where(
-            OrgIntegrationCredential.integration == integration
-        )
-    ).scalar_one_or_none()
+    narrows to the integration only; the org half is the walls'.
+
+    An undecryptable row raises `CredentialUnreadable` (see there). The
+    translation lives HERE, at the one place the row is loaded, rather than
+    being repeated in each caller: every present and future reader —
+    `resolve_*`, `has_credential`, `connected_provider`, the connect surface —
+    then gets the named refusal instead of a raw `InvalidTag` 500, and none of
+    them can forget to ask for it. Callers that then READ decrypted fields
+    still wrap their own reads (`_named_if_unreadable`), for the deferred-
+    column case that docstring describes."""
+    with _named_if_unreadable(integration):
+        return session.execute(
+            select(OrgIntegrationCredential).where(
+                OrgIntegrationCredential.integration == integration
+            )
+        ).scalar_one_or_none()
 
 
 def has_credential(session: Session, integration: str) -> bool:
@@ -171,13 +252,25 @@ def has_credential(session: Session, integration: str) -> bool:
     sidebar badge, so a probe that dialled out would put two-to-five outbound
     calls on the SPA's critical path and paint the page red during any
     provider outage. Honesty is enforced on the WRITE path instead — a
-    credential that does not authenticate never becomes a row."""
+    credential that does not authenticate never becomes a row.
+
+    An UNREADABLE row (ADR-005) propagates `CredentialUnreadable` from
+    `credential_for` rather than answering False. False would be the checklist
+    item silently re-opening on a connection that exists — the one outcome
+    `CredentialUnreadable` exists to prevent. No checklist surface catches it
+    today, so a rotated key makes the checklist refuse rather than lie; that
+    is a worse page than it could be and a better one than a false answer."""
     return credential_for(session, integration) is not None
 
 
 def connected_provider(session: Session, integration: str) -> str:
     """The provider name, or '' when not connected. '' degrades exactly as the
-    old `org_settings.crm_provider` OFF sentinel did."""
+    old `org_settings.crm_provider` OFF sentinel did.
+
+    '' means OFF and nothing else. An unreadable credential raises
+    (`CredentialUnreadable`, from `credential_for`) instead: `crm_api` tests
+    this return value for feature-off, so answering '' would degrade a rotated
+    key into a silent "the demand feed is switched off"."""
     row = credential_for(session, integration)
     return row.provider if row is not None else ""
 
@@ -359,7 +452,11 @@ class DbTokenStore:
         self._factory = factory
 
     def load(self) -> str:
-        with self._factory() as session:
+        # `_named_if_unreadable` spans the field read too, not just the query:
+        # an unreadable token is NOT the absence `IntegrationNotConfigured`
+        # reports, and reporting it as absence would send an operator to
+        # reconnect a QuickBooks connection that is intact.
+        with self._factory() as session, _named_if_unreadable(ACCOUNTING):
             row = credential_for(session, ACCOUNTING)
             if row is None or row.refresh_token is None:
                 raise IntegrationNotConfigured(ACCOUNTING)
@@ -420,9 +517,14 @@ class ResolvedPayroll:
 
 def resolve_payroll(factory: SessionFactory) -> ResolvedPayroll | None:
     """The tenant's payroll adapter + its provider name, or None when payroll
-    is not connected. See `ResolvedPayroll` for why the name rides along."""
+    is not connected. See `ResolvedPayroll` for why the name rides along.
+
+    "Not connected" is None; "connected but undecryptable" is
+    `CredentialUnreadable` (ADR-005). The two must never collapse into one
+    answer — see that exception. The refusal covers the FIELD READS below as
+    well as the query, which is why the block wraps the whole session."""
     settings = get_settings()
-    with factory() as session:
+    with factory() as session, _named_if_unreadable(PAYROLL):
         row = credential_for(session, PAYROLL)
         if row is None:
             return None
@@ -457,9 +559,14 @@ def resolve_qbo(factory: SessionFactory) -> QboClient | None:
 
     The SAME factory goes to the store — not a session. The session opened
     here is closed before the client is returned; a store holding it would be
-    reading a dead session on the first refresh."""
+    reading a dead session on the first refresh.
+
+    An undecryptable row raises `CredentialUnreadable` rather than answering
+    None — and it raises HERE even though the token itself is read later, in
+    `DbTokenStore.load`: the row load decrypts every EncryptedString column at
+    once. Both places refuse, because either can be the first to touch it."""
     settings = get_settings()
-    with factory() as session:
+    with factory() as session, _named_if_unreadable(ACCOUNTING):
         row = credential_for(session, ACCOUNTING)
         if row is None:
             return None
@@ -483,9 +590,14 @@ def resolve_qbo(factory: SessionFactory) -> QboClient | None:
 
 def resolve_crm_feed(factory: SessionFactory) -> CrmFeed | None:
     """The tenant's demand feed, or None when it is not connected — the
-    honest successor to `org_settings.crm_provider == ''`."""
+    honest successor to `org_settings.crm_provider == ''`.
+
+    None is OFF. An undecryptable credential is `CredentialUnreadable`, never
+    None: the demand surfaces read None as "the feed is switched off" and
+    would show a tenant an honest-looking gap over a connection that is
+    merely unreadable."""
     settings = get_settings()
-    with factory() as session:
+    with factory() as session, _named_if_unreadable(DEMAND_FEED):
         row = credential_for(session, DEMAND_FEED)
         if row is None:
             return None
