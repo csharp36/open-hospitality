@@ -100,7 +100,7 @@ PROVIDERS: tuple[ProviderSpec, ...]
 def spec_for(integration: str, provider: str) -> ProviderSpec | None
 def credential_for(session: Session, integration: str) -> OrgIntegrationCredential | None
 def has_credential(session: Session, integration: str) -> bool
-def resolve_payroll(factory: SessionFactory) -> PayrollProvider | None
+def resolve_payroll(factory: SessionFactory) -> ResolvedPayroll | None  # amended, Task 6
 def resolve_qbo(factory: SessionFactory) -> QboClient | None
 def resolve_crm_feed(factory: SessionFactory) -> CrmFeed | None
 def connected_provider(session: Session, integration: str) -> str
@@ -1330,7 +1330,7 @@ class IntegrationNotConfigured(Exception):
         self.integration = integration
 
 
-def resolve_payroll(factory: SessionFactory) -> PayrollProvider | None:
+def resolve_payroll(factory: SessionFactory) -> ResolvedPayroll | None  # amended, Task 6:
     settings = get_settings()
     with factory() as session:
         row = credential_for(session, PAYROLL)
