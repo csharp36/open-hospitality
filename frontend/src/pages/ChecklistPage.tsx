@@ -42,10 +42,11 @@ export default function ChecklistPage() {
   // the control to anyone else would only produce a 403 on click.
   const canDismiss = hasRole(me.data, 'org_admin')
   const groups = checklist.data !== undefined ? groupItems(checklist.data.items) : null
-  // Reuses the sidebar badge's own sentence rather than composing a fourth
-  // count string: /setup is the page that badge sends you to, and §6 puts
-  // `error_count` on the wire so a client can tell "4 things to do" from
-  // "4 things we could not check" and say so. This is where it says so.
+  // The one sentence, from badgeLabel — the sidebar badge and the dashboard
+  // card render this same string, so no surface composes a count of its own.
+  // /setup is the page that badge sends you to, and §6 puts `error_count` on
+  // the wire so a client can tell "4 things to do" from "4 things we could not
+  // check" and say so. This is where it says so.
   const summary = checklist.data !== undefined ? badgeLabel(checklist.data) : null
 
   return (

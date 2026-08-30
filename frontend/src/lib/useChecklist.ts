@@ -38,9 +38,13 @@ function plural(n: number): string {
 }
 
 /**
- * The sidebar badge, or null when there is nothing to show. (The other two
- * surfaces do not use this: /setup renders a per-item badge from the item's
- * own status, and the dashboard card composes its own prose.)
+ * The one checklist sentence and the badge that carries it, or null when there
+ * is nothing to show. All three surfaces render this `title`: the sidebar badge
+ * as its link's accessible name, /setup as its summary line, and the dashboard
+ * card as its body — so one state cannot be worded three ways. /setup
+ * ADDITIONALLY renders a per-item `<Badge>` from each item's own status; that
+ * is a different string about a single item, not this one about the whole
+ * checklist.
  *
  * Null iff `all_clear` — never on `open_count === 0`. An item whose probe
  * raised is `status: 'error'`, which `open_count` does not count, so a tenant
@@ -62,7 +66,9 @@ export function badgeLabel(data: Checklist): ChecklistBadge | null {
         data.open_count > 0
           // "other", not "more": the open items are a different kind from the
           // errored ones, and "more" invites reading them as more failures.
-          ? `${checked}; ${data.open_count} other ${plural(data.open_count)} still to set up`
+          // Two sentences, never a sum — a semicolon reads as one thought about
+          // one set, which is the exact reading the two counts must not get.
+          ? `${checked}. ${data.open_count} other ${plural(data.open_count)} still to set up`
           : checked,
     }
   }

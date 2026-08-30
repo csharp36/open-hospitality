@@ -4,10 +4,12 @@
 // (#topbar-slot). Business date defaults to TODAY — a date with no facts shows
 // an honest empty state plus a jump-to-latest shortcut, never fake zeros.
 //
-// Data comes entirely from GET /api/sos — a day call, a month-to-date range
-// call, and one small day call per trend date (a missing day 404s and renders
-// as a gap). Chart series colors are the chart-1/chart-2 tokens (validated for
-// CVD + contrast in both themes); the labor series is additionally dashed.
+// Everything but the first-run setup card comes from GET /api/sos — a day
+// call, a month-to-date range call, and one small day call per trend date (a
+// missing day 404s and renders as a gap). The card reads the shared checklist
+// query instead (design §7). Chart series colors are the chart-1/chart-2
+// tokens (validated for CVD + contrast in both themes); the labor series is
+// additionally dashed.
 
 import { useEffect, useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -22,7 +24,7 @@ import { barFill, barRampCss, barWidth, topRoundedBar } from '../lib/chartBars'
 import { BanknoteIcon, ClockIcon, ReportsIcon, UploadIcon } from '../components/icons'
 import { useAuth } from '../auth/authContext'
 import { useGlobalProperty } from '../lib/propertyContext'
-import { useChecklist } from '../lib/useChecklist'
+import { badgeLabel, useChecklist } from '../lib/useChecklist'
 
 // --- formatting --------------------------------------------------------------
 
@@ -354,10 +356,6 @@ function IconChip({ tone, children }: { tone: string; children: React.ReactNode 
 
 // --- first-run setup card ----------------------------------------------------
 
-function countOf(n: number, word: string): string {
-  return `${n} ${word}${n === 1 ? '' : 's'}`
-}
-
 /**
  * A pointer to /setup, not a second checklist — the destination carries the
  * items, this only says how much is left and then gets out of the way.
@@ -373,12 +371,13 @@ function SetupCard() {
   if (data === undefined || data.all_clear) return null
 
   const failed = data.error_count > 0
-  // Two counts, two sentences, never a sum: an item we could not check is not
-  // an item still to do, and no numeral may stand in for "we do not know".
-  const line = failed
-    ? `We could not check ${countOf(data.error_count, 'setup item')}.` +
-      (data.open_count > 0 ? ` ${countOf(data.open_count, 'other thing')} still to set up.` : '')
-    : `${countOf(data.open_count, 'thing')} left before your setup is complete.`
+  // badgeLabel's sentence, not a second count string: this card, the sidebar
+  // badge and /setup must not word one state three ways. It already keeps the
+  // two counts apart — an item we could not check is not an item still to do,
+  // and no sum may stand in for "we do not know".
+  //
+  // Non-null: badgeLabel is null only on all_clear, which the gate above took.
+  const line = badgeLabel(data)!.title
 
   return (
     <Card className="flex items-center gap-3">

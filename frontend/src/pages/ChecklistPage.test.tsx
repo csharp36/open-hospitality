@@ -168,11 +168,11 @@ describe('ChecklistPage', () => {
       open_count: 1, error_count: 1, all_clear: false,
     })
     renderSetup()
-    // Both halves in one sentence. The exact wording is badgeLabel's own and
-    // is pinned in useChecklist.test.tsx; what this pins is that /setup shows
-    // it at all, and that the errored item is not folded into the to-do count.
-    const summary = await screen.findByText(/could not check 1 item;/i)
-    expect(summary.textContent).toMatch(/1 .*still to set up/i)
+    // Both halves, verbatim. The wording is badgeLabel's own — shared with the
+    // sidebar badge and the dashboard card — so this asserts the whole string
+    // rather than a shape: a loose match here would let /setup drift into
+    // wording of its own, which is the thing the shared spine exists to stop.
+    await screen.findByText('Could not check 1 item. 1 other item still to set up')
   })
 
   it('says setup is finished when all_clear', async () => {

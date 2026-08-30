@@ -120,7 +120,7 @@ describe('DashboardPage — setup card', () => {
     renderDashboard()
     const link = await screen.findByRole('link', { name: /finish setting up/i })
     expect(link).toHaveAttribute('href', '/setup')
-    expect(screen.getByText(/2 things left/i)).toBeInTheDocument()
+    expect(screen.getByText('2 items still to set up')).toBeInTheDocument()
   })
 
   it('retires at all_clear', async () => {
@@ -143,8 +143,8 @@ describe('DashboardPage — setup card', () => {
     })
     renderDashboard()
     expect(await screen.findByRole('link', { name: /finish setting up/i })).toBeInTheDocument()
-    expect(screen.getByText(/could not check/i)).toBeInTheDocument()
-    expect(screen.queryByText(/0 things left/i)).toBeNull()
+    expect(screen.getByText('Could not check 5 items')).toBeInTheDocument()
+    expect(screen.queryByText(/0 items/i)).toBeNull()
   })
 
   // Errors AND open items are two different facts. Two sentences, two
@@ -155,9 +155,10 @@ describe('DashboardPage — setup card', () => {
       items: [], open_count: 3, error_count: 2, all_clear: false,
     })
     renderDashboard()
-    expect(await screen.findByText(/could not check 2 setup items/i)).toBeInTheDocument()
-    expect(screen.getByText(/3 other things still to set up/i)).toBeInTheDocument()
-    expect(screen.queryByText(/5 things/i)).toBeNull()
+    expect(
+      await screen.findByText('Could not check 2 items. 3 other items still to set up'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/5 items/i)).toBeNull()
   })
 
   it('counts one open item in the singular', async () => {
@@ -165,6 +166,6 @@ describe('DashboardPage — setup card', () => {
       items: [], open_count: 1, error_count: 0, all_clear: false,
     })
     renderDashboard()
-    expect(await screen.findByText('1 thing left before your setup is complete.')).toBeInTheDocument()
+    expect(await screen.findByText('1 item still to set up')).toBeInTheDocument()
   })
 })

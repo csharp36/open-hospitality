@@ -115,7 +115,7 @@ describe('badgeLabel', () => {
     const badge = badgeLabel(makeChecklist({ open_count: 2, error_count: 1, all_clear: false }))
     expect(badge!.text).toBe('!')
     expect(badge!.tone).toBe('danger')
-    expect(badge!.title).toBe('Could not check 1 item; 2 other items still to set up')
+    expect(badge!.title).toBe('Could not check 1 item. 2 other items still to set up')
   })
 
   it('says "item" once and "items" otherwise, in both clauses', () => {
@@ -127,7 +127,7 @@ describe('badgeLabel', () => {
     ).toBe('Could not check 1 item')
     expect(
       badgeLabel(makeChecklist({ open_count: 1, error_count: 2, all_clear: false }))!.title,
-    ).toBe('Could not check 2 items; 1 other item still to set up')
+    ).toBe('Could not check 2 items. 1 other item still to set up')
   })
 })
 
