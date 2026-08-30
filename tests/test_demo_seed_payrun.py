@@ -36,6 +36,7 @@ from usali.models import (
     Timecard,
 )
 from usali.opener import SoftwareOpener, seal_for_test
+from usali.integrations import ResolvedPayroll
 from usali.payroll_provider import PayrollProvider
 from usali.payroll_run import (
     assemble_pay_run_entries,
@@ -97,7 +98,11 @@ def demo_world(db_session, monkeypatch, tmp_path):
     # The seed submits the settle story's period-0 run itself — through
     # this seam in the demo stack (the :9300 dev mock), through the
     # in-process mock here.
-    monkeypatch.setattr(demo_seed, "_payroll_provider", _gusto)
+    # OH-17: the seam returns adapter AND provider name together, so the fake
+    # must declare which provider it is pretending to be — the seed keys its
+    # ProviderEmployeeRefs on that name.
+    monkeypatch.setattr(demo_seed, "_payroll_provider",
+                        lambda: ResolvedPayroll("gusto", _gusto()))
     demo_seed._seed_base(db_session)
     demo_seed._seed_people(db_session, _ROSTER)
     # Only _seed_world touches REPO_ROOT (the kiosk-token file); _seed_base

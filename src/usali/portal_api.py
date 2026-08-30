@@ -57,6 +57,7 @@ from usali.fiscal import (
     require_config,
     resolve_period,
 )
+from usali.integrations import ACCOUNTING, not_connected_detail
 from usali.inventory import InventoryInconsistent, InventoryNotConfigured
 from usali.models import Property, QboPushLedger
 from usali.performance import (
@@ -121,9 +122,7 @@ def _get_qbo_client(request: Request) -> QboClient:
     )
     if client is None:
         raise HTTPException(
-            status_code=503,
-            detail="QuickBooks Online is not connected for this tenant — "
-                   "connect it on /integrations",
+            status_code=503, detail=not_connected_detail(ACCOUNTING)
         )
     return client
 

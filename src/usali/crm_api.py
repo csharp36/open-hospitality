@@ -39,7 +39,11 @@ from usali.auth import (
 )
 from usali.crm_feed import CrmFeedError
 from usali.crm_pull import latest_demand, store_pull
-from usali.integrations import DEMAND_FEED, connected_provider
+from usali.integrations import (
+    DEMAND_FEED,
+    connected_provider,
+    not_connected_detail,
+)
 from usali.models import AuditEvent, Property
 from usali.workforce import assignment_scope
 
@@ -131,14 +135,22 @@ def refresh_demand(
             session.commit()
             raise HTTPException(status_code=status_code, detail=detail)
 
+        # TWO reads of the same demand_feed row per request: this one for the
+        # NAME (echoed in the response and stamped on the batch), and one more
+        # inside the seam, which takes a factory rather than a name and so
+        # opens its own short session. Accepted: it is two indexed PK-shaped
+        # reads on a request that is about to make an outbound HTTP call, and
+        # the alternative — passing the name in — is what OH-17 deliberately
+        # removed, because a name without its row is a provider selected
+        # without its credentials. The `or` below is redundant while both
+        # reads see the same committed row, and is kept as the honest
+        # predicate: either half being absent means OFF, and the J7 review
+        # found the divergent state (name present, seam yields None) was the
+        # one nobody tested.
         provider_name = _active_org_crm_provider(session)
         feed = request.app.state.get_crm_feed(request_session_factory(request))
         if provider_name == "" or feed is None:
-            refused(
-                503,
-                "no demand feed is connected for this tenant — connect "
-                "Delphi or Tripleseat on /integrations",
-            )
+            refused(503, not_connected_detail(DEMAND_FEED))
         if prop.crm_ref is None:
             refused(
                 409,

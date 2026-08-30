@@ -84,6 +84,56 @@ ALL_CREDENTIAL_FIELDS: tuple[str, ...] = tuple(
 )
 
 
+# Operator-facing names, for refusal messages only. The row stores "qbo"; a
+# hotel controller reads "QuickBooks Online". Never used as a key.
+_PRODUCT_NAMES: dict[str, str] = {
+    "gusto": "Gusto",
+    "adp": "ADP",
+    "qbo": "QuickBooks Online",
+    "delphi": "Delphi",
+    "tripleseat": "Tripleseat",
+}
+
+_INTEGRATION_LABELS: dict[str, str] = {
+    PAYROLL: "payroll",
+    ACCOUNTING: "accounting",
+    DEMAND_FEED: "demand feed",
+}
+
+
+def not_connected_detail(integration: str) -> str:
+    """The ONE wording for "this tenant has not connected X" (ADR-010).
+
+    Three surfaces refuse this way — the QBO push, the pay run, the demand
+    pull — and they used to answer "what next?" three different ways: one
+    named the product, one named no provider at all, one named both
+    candidates. One function so the convention cannot drift again: the
+    integration SLOT, then the products that can fill it, then where to go.
+
+    Naming the candidates discloses nothing. They are `PROVIDERS`, the closed
+    product set, identical for every tenant and visible in the docs — what
+    must never appear here is which one THIS tenant chose, or any part of a
+    credential.
+
+    `/integrations` is a FORWARD REFERENCE: the connect UI lands in OH-17
+    tasks 10-11, so until then this path 404s for anyone who follows it. That
+    is deliberate — a named blocker an operator can act on soon beats a
+    refusal naming an env var they cannot act on at all (ADR-010, and the
+    reason `USALI_CRM_PROVIDER` came out of these strings). When the UI ships,
+    this is the one string to revisit."""
+    label = _INTEGRATION_LABELS.get(integration, integration)
+    products = [
+        _PRODUCT_NAMES.get(spec.provider, spec.provider)
+        for spec in PROVIDERS
+        if spec.integration == integration
+    ]
+    choices = " or ".join(products)
+    return (
+        f"{label} is not connected for this tenant — "
+        f"connect {choices} on /integrations"
+    )
+
+
 def spec_for(integration: str, provider: str) -> ProviderSpec | None:
     """The spec for one (integration, provider) PAIR, or None if illegal.
 
@@ -231,25 +281,55 @@ class DbTokenStore:
             session.commit()
 
 
-def resolve_payroll(factory: SessionFactory) -> PayrollProvider | None:
-    """The tenant's payroll adapter, or None when payroll is not connected."""
+@dataclass(frozen=True)
+class ResolvedPayroll:
+    """A payroll adapter AND the provider name it was built from.
+
+    The pair is returned together because callers PERSIST the name: it is the
+    lookup key of `ProviderEmployeeRef` (`payroll_run.sync_employees`), and
+    those refs supply `PayRunEntry.provider_employee_id` on submission. A
+    caller that took the adapter from the tenant's row but the name from
+    `settings.payroll_provider` would key ADP-side employee ids under "gusto"
+    the moment the two disagreed — and a later switch to Gusto would find them
+    "fresh" and submit ADP ids to Gusto. That is a mis-PAY, not a mislabel,
+    which is why D-OH17.1's "provider and credentials together, inseparable"
+    has to hold for the NAME too, not just the secrets.
+
+    Splitting this back into a bare adapter return would restore exactly that
+    bug, and would do it silently: every existing test would still pass,
+    because a test fake that declares no provider name reads as "".
+
+    Its two siblings do not need this shape, for reasons that are theirs
+    alone. `resolve_qbo`'s name is the literal "qbo" — the entire accounting
+    half of the closed set, persisted nowhere as a key. `resolve_crm_feed`'s
+    name IS persisted (`crm_pull_batch.provider`) but is read by its callers
+    from `integrations.connected_provider` on the session they already hold,
+    which is the same row in the same transaction."""
+
+    provider_name: str
+    adapter: PayrollProvider
+
+
+def resolve_payroll(factory: SessionFactory) -> ResolvedPayroll | None:
+    """The tenant's payroll adapter + its provider name, or None when payroll
+    is not connected. See `ResolvedPayroll` for why the name rides along."""
     settings = get_settings()
     with factory() as session:
         row = credential_for(session, PAYROLL)
         if row is None:
             return None
         if row.provider == "gusto":
-            return GustoAdapter(
+            return ResolvedPayroll(row.provider, GustoAdapter(
                 base_url=settings.gusto_base_url,
                 api_token=row.api_token or "",
                 company_id=row.company_id or "",
-            )
+            ))
         if row.provider == "adp":
-            return AdpAdapter(
+            return ResolvedPayroll(row.provider, AdpAdapter(
                 base_url=settings.adp_base_url,
                 client_id=row.client_id or "",
                 client_secret=row.client_secret or "",
-            )
+            ))
         # Unreachable while PROVIDERS and the CHECK agree — which is exactly
         # why it must raise rather than return None. A provider added to the
         # CHECK and forgotten here would otherwise read as "not connected",

@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 
 from usali.auth import ORG_ADMIN, PAYROLL_ADMIN, Principal, request_session_factory, require_grants
 from usali.config import get_settings
+from usali.integrations import PAYROLL, ResolvedPayroll, not_connected_detail
 from usali.models import (
     AuditEvent,
     Department,
@@ -34,7 +35,6 @@ from usali.models import (
     UsaliActualLaborFact,
 )
 from usali.opener import Opener
-from usali.payroll_provider import PayrollProvider
 from usali.payroll_run import (
     PayRunBlocked,
     PayRunConflict,
@@ -61,26 +61,35 @@ def _session(request: Request) -> Session:
     return factory()
 
 
-def _provider(request: Request) -> PayrollProvider:
-    """This tenant's payroll adapter, from its own credential row (OH-17).
+def _provider(request: Request) -> ResolvedPayroll:
+    """This tenant's payroll adapter AND its provider name, from the tenant's
+    own credential row (OH-17).
 
     Refused loudly and by name when the row is absent (ADR-010) — never a
     fallback to `settings.payroll_provider`, whose adapter would be built from
     process-wide credentials that are not this tenant's connection.
 
-    Called from the handler BODY, not as a `Depends`, so each route's own
-    refusals (403, 404, the 409 on a run with nothing to fetch) keep their
-    place ahead of it."""
-    provider: PayrollProvider | None = request.app.state.get_payroll_provider(
+    Returns the PAIR, never a bare adapter: callers persist `provider_name` as
+    the `ProviderEmployeeRef` key, so an adapter separated from its name is a
+    mis-pay waiting to happen. See `integrations.ResolvedPayroll`.
+
+    Called from the handler BODY rather than through a `Depends`, so it lands
+    after DEPENDENCY-level refusals (the 401 and the payroll_admin 403) rather
+    than before them. It does NOT automatically follow a route's own in-body
+    refusals — each caller places it deliberately, and they differ:
+    `fetch_results` resolves AFTER its 404/409 (a request about a run that does
+    not exist must not be answered with the tenant's integration state), while
+    `create_run` must resolve BEFORE its duplicate-period 409 because
+    `execute_pay_run` raises that conflict and needs the adapter to get there.
+    Do not "make these consistent" by hoisting `fetch_results`' call."""
+    resolved: ResolvedPayroll | None = request.app.state.get_payroll_provider(
         request_session_factory(request)
     )
-    if provider is None:
+    if resolved is None:
         raise HTTPException(
-            status_code=503,
-            detail="payroll is not connected for this tenant — "
-                   "connect it on /integrations",
+            status_code=503, detail=not_connected_detail(PAYROLL)
         )
-    return provider
+    return resolved
 
 
 class PayRunCreateBody(BaseModel):
@@ -158,25 +167,21 @@ def create_run(
     submit. Preflight blockers are a 422 whose detail names every blocker;
     a duplicate period is a 409; a provider-failed submit is a 502 (the failed
     run row IS persisted so a re-POST replaces it)."""
+    # `settings` here is the pay-period ANCHOR only — genuine deployment
+    # config (which Monday the biweekly grid starts on), the same for every
+    # tenant. The provider NAME is not config: it comes from the row the
+    # adapter itself was built from, so the run and its ProviderEmployeeRefs
+    # can never be keyed to a provider that did not run them.
     settings = get_settings()
-    provider = _provider(request)
+    resolved = _provider(request)
     opener: Opener = request.app.state.opener
-    # KNOWN OH-17 LOOSE END — `provider_name` below is still read from env
-    # while `provider` above is built from the tenant's credential row. They
-    # cannot diverge today: org 1's row is seeded FROM `settings.payroll_
-    # provider` (property_registry._seed_integration_credentials), and any org
-    # without a row is refused by `_provider` before reaching here. The connect
-    # UI (OH-17 tasks 10-11) is what makes them divergable, and must resolve
-    # this. Do NOT "just" swap in `integrations.connected_provider` on the way
-    # past: `provider_name` is also the IDENTITY KEY of `ProviderEmployeeRef`
-    # (payroll_run.sync_employees), so changing what it holds re-keys stored
-    # provider references and silently orphans every existing one.
     with _session(request) as session:
         try:
             run = execute_pay_run(
                 session, body.property, body.in_period,
-                anchor=settings.payroll_period_anchor, provider=provider,
-                provider_name=settings.payroll_provider, opener=opener,
+                anchor=settings.payroll_period_anchor,
+                provider=resolved.adapter,
+                provider_name=resolved.provider_name, opener=opener,
                 actor=principal.subject,
             )
         except PayRunConflict as exc:
@@ -232,7 +237,6 @@ def fetch_results(
     """Pull the provider's result into encrypted per-employee lines + department
     aggregates. Idempotent; polling semantics (a still-processing run returns
     its current status with lines=0)."""
-    provider = _provider(request)
     with _session(request) as session:
         run = session.get(PayRun, pay_run_id)
         if run is None:
@@ -242,7 +246,15 @@ def fetch_results(
                 status_code=409,
                 detail=f"pay run {pay_run_id} is {run.status}; nothing to fetch",
             )
-        lines = fetch_pay_run_results(session, run, provider=provider)
+        # Resolved HERE, after the 404/409 — deliberately. A poll for a run
+        # that does not exist, or one with nothing to fetch, is answerable
+        # without knowing anything about the tenant's integrations, and
+        # answering it with a 503 about payroll connectivity would be a worse
+        # reply to a worse question. Pinned by
+        # `test_an_unknown_run_404s_before_the_connectivity_check`.
+        lines = fetch_pay_run_results(
+            session, run, provider=_provider(request).adapter
+        )
         session.add(AuditEvent(
             actor_subject=principal.subject, action="fetch_pay_run_results",
             resource_type="pay_run", resource_id=str(run.pay_run_id),

@@ -381,17 +381,26 @@ def main() -> None:
         from usali.opener import SoftwareOpener as _SoftwareOpener
 
         opener = _SoftwareOpener.generate(key_id="e2e")
-        _seed(db_url, work_dir, opener)
 
-        # Mock QBO + a bootstrapped refresh token, both in env BEFORE the app
-        # starts. The app's shared QboClient reads these lazily via
-        # get_settings() on the first push, so setting them here is early
-        # enough — and both the mock's token state and the app's client are
-        # fresh per run, keeping the pair consistent.
+        # Mock QBO + a bootstrapped refresh token, both in env BEFORE `_seed`
+        # — and the ordering is now load-bearing, which it was not before
+        # OH-17. The app no longer reads USALI_QBO_* per push: it resolves the
+        # push client from org 1's `org_integration_credential` row, and that
+        # row is WRITTEN BY `_seed` from these same settings
+        # (property_registry._seed_integration_credentials, insert-on-first-
+        # only). Set them after `_seed` and the row freezes the Settings
+        # defaults instead, leaving env describing a connection nothing uses.
+        #
+        # It happened to pass that way — `Settings.qbo_refresh_token` defaults
+        # to "mock" and `qbo_mock` pre-seeds "mock" as valid — which is
+        # precisely why this comment is here rather than a shrug: the e2e was
+        # green while proving nothing about the bootstrapped token.
         qbo_base_url = f"http://{HOST}:{QBO_PORT}"
         _start_mock_qbo()
         os.environ["USALI_QBO_BASE_URL"] = qbo_base_url
         os.environ["USALI_QBO_REFRESH_TOKEN"] = _bootstrap_refresh_token(qbo_base_url)
+
+        _seed(db_url, work_dir, opener)
 
         # Mock Gusto for the pay-run e2e (payrun.spec.ts). No env needed: the
         # settings defaults already point the GustoAdapter at 127.0.0.1:9300

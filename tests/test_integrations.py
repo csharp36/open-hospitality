@@ -298,7 +298,13 @@ def test_resolve_payroll_builds_the_named_adapter(
     api_token/company_id and ADP takes client_id/client_secret, and a
     copy-pasted keyword in either branch is a TypeError this catches."""
     _connect(db_session, "payroll", provider, **fields)
-    assert type(integ.resolve_payroll(org_bound_factory)).__name__ == adapter
+    resolved = integ.resolve_payroll(org_bound_factory)
+    assert type(resolved.adapter).__name__ == adapter
+    # The NAME rides back with the adapter and comes from the ROW. Callers
+    # persist it as the ProviderEmployeeRef key, so an adapter that arrived
+    # without its name (or with the wrong one) is a mis-pay, not a mislabel —
+    # see `integrations.ResolvedPayroll`.
+    assert resolved.provider_name == provider
 
 
 @pytest.mark.parametrize(
@@ -407,7 +413,7 @@ def test_each_payroll_credential_lands_in_its_own_slot(
     transport double per provider to prove a two-line mapping. The deliberately
     distinguishable values are what make the swap visible."""
     _connect(db_session, "payroll", "gusto", api_token="tok-A", company_id="co-B")
-    gusto = integ.resolve_payroll(org_bound_factory)
+    gusto = integ.resolve_payroll(org_bound_factory).adapter
     assert gusto._company_id == "co-B"
     assert gusto._http.headers["Authorization"] == "Bearer tok-A"
 
@@ -418,7 +424,7 @@ def test_each_payroll_credential_lands_in_its_own_slot(
     )
     db_session.commit()
     _connect(db_session, "payroll", "adp", client_id="id-A", client_secret="sec-B")
-    adp = integ.resolve_payroll(org_bound_factory)
+    adp = integ.resolve_payroll(org_bound_factory).adapter
     # ADP folds both into one base64 blob, so the ORDER inside it is the only
     # place a swap shows up at all.
     basic = adp._basic_auth.removeprefix("Basic ")

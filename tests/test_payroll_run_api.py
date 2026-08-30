@@ -27,8 +27,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from usali.db import make_session_factory
+from usali.integrations import ResolvedPayroll
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali.models import AuditEvent, PayRun
+from usali.models import AuditEvent, PayRun, ProviderEmployeeRef
 from usali.payroll_provider import InMemoryPayrollProvider
 from usali.photo_store import InMemoryPhotoStore
 from usali.server import create_app
@@ -56,7 +57,7 @@ def _client(db_engine, tmp_path, verifier, provider):
         # fake ignores it — see `test_the_seam_is_handed_the_requests_org_
         # bound_factory` for the pin that it is the REQUEST's factory and not
         # the app's unbound base one.
-        payroll_provider_factory=lambda _factory: provider,
+        payroll_provider_factory=lambda _factory: ResolvedPayroll("gusto", provider),
     )
     return TestClient(app)
 
@@ -414,7 +415,7 @@ def test_the_seam_is_handed_the_requests_org_bound_factory(
 
     def capturing_factory(factory):
         seen.append(factory)
-        return InMemoryPayrollProvider()
+        return ResolvedPayroll("gusto", InMemoryPayrollProvider())
 
     app = create_app(
         inbox_dir=tmp_path / "in", processed_dir=tmp_path / "p",
@@ -431,3 +432,66 @@ def test_the_seam_is_handed_the_requests_org_bound_factory(
     assert len(seen) == 1
     with seen[0]() as session:  # type: ignore[operator]
         assert session.info[ORG_INFO_KEY] == 1
+
+
+def test_the_run_records_the_provider_from_the_row_not_the_env(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    """The stored `pay_run.provider` is the name the ADAPTER was built from,
+    never `settings.payroll_provider`.
+
+    This is a mis-PAY guard, not a labelling nicety. `provider_name` is the
+    lookup key of `ProviderEmployeeRef` (payroll_run.sync_employees), and
+    those refs become `PayRunEntry.provider_employee_id` on submission. Key
+    ADP-side ids under "gusto" and a later switch to Gusto finds them "fresh"
+    and submits ADP ids to Gusto.
+
+    Env says gusto (the Settings default, set explicitly here); the resolved
+    provider says adp. The row must win — in the PayRun and in the ref."""
+    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "gusto")
+    _two_employees_16h_each(db_session)
+    verifier, mint = make_authkit()
+    provider = InMemoryPayrollProvider()
+    app = create_app(
+        inbox_dir=tmp_path / "in", processed_dir=tmp_path / "p",
+        failed_dir=tmp_path / "f",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(), opener=_OPENER,
+        payroll_provider_factory=lambda _f: ResolvedPayroll("adp", provider),
+    )
+    c = TestClient(app)
+    pa = {"Authorization": f"Bearer {mint(roles=['payroll_admin'], sub='pa')}"}
+
+    r = c.post("/api/payroll/runs", headers=pa, json=_BODY)
+    assert r.status_code == 201, r.text
+    assert r.json()["provider"] == "adp"
+
+    run = db_session.execute(select(PayRun)).scalar_one()
+    assert run.provider == "adp"
+    # The refs the submission was keyed on carry the same name — this is the
+    # half that actually pays the wrong person if it drifts.
+    refs = db_session.execute(select(ProviderEmployeeRef)).scalars().all()
+    assert refs and {ref.provider for ref in refs} == {"adp"}
+
+
+def test_an_unknown_run_404s_before_the_connectivity_check(
+    db_engine, db_session, tmp_path
+):
+    """`fetch_results` resolves the provider AFTER its 404/409, so a poll for a
+    run that does not exist is answered as "not found" and not as a 503 about
+    the tenant's payroll connection.
+
+    The tenant here is genuinely unconnected (no credential row), so the 503 is
+    live and would fire the moment the resolution moved above the 404 — which
+    is exactly what hoisting the call, or restoring a `Depends`, would do.
+    `create_run`'s ordering is deliberately the opposite and is pinned by
+    `test_an_unconnected_tenant_gets_a_503_naming_the_connect_surface`."""
+    _two_employees_16h_each(db_session)
+    verifier, mint = make_authkit()
+    c = _unconnected_client(db_engine, tmp_path, verifier)
+    pa = {"Authorization": f"Bearer {mint(roles=['payroll_admin'], sub='pa')}"}
+
+    r = c.post("/api/payroll/runs/9999/fetch-results", headers=pa)
+    assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "pay run not found"

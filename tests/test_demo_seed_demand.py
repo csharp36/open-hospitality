@@ -21,6 +21,7 @@ from usali.crm_pull import latest_demand
 from usali.delphi_adapter import DelphiAdapter
 from usali.delphi_mock import create_mock_delphi
 from usali.gusto_adapter import GustoAdapter
+from usali.integrations import ResolvedPayroll
 from usali.gusto_mock import create_mock_gusto
 from usali.models import AuditEvent, CrmDemandSnapshot, CrmPullBatch
 from usali.opener import SoftwareOpener
@@ -68,7 +69,8 @@ def _seed(db_session, monkeypatch, tmp_path, *, feed=_delphi):
     opener = SoftwareOpener.generate(key_id="demo-demand-test")
     monkeypatch.setattr(demo_seed.SoftwareOpener, "from_settings",
                         classmethod(lambda cls, settings: opener))
-    monkeypatch.setattr(demo_seed, "_payroll_provider", _gusto)
+    monkeypatch.setattr(demo_seed, "_payroll_provider",
+                        lambda: ResolvedPayroll("gusto", _gusto()))
     # The J4 seam: the :9400 dev mock in the demo stack, in-process here.
     monkeypatch.setattr(demo_seed, "_crm_feed", feed)
     monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")
@@ -140,8 +142,6 @@ def test_feature_off_skips_the_demand_story_loudly(
     assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
 
 
-
-
 # --- the seams themselves, unmonkeypatched -----------------------------------
 
 
@@ -163,7 +163,7 @@ def test_the_seed_seams_resolve_from_the_founding_orgs_credential_rows(
     monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")
     demo_seed._seed_base(db_session)
 
-    assert isinstance(demo_seed._payroll_provider(), GustoAdapter)
+    assert isinstance(demo_seed._payroll_provider().adapter, GustoAdapter)
     assert isinstance(demo_seed._crm_feed(), DelphiAdapter)
 
 
@@ -187,4 +187,4 @@ def test_the_demand_seam_reads_the_row_and_not_the_env(
 
     assert demo_seed._crm_feed() is None
     # Payroll has no off state: its row is seeded unconditionally.
-    assert isinstance(demo_seed._payroll_provider(), GustoAdapter)
+    assert isinstance(demo_seed._payroll_provider().adapter, GustoAdapter)

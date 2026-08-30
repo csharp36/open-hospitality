@@ -222,7 +222,7 @@ class QboClient:
         #
         # Concurrent refreshes are otherwise NOT serialized, and that is a
         # decision (settled 2026-08-30; see `integrations.DbTokenStore`). The
-        # lock above is per-INSTANCE, and D-OH17.6 removes the memoizer that
+        # lock above is per-INSTANCE, and D-OH17.6 REMOVED the memoizer that
         # made concurrent callers share one client — so this covers less than
         # it looks like it does. The critical section is
         # load() -> grant -> store(), which no lock taken inside either store

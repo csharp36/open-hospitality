@@ -35,7 +35,6 @@ from usali.kiosk import kiosk_router
 from usali.notifications import Notifier, notifier_from_settings
 from usali.opener import Opener, SoftwareOpener
 from usali.otp import OtpService
-from usali.payroll_provider import PayrollProvider
 from usali.payroll_run_api import router as payroll_run_router
 from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
@@ -265,7 +264,7 @@ def create_app(
     photo_store: PhotoStore | None = None,
     opener: Opener | None = None,
     payroll_provider_factory: (
-        Callable[[SessionFactory], PayrollProvider | None] | None
+        Callable[[SessionFactory], integrations.ResolvedPayroll | None] | None
     ) = None,
     face_engine_factory: Callable[[], FaceEmbedder] | None = None,
     crm_feed_factory: Callable[[SessionFactory], CrmFeed | None] | None = None,
