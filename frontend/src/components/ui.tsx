@@ -3,11 +3,12 @@
 // semantic colors from index.css (surface/line/ink/accent/status tones), so
 // dark mode needs no `dark:` variants anywhere.
 //
-// Badge tone class strings deliberately contain the legacy color words
-// (green/amber/red/blue) — className-regex assertions in the page tests
-// depend on those words surviving the restyle.
+// Badge tone class strings live in ../lib/badgeTones, which says why they are not
+// in here.
 
 import type { ComponentPropsWithoutRef, ReactNode } from 'react'
+
+import { badgeToneClasses, type BadgeTone } from '../lib/badgeTones'
 
 // --- Card ------------------------------------------------------------------
 
@@ -57,17 +58,10 @@ export function PageHeader({
 
 // --- Badge -------------------------------------------------------------------
 
-export type BadgeTone = 'ok' | 'warn' | 'danger' | 'info' | 'neutral'
-
-const badgeToneClasses: Record<BadgeTone, string> = {
-  ok: 'bg-ok-green-soft text-ok-green',
-  warn: 'bg-warn-amber-soft text-warn-amber',
-  danger: 'bg-danger-red-soft text-danger-red',
-  info: 'bg-info-blue-soft text-info-blue',
-  // text-ink (not ink-muted): muted ink on the sunken tint is ~4.3:1 at
-  // text-xs in light mode — below AA.
-  neutral: 'bg-surface-sunken text-ink',
-}
+// Re-exported so the existing `import { type BadgeTone } from '../components/ui'`
+// call sites keep working; the tones themselves live in ../lib/badgeTones, which
+// explains why.
+export type { BadgeTone }
 
 export function Badge({ tone, children }: { tone: BadgeTone; children: ReactNode }) {
   return (

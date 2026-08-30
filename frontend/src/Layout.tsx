@@ -18,12 +18,13 @@ import { currentTheme, toggleTheme, type Theme } from './lib/theme'
 import { GlobalPropertyProvider } from './lib/GlobalPropertyProvider'
 import { useGlobalProperty } from './lib/propertyContext'
 import { hasRole } from './lib/roles'
-import { badgeLabel, useChecklist } from './lib/useChecklist'
+import { badgeLabel, useChecklist, type ChecklistBadge } from './lib/useChecklist'
 import { useAuth } from './auth/authContext'
 import { getMe } from './api/client'
 import type { Me } from './api/types'
 import BuildStamp from './components/BuildStamp'
 import OrgPicker from './components/OrgPicker'
+import { badgeToneClasses } from './lib/badgeTones'
 import {
   BankIcon,
   BanknoteIcon,
@@ -53,6 +54,10 @@ import {
 type IconComponent = ComponentType<SVGProps<SVGSVGElement>>
 
 const COLLAPSED_KEY = 'usali.sidebar-collapsed'
+
+// The one nav entry that carries a badge, so the route is named once rather
+// than spelled twice — the `SECTIONS` item and the render-time match.
+const SETUP_PATH = '/setup'
 
 // `show` gates by role exactly as the old top bar did — the link is a
 // convenience; enforcement stays server-side. `soon` renders a muted,
@@ -88,7 +93,7 @@ const SECTIONS: NavSection[] = [
   // router's operator gate; the dismiss controls inside are gated separately.
   {
     label: null,
-    items: [{ to: '/setup', label: 'Setup', icon: ChecklistIcon }],
+    items: [{ to: SETUP_PATH, label: 'Setup', icon: ChecklistIcon }],
   },
   {
     label: 'Employee Management',
@@ -139,6 +144,46 @@ function primaryRoleLabel(me: Me | undefined): string | null {
   return found === undefined ? null : found[1]
 }
 
+// The pill is a glyph: '!' is punctuation and most screen readers announce
+// nothing for it at default verbosity, so on its own the one state
+// `badgeLabel` exists to signal would reach a screen-reader user as a bare
+// "Setup". `title` cannot stand in — on a span that already has text it is not
+// the accessible name, is not reliably announced, and is unreachable on touch.
+// So the sentence goes into the link's `aria-label` (see `setupLinkName`) and the
+// pill is hidden from the tree as the duplicate it is.
+function SetupBadge({ badge, collapsed }: { badge: ChecklistBadge; collapsed: boolean }) {
+  return (
+    <span
+      data-testid="setup-badge"
+      aria-hidden="true"
+      title={badge.title}
+      // Collapsed, the rail centres a single chip per row; an `ml-auto` pill
+      // would eat the free space and drag the Setup icon off that centreline,
+      // so it leaves the flow and sits over the chip's corner instead
+      // (`itemBase` is already `relative`).
+      className={`rounded-full px-1.5 py-0.5 text-[10px] font-bold ${badgeToneClasses[badge.tone]} ${
+        collapsed ? 'absolute right-1 top-0.5' : 'ml-auto'
+      }`}
+    >
+      {badge.text}
+    </span>
+  )
+}
+
+/**
+ * The Setup link's accessible name: the visible label first, so Label-in-Name
+ * (WCAG 2.5.3) still holds and "click Setup" still works by voice.
+ *
+ * `aria-label` rather than an sr-only sibling carrying the same sentence. Both
+ * produce this name, but sr-only text is real text: three suites mount this
+ * shell, and two of them query the checklist wording with `getByText`, which
+ * does not care that a node is visually hidden. Putting the words in the name
+ * only — never in the document — keeps the sidebar out of their results.
+ */
+function setupLinkName(label: string, badge: ChecklistBadge | null): string | undefined {
+  return badge === null ? undefined : `${label} ${badge.title}`
+}
+
 function SidebarContent({
   me,
   theme,
@@ -160,11 +205,14 @@ function SidebarContent({
 }) {
   const roleLabel = primaryRoleLabel(me)
   const initials = (username ?? '?').slice(0, 2).toUpperCase()
-  // Both copies of this component (desktop aside + mobile drawer) mount the
-  // hook; TanStack dedupes on the shared key, so it is still one fetch.
-  // No badge while pending or failed: it is an ambient pointer and cannot
-  // honestly report a number it does not have. The loud failure belongs on
-  // /setup, which is where the operator went to find out.
+  // The mobile drawer mounts a second copy of this component while it is open;
+  // TanStack dedupes on the shared key, so that is still one fetch.
+  //
+  // No badge until the first successful read: it is an ambient pointer and
+  // cannot honestly report a number it does not have. A *later* background
+  // failure keeps the last-known count rather than flickering the pointer off
+  // — TanStack retains `data`, and that is deliberate. Either way the loud
+  // failure belongs on /setup, which is where the operator went to find out.
   const checklist = useChecklist()
   const badge = checklist.data === undefined ? null : badgeLabel(checklist.data)
 
@@ -263,6 +311,7 @@ function SidebarContent({
                       </span>
                     )
                   }
+                  const isSetup = e.to === SETUP_PATH
                   return (
                     <Link
                       key={e.to}
@@ -272,6 +321,7 @@ function SidebarContent({
                       activeOptions={e.exact === true ? { exact: true } : undefined}
                       onClick={onNavigate}
                       title={collapsed ? e.label : undefined}
+                      aria-label={isSetup ? setupLinkName(e.label, badge) : undefined}
                     >
                       <span className={`${chipBase} group-hover:text-accent`}>
                         <IconGlyph className="shrink-0" />
@@ -279,18 +329,8 @@ function SidebarContent({
                       <span className={labelClass}>{e.label}</span>
                       {/* Deliberately NOT inside `labelClass`: collapsed, the
                           count is the only thing still pointing at setup. */}
-                      {e.to === '/setup' && badge !== null && (
-                        <span
-                          data-testid="setup-badge"
-                          title={badge.title}
-                          className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-bold ${
-                            badge.tone === 'danger'
-                              ? 'bg-danger-red-soft text-danger-red'
-                              : 'bg-warn-amber-soft text-warn-amber'
-                          }`}
-                        >
-                          {badge.text}
-                        </span>
+                      {isSetup && badge !== null && (
+                        <SetupBadge badge={badge} collapsed={collapsed} />
                       )}
                     </Link>
                   )
