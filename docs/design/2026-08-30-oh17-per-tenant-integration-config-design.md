@@ -572,25 +572,47 @@ Per ADR-010, every degradation is loud and named.
   per-integration buttons rather than an `sr-only` span, since a page of three
   cards repeats "Connect" three times.
 
-## 8a. Carried forward — `pay_run.provider_name` (raised in execution, 2026-08-30)
+## 8a. Raised and RESOLVED in execution — `pay_run.provider_name`
 
-`payroll_run_api.create_run` still records `provider_name=settings.payroll_provider`
-while the adapter beside it now resolves from the tenant's row. **They cannot
-diverge today** — org 1's row is seeded from that same env, and an org without a
-row 503s before reaching the write — but the connect surfaces (§5) make them
-divergable, and a `pay_run` would then record a provider that did not run it.
+**Resolved 2026-08-30 in `986b5da`.** An earlier revision of this section
+recorded the divergence as deliberately carried forward. That was reversed once
+the severity was understood, and this section is rewritten rather than left
+describing a hazard that no longer exists.
 
-Deliberately NOT fixed during the rewiring, because `provider_name` is also the
-identity key of `ProviderEmployeeRef` (`payroll_run.sync_employees`): changing
-what it holds re-keys stored provider references and orphans existing ones.
-That is a data-model decision, not a wiring one. It must be settled before the
-payroll connect surface ships, and the hazard is commented at the call site.
+**What it was.** `payroll_run_api.create_run` recorded
+`provider_name=settings.payroll_provider` (env) while the adapter beside it
+resolved from the tenant's row. The first assessment called this a
+record-keeping lie deferred on data-model grounds, since `provider_name` is
+also the identity key of `ProviderEmployeeRef`.
 
-Related, and also out of scope: `cli.py` keeps its own
+**Why that was wrong, on both counts.**
+
+*It was a mis-pay, not a mislabel.* `provider_name` is the ref lookup filter
+(`payroll_run.py:1424`), and those refs become
+`PayRunEntry(provider_employee_id=…)` at `:1562`, submitted at `:1569`. A tenant
+on ADP while env said gusto would key refs `"gusto"` holding **ADP-side employee
+ids**; a later switch to Gusto finds them fresh and submits ADP ids to Gusto.
+
+*The re-keying fear was inverted.* `ProviderEmployeeRef`'s own docstring
+(`models.py:1564`) says it is per-provider "so switching providers re-syncs
+rather than clobbering the old mapping", and its
+`UniqueConstraint("employee_id", "provider")` exists for that. Nothing existing
+is orphaned either: the seed is insert-on-first-only, so every ref that exists
+was created when the row and env agreed. Reading env was already the *less*
+stable option — an operator changing `USALI_PAYROLL_PROVIDER` on a running
+deploy silently orphans every ref today.
+
+**The fix.** `resolve_payroll` returns `ResolvedPayroll(provider_name, adapter)`
+rather than a bare adapter. The seam had been handing back an adapter with its
+identity stripped off — the very thing D-OH17.1 forbids everywhere else. Pinned
+by a test asserting both `pay_run.provider` and the `ProviderEmployeeRef.provider`
+values come from the row when it disagrees with env.
+
+**Still genuinely out of scope:** `cli.py:549` keeps its own
 `_qbo_client_from_settings` reading `USALI_QBO_*`. The CLI is not org-aware at
-all, so it now diverges from the API's per-tenant resolution — acceptable while
-the CLI is an operator tool run against one deployment, but it should not grow
-a second user.
+all, so it diverges from the API's per-tenant resolution — acceptable while it
+is an operator tool run against one deployment, but it should not grow a second
+user.
 
 ## 9. Out of scope
 
