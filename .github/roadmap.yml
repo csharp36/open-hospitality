@@ -14,28 +14,34 @@
 #   tags     freeform, for humans
 #   issue    optional GitHub issue number this capability is tracked in
 #
-# OH-1..OH-5 are the productization roadmap. OH-6..OH-14 mirror the analytics
-# backlog tracked in issue #17 — one roadmap entry per child issue — so the bot
-# dedups incoming analytics/reporting requests against it. The bot only dedups
-# against what's here, and matches on `summary`, so keep those user-facing.
+# OH-1..OH-5 and OH-16..OH-21 are the productization roadmap. OH-6..OH-15
+# mirror the analytics backlog tracked in issue #17 — one roadmap entry per
+# child issue — so the bot dedups incoming analytics/reporting requests against
+# it. The bot only dedups against what's here, and matches on `summary`, so
+# keep those user-facing.
+#
+# Sequencing and the gap analysis behind these entries live in
+# docs/ROADMAP.md; this file stays the canonical catalogue the bot reads.
 
 roadmap:
   - id: OH-1
     title: Self-service tenant onboarding
     summary: >
-      A new hotel group can sign up, land in a time-boxed sandbox, and promote
-      to production with real PMS integrations and billing — no manual setup.
+      A new hotel group can sign up and reach a working portal immediately —
+      uploading PMS reports and seeing real USALI results with no integrations
+      configured — then close the remaining setup items (payroll, accounting,
+      billing) whenever they choose. No sandbox tier and no promotion event.
       Turns the single-org trust boundary into a real multi-tenant security
       boundary between strangers.
-    status: planned
+    status: in-progress
     tags: [multi-tenancy, onboarding, billing]
 
   - id: OH-2
     title: Additional PMS connectors
     summary: >
       Ingest report/exports from more property-management systems beyond the
-      currently supported set (Opera, AutoClerk), via the extensible source
-      detection registry. Covers new file shapes and per-property quirks.
+      currently supported set (Opera, AutoClerk, SkyTouch), via the extensible
+      source detection registry. Covers new file shapes and per-property quirks.
     status: considering
     tags: [ingestion, pms, integrations]
 
@@ -74,7 +80,7 @@ roadmap:
       out-of-order rooms by date range, and define the fiscal calendar
       (calendar-month or 4-4-5). The authoritative basis every occupancy and
       RevPAR figure divides by.
-    status: planned
+    status: shipped
     tags: [analytics, configuration]
     issue: 8
 
@@ -85,7 +91,7 @@ roadmap:
       labor-hours per occupied room for any date range or fiscal period — with
       prior-period, prior-year, week-over-week, month-to-date, and 30-day
       rolling comparisons, drilling through to the underlying transactions.
-    status: planned
+    status: in-progress  # shipped except GOPPAR and non-labor CPOR (issue #26)
     tags: [analytics, reporting]
     issue: 9
 
@@ -178,3 +184,68 @@ roadmap:
     status: considering
     tags: [analytics, reporting, ai]
     issue: 19
+
+  # --- Productization, continued (see docs/ROADMAP.md) -----------------------
+
+  - id: OH-16
+    title: Public marketing front door
+    summary: >
+      A public website that explains what the product does, who it is for, and
+      what it costs, and that leads a hotel owner who has never heard of USALI
+      into the try-it-now preview and then signup. The discovery surface ahead
+      of the product itself.
+    status: planned
+    tags: [marketing, onboarding, growth]
+
+  - id: OH-17
+    title: Connect your own accounting and payroll accounts
+    summary: >
+      Each hotel connects its OWN QuickBooks Online, Gusto, or ADP account from
+      inside the app — authorizing once, with its own credentials stored
+      encrypted and used only for that property. Today these integrations are
+      configured once for the whole deployment rather than per customer.
+    status: planned
+    tags: [integrations, multi-tenancy, payroll, accounting]
+
+  - id: OH-18
+    title: Onboarding checklist of open setup items
+    summary: >
+      A persistent, resumable "what is left to set up" list per hotel — each
+      integration (PMS connection, payroll, accounting, demand feed, billing)
+      shown as an open item the operator closes when they choose, or never if
+      they do not use it. An unconfigured integration reads as honestly off,
+      never as a sample figure.
+    status: planned
+    tags: [onboarding, multi-tenancy]
+
+  - id: OH-19
+    title: Subscription plans and billing
+    summary: >
+      Paid subscription for the hosted service — plan selection, a trial with a
+      defined end, payment details, invoices, and the entitlement rules that
+      decide what a plan includes. Distinct from the always-free self-hosted
+      open-source core.
+    status: planned
+    tags: [billing, productization]
+
+  - id: OH-20
+    title: Review and correct USALI transaction-code mapping
+    summary: >
+      A property reviews how its own PMS transaction codes map to USALI
+      schedules and line items, and corrects a wrong or unmapped code itself —
+      necessary where codes are franchise-configurable and differ property to
+      property, as SkyTouch's do. Today mapping coverage is visible but not
+      editable.
+    status: considering
+    tags: [mapping, usali, onboarding]
+
+  - id: OH-21
+    title: Conversational interface to hotel performance
+    summary: >
+      Ask questions about a property's performance in plain language — how last
+      month compared, where labor ran over, what drove a RevPAR swing — and get
+      an answer grounded in the platform's own computed figures. Numbers are
+      computed by the engine; the interface explains them and never introduces
+      a figure of its own.
+    status: considering
+    tags: [reporting, ai]
