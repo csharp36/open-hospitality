@@ -250,7 +250,7 @@ class OrgIntegrationCredential(OrgScoped, Base):
     connected_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
-    connected_by: Mapped[str] = mapped_column(String(255))
+    connected_by: Mapped[str] = mapped_column(String(64))  # actor keycloak subject
 ```
 
 - [ ] **Step 4: Fix the two now-broken imports**
@@ -485,7 +485,10 @@ def upgrade() -> None:
             server_default=sa.func.now(),
             nullable=False,
         ),
-        sa.Column("connected_by", sa.String(length=255), nullable=False),
+        # String(64), matching every other actor column in models.py
+        # (created_by, enrolled_by, approved_by, ...). A Keycloak subject is a
+        # UUID, so 64 is ample.
+        sa.Column("connected_by", sa.String(length=64), nullable=False),
         sa.CheckConstraint(
             _CHECK, name="ck_org_integration_credential_provider_fields"
         ),
