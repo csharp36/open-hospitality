@@ -123,8 +123,17 @@ function ItemRow({ item, canDismiss }: { item: ChecklistItem; canDismiss: boolea
   // feature exists to avoid. The 422 branch below stays handled anyway — the
   // endpoint is reachable, and a registry edit could move a key across the
   // required line without this file changing.
-  const action =
-    canDismiss && !item.required ? (item.status === 'dismissed' ? restore : dismiss) : null
+  //
+  // `done` is withheld for the mirror-image reason. The write would succeed and
+  // the row would persist, but `done` outranks a dismissal (D-B4.4), so nothing
+  // moves and nothing is said — a silent no-op, which is the shape ADR-010
+  // refuses. `error` deliberately keeps the control: the probe raised before
+  // the override was consulted, so the row honestly goes on reading "Could not
+  // check" and the stored decision takes effect only once the probe recovers.
+  // Nothing is masked, and withholding the one available action during an
+  // outage would recreate the dead end D-B4.8 exists to kill.
+  const dismissable = canDismiss && !item.required && item.status !== 'done'
+  const action = dismissable ? (item.status === 'dismissed' ? restore : dismiss) : null
   const verb = item.status === 'dismissed' ? 'Restore' : 'Dismiss'
   return (
     <li className="flex flex-col gap-0.5 border-b border-line py-3 last:border-0">

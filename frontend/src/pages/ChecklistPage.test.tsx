@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
@@ -260,6 +260,39 @@ describe('ChecklistPage — dismissal', () => {
     expect(within(required).queryByRole('button', { name: /dismiss/i })).toBeNull()
   })
 
+  // The write would succeed and the row would persist, but `done` outranks a
+  // dismissal (D-B4.4) — so the row does not move and nothing is said. A
+  // button whose effect is invisible is the silent no-op ADR-010 refuses; the
+  // server's 422 on a required item at least says something.
+  it('offers no dismiss control on an item that is already done', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [payroll({ status: 'done' })], open_count: 0, error_count: 0, all_clear: true,
+    })
+    renderSetup()
+
+    const optional = await screen.findByRole('region', { name: /optional/i })
+    expect(within(optional).getByText(/connect payroll/i)).toBeInTheDocument()
+    expect(within(optional).queryByRole('button', { name: /dismiss/i })).toBeNull()
+  })
+
+  // The asymmetry with `done` is deliberate, and this pins it against a "just
+  // hide it unless open" tidy-up. The probe raised before the override was
+  // consulted, so a dismissal here masks nothing — the row goes on reading
+  // "Could not check" and the stored decision takes effect only once the probe
+  // recovers. Withholding the one available action during an outage would
+  // strand the operator on exactly the dead end D-B4.8 exists to kill.
+  it('keeps the dismiss control on an item whose probe failed', async () => {
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [payroll({ status: 'error', detail: 'OperationalError' })],
+      open_count: 0, error_count: 1, all_clear: false,
+    })
+    renderSetup()
+
+    expect(
+      await screen.findByRole('button', { name: /dismiss connect payroll/i }),
+    ).toBeInTheDocument()
+  })
+
   // "We don't use payroll" is a standing commitment about the tenant, not a
   // per-user preference, so the endpoint requires ORG_ADMIN (design §6) and the
   // page must not offer what the server would refuse.
@@ -288,6 +321,35 @@ describe('ChecklistPage — dismissal', () => {
     renderSetup()
 
     await userEvent.click(await screen.findByRole('button', { name: /dismiss connect payroll/i }))
-    expect(await screen.findByText(/first_report is required/i)).toBeInTheDocument()
+    // Exact, not a loose regex: `ApiError.message` is "HTTP 422: first_report
+    // is required", so an unanchored match would pass just as happily against
+    // `error.message` and leave the house convention — an ApiError renders its
+    // bare `detail` — unpinned at the one place this page relies on it.
+    expect(await screen.findByText('first_report is required')).toBeInTheDocument()
+  })
+
+  // D-B4.5 makes the endpoint idempotent, so a double-click costs a redundant
+  // PUT rather than corruption — but the disabled-while-pending guard was an
+  // explicit constraint, and without a test it can be deleted silently.
+  it('does not fire a second write while the first is still in flight', async () => {
+    let settle!: () => void
+    vi.mocked(dismissItem).mockReturnValue(
+      new Promise<void>((resolve) => {
+        settle = resolve
+      }),
+    )
+    vi.mocked(getChecklist).mockResolvedValue({
+      items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+    })
+    renderSetup()
+
+    const button = await screen.findByRole('button', { name: /dismiss connect payroll/i })
+    await userEvent.click(button)
+    expect(button).toBeDisabled()
+    await userEvent.click(button)
+    expect(dismissItem).toHaveBeenCalledTimes(1)
+
+    settle()
+    await waitFor(() => expect(button).toBeEnabled())
   })
 })
