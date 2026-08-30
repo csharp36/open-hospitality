@@ -223,6 +223,26 @@ because the seventh's query failed is fail-closed taken past the point of
 usefulness. The invariant that matters holds absolutely — **a failed probe
 never renders as `done`.**
 
+**The handler MUST call `session.rollback()` before continuing** (the house
+pattern at `ingestion.py:273` and `crm_api.py:124`). Probes query a real
+Postgres session: a DBAPI-level failure leaves SQLAlchemy in *pending
+rollback*, so without the rollback every subsequent probe raises
+`PendingRollbackError`, is caught by the same handler, and degrades too — one
+flaky probe would blind the operator to every remaining item, the exact
+outcome this section exists to prevent. Containment is a property of the
+rollback, not of the `try/except`.
+
+*Added 2026-08-30 after code review. The first draft of this section claimed
+containment without naming the call that delivers it, and the original
+regression test could not detect the difference because its second probe never
+touched the session. A test for this must have a later probe issue a real
+query.*
+
+**Probes are read-only.** Nothing in the registry writes, and the containment
+argument above assumes it: a probe leaving uncommitted writes would make one
+item's failure visible to the next in ways the rollback would then discard.
+A future probe that needs to write must state why, and own its transaction.
+
 ## 9. Testing
 
 - **Per-probe unit tests** against a fake session, including the "no properties

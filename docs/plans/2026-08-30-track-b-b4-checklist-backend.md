@@ -874,6 +874,14 @@ git commit -m "feat(checklist): GET /api/checklist"
 
 ---
 
+> **Caller constraint (added 2026-08-30 from Task 3's review).** `evaluate()`
+> rolls back on a probe failure, so it must never be called on a session
+> carrying an UNCOMMITTED write — a later probe raising would discard that
+> write as collateral. Today's only caller is the `GET`, which writes nothing,
+> and the dismissal endpoints below commit before returning. If a future
+> handler wants to write and then return a fresh checklist in one response, it
+> must commit first or evaluate on a separate read.
+
 ## Task 6: Idempotent dismissal — `PUT` / `DELETE`
 
 **Files:**
