@@ -2735,6 +2735,72 @@ git commit -m "feat(oh17): QBO OAuth connect flow with signed state"
 
 ## Task 12: Two-org isolation, contention, and the decryption failure mode
 
+> **Five defects in the plan's own code, found in execution 2026-08-30. Two of
+> them would have produced isolation tests that CANNOT FAIL — the exact trap
+> the task warns about.**
+>
+> 1. **Both isolation tests collide with the world they ask for.**
+>    `two_tenant_world` depends on `founding_org`, whose `ensure_default_org`
+>    runs the D-OH17.15 seed bridge (org 1's payroll + accounting rows), and
+>    `build_two_tenant_world` then adds org 1's delphi demand feed. So org 1
+>    arrives connected to ALL THREE integrations, and the plan's
+>    `_connect(session, "demand_feed", ...)` / `_connect(session, "payroll",
+>    ...)` are primary-key collisions on `(org_id, integration)`, not
+>    connections. `_connect` also hardcodes `org_id=1`, so it can never write
+>    org 2's row — on an org-2-bound session the write wall refuses it
+>    (`OrgContextMismatch`). The shipped tests give org 2 the credential org 1
+>    does NOT have, through a factory-bound helper that omits `org_id` and
+>    lets `_stamp_wall` supply it.
+> 2. **The cross-org `UPDATE ... SET api_token = 'stolen'` is refused by the
+>    CHECK, not by the wall.** Org 2's row is a demand-feed row, and
+>    `ck_org_integration_credential_provider_fields` forbids `api_token` on
+>    it. The statement therefore dies on the constraint — so the test would
+>    stay green over a table with NO `org_wall` policy at all, certifying a
+>    wall nobody checked. Update a column every provider legally carries
+>    (`connected_by`).
+> 3. **`_factory_for(db_engine, ...)` contradicts the note directly below
+>    it.** The helper takes `db_engine` — the SUPERUSER engine, which bypasses
+>    RLS — while step 1's prose says the engine "must be the APP-ROLE engine
+>    for the RLS half to mean anything". Taking the code, the RLS half means
+>    nothing.
+> 4. **`'not-valid-ciphertext'` does not raise `InvalidTag`.**
+>    `crypto.decrypt_str` base64-decodes first, so that value raises
+>    `binascii.Error: Incorrect padding` and `except InvalidTag` never sees
+>    it — the plan's own test would have failed on a raw decode error. It also
+>    does not reproduce ADR-005: a rotated key leaves ciphertext structurally
+>    perfect and fails only the GCM tag. The tests plant ciphertext sealed
+>    under a DIFFERENT key for the rotation case and keep the non-ciphertext
+>    value as a second, separately named case; both are caught.
+> 5. **Wrapping only the three `resolve_*` and `DbTokenStore.load` does not
+>    cover the plan's own consumer.** `crm_api`'s two handlers read the row
+>    FIRST through `connected_provider` (for the provider name), before the
+>    seam is called — so an unreadable credential would still have arrived as
+>    a raw `InvalidTag` 500 from a line the plan does not mention. The
+>    translation is in `credential_for` instead, the one place the row is
+>    loaded, so `has_credential`, `connected_provider` and the connect
+>    surface's read cannot forget to ask for it.
+>
+> Also: "Add `import threading` to the test module" is left over from the
+> RETRACTED contention test — an unused import, which the ruff gate fails on.
+> The cited line numbers have drifted (`app_role_engine` is conftest.py:150,
+> `two_tenant_world` conftest.py:161, the factory precedent
+> test_l2_rls_wall.py:221). And step 2 expects the isolation tests to PASS on
+> arrival, which is not a red phase: what stands in for it is mutation —
+> dropping the `org_wall` policy in a scratch container kills all three on
+> their raw-SQL halves (org 2 reads, overwrites, and DELETES org 1's
+> credentials), and mis-binding a factory kills all three on their positive
+> controls.
+>
+> **Known gap, deliberately not closed here.** `has_credential` — the
+> checklist probe — now propagates `CredentialUnreadable` rather than
+> answering False, because False is precisely the silent re-open this
+> exception exists to prevent. No checklist surface catches it, so a rotated
+> key makes the checklist refuse rather than lie. That is not a regression
+> (it raised a raw `InvalidTag` before), but the checklist is read on every
+> page load, so a follow-up should let a checklist item render as
+> connected-but-blocked.
+
+
 **Files:**
 - Modify: `src/usali/integrations.py` (map `InvalidTag` to a named refusal)
 - Modify: `src/usali/portal_api.py`, `src/usali/payroll_run_api.py`,
