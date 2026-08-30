@@ -159,9 +159,15 @@ class QboClient:
     grant is `invalid_grant` (Intuit rotates on every grant), surfacing as a
     spurious failed push. Whole-call scope is deliberate: pilot throughput
     never needs refresh-only granularity, and it keeps the 401/429 retry
-    loops trivially race-free. That lock is per-INSTANCE, so this — not the
-    rotation lineage, which the store now carries — is why concurrent callers
-    must share ONE client (the portal holds one via an app.state factory).
+    loops trivially race-free. That lock is per-INSTANCE, so it protects only
+    callers sharing one client — and since OH-17 the portal shares none: it
+    builds a client per request from the active org's credential row, because
+    one process-wide client is one tenant's connection serving every tenant.
+    Two concurrent pushes therefore fork the refresh exactly as two processes
+    would. That outcome is accepted and documented in
+    `integrations.DbTokenStore`: the loser's grant fails visibly, the winner's
+    rotation is durable in the row, and a retry succeeds. Do not reach for a
+    shared client to fix it — read that docstring first.
     """
 
     def __init__(

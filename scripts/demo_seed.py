@@ -407,25 +407,42 @@ def _punch_period(session: Session, emp_id: int, worker: DemoWorker,
             ))
 
 
-def _payroll_provider():
-    """The same config-selected adapter the API process uses (the C2 seam)
-    — a module-level function so the G6 tests can point it at the
-    in-process mock instead of the :9300 dev service."""
-    from usali.server import _payroll_provider_from_settings
+def _founding_factory() -> OrgBoundSessionFactory:
+    """A founding-org-bound session factory — the shape `integrations`'
+    `resolve_*` takes (OH-17). Built fresh rather than threaded down from
+    `main`, so the two seams below keep their zero-argument shape and stay
+    monkeypatchable by the G6 tests. Cheap: each is called once per seed, and
+    the engine connects lazily."""
+    return OrgBoundSessionFactory(
+        make_session_factory(make_engine(get_settings().db_url)),
+        FOUNDING_ORG_ID,
+    )
 
-    return _payroll_provider_from_settings()
+
+def _payroll_provider():
+    """The same adapter the API process uses (the C2 seam) — a module-level
+    function so the G6 tests can point it at the in-process mock instead of
+    the :9300 dev service.
+
+    Since OH-17 it resolves from the founding org's `org_integration_credential`
+    row, not from `settings.payroll_provider`. `_seed_base` runs first and
+    commits that row (seed_properties -> ensure_default_org), so the row is
+    there by the time `_seed_world` calls this."""
+    from usali import integrations
+
+    return integrations.resolve_payroll(_founding_factory())
 
 
 def _crm_feed():
-    """The same provider-selected demand feed the API uses (the J4/L5
-    seam) — None when USALI_CRM_PROVIDER is unset (demo.sh sets delphi).
-    The demo seeds the FOUNDING org, whose org_integration_credential row
-    for demand_feed is seeded from this same env (ensure_default_org), so
-    reading env here is reading org 1's provider. Tests point this at the
-    in-process mock."""
-    from usali.server import _crm_feed_for_provider
+    """The same demand feed the API uses (the J4/L5 seam) — None when the
+    founding org has no demand_feed credential row, which is what an unset
+    USALI_CRM_PROVIDER leaves behind (demo.sh sets delphi). The demo seeds the
+    FOUNDING org, and OH-17 makes that row the single source for both the
+    provider name and its credentials. Tests point this at the in-process
+    mock."""
+    from usali import integrations
 
-    return _crm_feed_for_provider(get_settings().crm_provider)
+    return integrations.resolve_crm_feed(_founding_factory())
 
 
 # The Delphi mock's world is FIXED: the week of 2026-08-03, a fat Thursday

@@ -18,7 +18,7 @@ rotated refresh token back in its own short transaction (D-OH17.7). All three
 take the same shape so no call site has to remember which is which. Read
 `DbTokenStore`'s docstring before relying on the rotation guarantee: it is
 durable and per-tenant, and it serializes NOTHING — not across processes and,
-once D-OH17.6 removes the shared-client memoizer, not within one either. That
+since D-OH17.6 removed the shared-client memoizer, not within one either. That
 is a decision rather than an omission.
 """
 
@@ -183,9 +183,9 @@ class DbTokenStore:
     THE STANDING GUARANTEE IS DURABILITY AND PER-TENANT SCOPE — nothing more.
     Do NOT add "and serialized in-process by `QboClient`'s instance lock" back
     to this list, however true it looks: that lock is per-INSTANCE, so it
-    serializes only callers sharing ONE client, and D-OH17.6 deletes the
-    `server._shared` memoizer that was the reason they did. Once each operator
-    action builds its own client, two concurrent pushes inside a single
+    serializes only callers sharing ONE client, and D-OH17.6 DELETED the
+    `server._shared` memoizer that was the reason they did. Each operator
+    action now builds its own client, so two concurrent pushes inside a single
     process fork the lineage exactly as two processes would.
 
     In every one of those cases the outcome is the same and is ACCEPTED: both

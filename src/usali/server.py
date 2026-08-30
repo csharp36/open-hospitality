@@ -11,9 +11,9 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import Response
 from starlette.types import Scope
 
+from usali import integrations
 from usali.adaptors import autoclerk_transaction_summary, opera_trial_balance
 from usali.adaptors.pdf import extract_words_from_bytes
-from usali.adp_adapter import AdpAdapter
 from usali.auth import (
     TokenVerifier,
     request_session_factory,
@@ -23,11 +23,9 @@ from usali.auth import (
 from usali.checklist_api import router as checklist_router
 from usali.config import Settings, get_settings
 from usali.crm_api import router as crm_router
-from usali.crm_feed import CRM_PROVIDERS, CrmFeed
+from usali.crm_feed import CrmFeed
 from usali.db import make_engine, make_session_factory
-from usali.delphi_adapter import DelphiAdapter
 from usali.detect import detect_report_signature
-from usali.gusto_adapter import GustoAdapter
 from usali.ingestion import ProcessingError, process_file
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminClient
 from usali.face_enrollment import router as face_enrollment_router
@@ -48,12 +46,11 @@ from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
 from usali.property_config_api import router as property_config_router
-from usali.qbo_client import QboClient, StaticTokenStore
+from usali.qbo_client import QboClient
 from usali.schedule_api import router as schedule_router
 from usali.signup_api import router as signup_router
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory, SessionFactory
 from usali.timecard_api import router as timecard_router
-from usali.tripleseat_adapter import TripleseatAdapter
 from usali.workforce import router as workforce_router
 
 
@@ -127,31 +124,22 @@ def _parse_preview_sync(data: bytes) -> dict[str, object]:
     return {"status": "unreadable", "hints": _UNREADABLE_HINTS}
 
 
-def _qbo_client_from_settings() -> QboClient:
-    """The default QBO client: settings read lazily, on the first push only."""
-    settings = get_settings()
-    return QboClient(
-        settings.qbo_base_url,
-        settings.qbo_client_id,
-        settings.qbo_client_secret,
-        settings.qbo_realm_id,
-        StaticTokenStore(settings.qbo_refresh_token),
-    )
-
-
 def _shared(build: Callable[[], _T]) -> Callable[[], _T]:
-    """Memoize a client factory: build lazily ONCE, return that instance forever.
+    """Memoize a factory: build lazily ONCE, return that instance forever.
 
-    For QboClient: one client instance = ONE refresh-token rotation lineage.
-    QboClient keeps its rotated refresh token in memory only (see its
-    docstring), so per-request clients would each start from the
-    already-consumed bootstrap token and invalid_grant on the second push.
-    Payroll adapters share the same shape: AdpAdapter caches its OAuth bearer,
-    and one shared instance = one connection pool + one token lineage.
-    Request-level concurrency is NOT this memoizer's concern — clients
-    serialize their own requests where needed. The lock here only guards
-    construction: two concurrent first-calls from the threadpool must not each
-    build a client and fork the lineage.
+    The FACE ENGINE is the only user left, and its reason is weight, not
+    identity: OnnxFaceEngine holds two onnxruntime sessions, which belong to
+    the process and not to a request. The lock guards construction only — two
+    concurrent first-calls from the threadpool must not each load the models.
+
+    It used to wrap the QBO, payroll and demand-feed seams too, and that is
+    gone for good (D-OH17.6). Those are per-TENANT connections: one memoized
+    instance is one tenant's credentials answering every tenant's request.
+    The QBO half also had a second, narrower justification — one client
+    instance was one refresh-token rotation lineage, because the rotated token
+    lived in client memory — and `integrations.DbTokenStore` retired it by
+    moving the lineage onto the tenant's credential row. Do NOT reintroduce
+    memoization for an integration adapter on either ground.
     """
     lock = threading.Lock()
     holder: list[_T] = []
@@ -163,59 +151,6 @@ def _shared(build: Callable[[], _T]) -> Callable[[], _T]:
             return holder[0]
 
     return get
-
-
-def _shared_by_key(build: Callable[[str], _T]) -> Callable[[str], _T]:
-    """Memoize a factory that is a FUNCTION of a key: build each distinct
-    key's value lazily ONCE and cache it. The CRM feed uses this — the
-    provider is per-org now (L5), so one shared adapter is no longer right;
-    but there are only a handful of provider names, and one adapter per
-    provider = one client + one pool + (for OAuth adapters) one token
-    lineage, the `_shared` posture applied per key rather than globally."""
-    lock = threading.Lock()
-    cache: dict[str, _T] = {}
-
-    def get(key: str) -> _T:
-        with lock:
-            if key not in cache:
-                cache[key] = build(key)
-            return cache[key]
-
-    return get
-
-
-def _payroll_provider_from_settings() -> PayrollProvider:
-    """The default payroll provider (Pillar C2): selected by configuration
-    alone — USALI_PAYROLL_PROVIDER=gusto|adp is the ONLY switch."""
-    settings = get_settings()
-    if settings.payroll_provider == "gusto":
-        return GustoAdapter.from_settings(settings)
-    if settings.payroll_provider == "adp":
-        return AdpAdapter.from_settings(settings)
-    raise RuntimeError(
-        f"unknown payroll provider {settings.payroll_provider!r} (expected gusto|adp)"
-    )
-
-
-def _crm_feed_for_provider(provider: str) -> CrmFeed | None:
-    """The demand feed (Pillar J) for ONE provider name. L5: the provider
-    is now per-ORG (read from `org_settings` under the active org), so the
-    factory is keyed on the resolved provider rather than reading the
-    process-wide env. EMPTY means the feature is OFF for that org: None,
-    which the pull surface (J4) refuses loudly — never a silent no-op
-    adapter. Base URLs / credentials remain process-wide deployment config
-    (`Settings`)."""
-    if provider == "":
-        return None
-    settings = get_settings()
-    if provider == "delphi":
-        return DelphiAdapter.from_settings(settings)
-    if provider == "tripleseat":
-        return TripleseatAdapter.from_settings(settings)
-    raise RuntimeError(
-        f"unknown crm provider {provider!r} "
-        f"(expected {'|'.join(CRM_PROVIDERS)}, or empty for off)"
-    )
 
 
 def _face_engine_from_settings() -> FaceEmbedder:
@@ -324,34 +259,32 @@ def create_app(
     failed_dir: Path | None = None,
     session_factory: SessionFactory | None = None,
     dist_dir: Path | None = None,
-    qbo_client_factory: Callable[[], QboClient] | None = None,
+    qbo_client_factory: Callable[[SessionFactory], QboClient | None] | None = None,
     token_verifier: TokenVerifier | None = None,
     keycloak_admin: KeycloakAdmin | None = None,
     photo_store: PhotoStore | None = None,
     opener: Opener | None = None,
-    payroll_provider_factory: Callable[[], PayrollProvider] | None = None,
+    payroll_provider_factory: (
+        Callable[[SessionFactory], PayrollProvider | None] | None
+    ) = None,
     face_engine_factory: Callable[[], FaceEmbedder] | None = None,
-    crm_feed_factory: Callable[[str], CrmFeed | None] | None = None,
+    crm_feed_factory: Callable[[SessionFactory], CrmFeed | None] | None = None,
     notifier: Notifier | None = None,
     provisioner_session_factory: SessionFactory | None = None,
     admin_notify_email: str | None = None,
     public_base_url: str | None = None,
 ) -> FastAPI:
     settings = get_settings()
-    # Fail fast on a misconfigured provider NAME (cheap string check — the
-    # adapter itself stays lazily built via _payroll_provider_from_settings,
-    # which re-raises defensively). An injected factory bypasses settings.
-    if payroll_provider_factory is None and settings.payroll_provider not in ("gusto", "adp"):
-        raise RuntimeError(
-            f"unknown payroll provider {settings.payroll_provider!r} (expected gusto|adp)"
-        )
-    # Same fail-fast for the CRM feed NAME — but empty is legal (feature
-    # off; the pull endpoint refuses loudly per request).
-    if crm_feed_factory is None and settings.crm_provider not in ("", *CRM_PROVIDERS):
-        raise RuntimeError(
-            f"unknown crm provider {settings.crm_provider!r} "
-            f"(expected {'|'.join(CRM_PROVIDERS)}, or empty for off)"
-        )
+    # There is NO provider-name fail-fast here any more (OH-17). Two used to
+    # live at this spot, refusing to boot on a misspelled USALI_PAYROLL_PROVIDER
+    # or USALI_CRM_PROVIDER. Neither string is a runtime switch now — the
+    # provider is the active org's `org_integration_credential` row — so those
+    # checks would refuse to boot the whole service over a value no request
+    # path reads. The names are still VALIDATED where they now matter: at seed
+    # time by `property_registry._seed_credential_fields` (which refuses an
+    # unknown pair by name), by the DB CHECK the row must satisfy, and by
+    # `integrations.resolve_*`, which raises on a provider it cannot build
+    # rather than degrading to "not connected".
     inbox = inbox_dir or settings.inbox_dir
     processed = processed_dir or settings.processed_dir
     failed = failed_dir or settings.failed_dir
@@ -378,10 +311,6 @@ def create_app(
     app.state.device_session_factory = OrgBoundSessionFactory(
         base_factory, FOUNDING_ORG_ID
     )
-    # The QBO client is built lazily on the first push and SHARED for the app's
-    # lifetime (refresh-token rotation is in client memory — see _shared). Tests
-    # inject a factory wired to the in-process mock; the default reads settings.
-    app.state.get_qbo_client = _shared(qbo_client_factory or _qbo_client_from_settings)
     # The OIDC resource-server verifier. Tests inject one wired to a local
     # keypair (tests/authkit); the default fetches the realm JWKS lazily.
     app.state.token_verifier = token_verifier or TokenVerifier.from_settings(settings)
@@ -428,26 +357,32 @@ def create_app(
     # builds one from settings, but env=prod refuses the in-process key entirely
     # (an HSM-backed Opener is a deploy-time drop-in, not shipped in C1).
     app.state.opener = opener or _opener_from_settings(settings)
-    # Payroll provider seam (C2). Config-selected (gusto|adp) and SHARED for the
-    # app's lifetime (AdpAdapter caches its OAuth bearer; one instance = one
-    # token lineage + one pool). Tests inject a factory returning a fake.
-    app.state.get_payroll_provider = _shared(
-        payroll_provider_factory or _payroll_provider_from_settings
+    # Integration seams (OH-17). All three resolve from the ACTIVE ORG's
+    # credential row, so each takes the REQUEST's org-bound session factory
+    # (`auth.request_session_factory`) rather than being memoized per process.
+    # Handing them the app-level `base_factory` instead would be a cross-tenant
+    # bug, not a shortcut: it is unbound, so it would read whatever row the
+    # connection can see — and the DB wall is bypassed by a superuser
+    # connection, so nothing downstream would catch it.
+    #
+    # `_shared` is deliberately absent here. It wrapped all three before
+    # D-OH17.6, on two rationales that are now both dead: one instance per
+    # process is one TENANT's credentials serving every tenant, and QBO's
+    # refresh-token rotation lineage moved from client memory onto the
+    # credential row (`integrations.DbTokenStore`). Returning None is an
+    # ordinary "not connected"; each consumer refuses on its own terms.
+    #
+    # Tests inject a factory returning a fake: `lambda _factory: fake`.
+    app.state.get_qbo_client = qbo_client_factory or integrations.resolve_qbo
+    app.state.get_payroll_provider = (
+        payroll_provider_factory or integrations.resolve_payroll
     )
+    app.state.get_crm_feed = crm_feed_factory or integrations.resolve_crm_feed
     # Face engine seam (F3). Tests inject a fake; the default loads the ONNX
     # models lazily on the first face route and is SHARED for the app's
     # lifetime (two onnxruntime sessions per process, not per request).
     app.state.get_face_engine = _shared(
         face_engine_factory or _face_engine_from_settings
-    )
-    # CRM demand feed seam (J4/L5). The provider is PER-ORG now: the crm
-    # router reads the active org's `org_settings.crm_provider` and asks
-    # this factory for that provider's feed (empty = OFF, None, the pull
-    # endpoint 503s naming the switch). Keyed-and-shared: one adapter per
-    # provider name (one client + pool), built lazily. Tests inject a
-    # factory returning a fake for any non-empty provider.
-    app.state.get_crm_feed = _shared_by_key(
-        crm_feed_factory or _crm_feed_for_provider
     )
     # Every operator router: authentication+role gate first, then the
     # active-org resolution (L3) — its 400/403 refusals fire before any

@@ -2,9 +2,19 @@
 
 Seeding reuses tests/test_payroll_run.py's helpers (same _OPENER keypair —
 the injected opener must be able to open the seeded profiles). The client
-injects `payroll_provider_factory=lambda: provider`; the run's stored
-provider NAME still comes from settings ("gusto" by default) — the name is
-config, the instance is the seam.
+injects `payroll_provider_factory=lambda _factory: provider`; the seam takes
+the REQUEST'S org-bound session factory since OH-17, because the real
+resolver reads the active org's `org_integration_credential` row.
+
+The run's stored provider NAME still comes from `settings.payroll_provider`
+("gusto" by default) — the name is config, the instance is the seam. That
+split is a KNOWN OH-17 loose end, flagged at `payroll_run_api.create_run`:
+it is harmless only because org 1's row is itself seeded from that same env
+(so name and row agree), and an org with no row 503s before ever reaching
+the run. The connect UI is what makes them divergable, and is where it must
+be fixed — do not "tidy" the name onto the row here without reading that
+comment first: `provider_name` is also the IDENTITY KEY of
+`ProviderEmployeeRef`.
 
 The security test is the point: after a processed 2-employee run, NO response
 carries the SSN, bank values, or any per-employee money ("320.00"); only the
@@ -13,18 +23,16 @@ department aggregate ("640.00") appears, and only in the detail.
 
 from decimal import Decimal
 
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from usali.adp_adapter import AdpAdapter
 from usali.db import make_session_factory
-from usali.gusto_adapter import GustoAdapter
 from usali.keycloak_admin import InMemoryKeycloakAdmin
 from usali.models import AuditEvent, PayRun
 from usali.payroll_provider import InMemoryPayrollProvider
 from usali.photo_store import InMemoryPhotoStore
-from usali.server import _payroll_provider_from_settings, create_app
+from usali.server import create_app
+from usali.tenancy import ORG_INFO_KEY
 from tests.authkit import make_authkit
 from tests.grants import grant_role
 from tests.test_payroll_run import (
@@ -43,7 +51,12 @@ def _client(db_engine, tmp_path, verifier, provider):
         session_factory=make_session_factory(db_engine),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(), opener=_OPENER,
-        payroll_provider_factory=lambda: provider,
+        # OH-17: the seam is handed the request's org-bound session factory
+        # (the real resolver reads the tenant's credential row from it). The
+        # fake ignores it — see `test_the_seam_is_handed_the_requests_org_
+        # bound_factory` for the pin that it is the REQUEST's factory and not
+        # the app's unbound base one.
+        payroll_provider_factory=lambda _factory: provider,
     )
     return TestClient(app)
 
@@ -334,41 +347,87 @@ def test_lines_on_a_submitted_run_show_placeholder_money(db_engine, db_session, 
     assert len(_lines_audits(db_session)) == 1
 
 
-# --- The config-only provider switch, pinned ---------------------------------
+# --- The per-TENANT provider seam, pinned ------------------------------------
+#
+# `USALI_PAYROLL_PROVIDER` used to be the switch, and two tests lived here for
+# it: one over `server._payroll_provider_from_settings`, one over `create_app`'s
+# fail-fast on a misspelled name. OH-17 deleted both functions. The provider is
+# the active org's `org_integration_credential` row now, so there is nothing
+# process-wide left to validate at construction — refusing to BOOT on a value
+# no request path reads would refuse to boot on a dead letter. Adapter selection
+# from a row is pinned in tests/test_integrations.py; what belongs HERE is what
+# the API does when the row is missing, and which factory the seam is handed.
 
 
-def test_provider_factory_switches_on_settings(monkeypatch):
-    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "gusto")
-    assert isinstance(_payroll_provider_from_settings(), GustoAdapter)
-    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "adp")
-    assert isinstance(_payroll_provider_from_settings(), AdpAdapter)
-    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "paychex")
-    with pytest.raises(RuntimeError, match="paychex"):
-        _payroll_provider_from_settings()
-
-
-def test_create_app_rejects_an_unknown_provider_at_construction(
-    db_engine, tmp_path, monkeypatch
-):
-    """Without an injected factory, a bad USALI_PAYROLL_PROVIDER must fail at
-    create_app time (cheap string check) — not lazily on the first pay run."""
-    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "paychex")
-    verifier, _ = make_authkit()
-    with pytest.raises(RuntimeError, match="paychex"):
-        create_app(
-            inbox_dir=tmp_path / "in", processed_dir=tmp_path / "p",
-            failed_dir=tmp_path / "f",
-            session_factory=make_session_factory(db_engine),
-            token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
-            photo_store=InMemoryPhotoStore(), opener=_OPENER,
-        )
-    # An injected factory is unaffected — the seam bypasses the settings check.
+def _unconnected_client(db_engine, tmp_path, verifier):
+    """A serving app with NO injected provider factory — the real resolver,
+    over a world (`_seed`) that plants no payroll credential row."""
     app = create_app(
         inbox_dir=tmp_path / "in", processed_dir=tmp_path / "p",
         failed_dir=tmp_path / "f",
         session_factory=make_session_factory(db_engine),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(), opener=_OPENER,
-        payroll_provider_factory=InMemoryPayrollProvider,
     )
-    assert app is not None
+    return TestClient(app)
+
+
+def test_an_unconnected_tenant_gets_a_503_naming_the_connect_surface(
+    db_engine, db_session, tmp_path
+):
+    """ADR-010: a missing credential REFUSES, loudly and by name — it never
+    falls back to the process-wide env (which still says "gusto" here, the
+    Settings default) and never silently no-ops a pay run.
+
+    The 503 must survive as a 503: the request carries a real payroll_admin
+    grant against a seeded property, so nothing earlier in the chain (401,
+    403, 404, the 422 preflight) can short-circuit it. Assert the body, not
+    just the code — a 503 from somewhere else would pass a bare code check."""
+    _two_employees_16h_each(db_session)
+    verifier, mint = make_authkit()
+    c = _unconnected_client(db_engine, tmp_path, verifier)
+    pa = {"Authorization": f"Bearer {mint(roles=['payroll_admin'], sub='pa')}"}
+
+    r = c.post("/api/payroll/runs", headers=pa, json=_BODY)
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "/integrations" in detail
+    assert "USALI_PAYROLL_PROVIDER" not in detail
+    # Nothing was written: a refused run is not a draft row left behind.
+    assert db_session.execute(select(PayRun)).scalars().all() == []
+
+
+def test_the_seam_is_handed_the_requests_org_bound_factory(
+    db_engine, db_session, tmp_path
+):
+    """The seam gets the REQUEST's org-bound factory, not `create_app`'s
+    unbound base one. This is the whole tenancy story of OH-17 in one
+    assertion: the resolver reads a credential row through whatever it is
+    handed, so an unbound factory here would read SOME org's row — under a
+    superuser connection (which the suite runs as) RLS does not save you,
+    and a second tenant's pay run would be built from the first's
+    credentials. `ORG_INFO_KEY` on the session is the L2 write wall's
+    binding, so checking it checks the same thing the wall does."""
+    _two_employees_16h_each(db_session)
+    verifier, mint = make_authkit()
+    seen: list[object] = []
+
+    def capturing_factory(factory):
+        seen.append(factory)
+        return InMemoryPayrollProvider()
+
+    app = create_app(
+        inbox_dir=tmp_path / "in", processed_dir=tmp_path / "p",
+        failed_dir=tmp_path / "f",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(), opener=_OPENER,
+        payroll_provider_factory=capturing_factory,
+    )
+    c = TestClient(app)
+    pa = {"Authorization": f"Bearer {mint(roles=['payroll_admin'], sub='pa')}"}
+    assert c.post("/api/payroll/runs", headers=pa, json=_BODY).status_code == 201
+
+    assert len(seen) == 1
+    with seen[0]() as session:  # type: ignore[operator]
+        assert session.info[ORG_INFO_KEY] == 1

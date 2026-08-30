@@ -62,7 +62,11 @@ def _client(db_engine, tmp_path, verifier, feed):
         session_factory=make_session_factory(db_engine),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(),
-        crm_feed_factory=lambda provider: feed if provider else None,
+        # OH-17: the seam takes the request's org-bound session factory, not
+        # a provider name. Feature-off is the ABSENCE of a credential row
+        # (see `test_feature_off_degrades_to_not_configured`, which uses the
+        # DEFAULT factory), never something this fake has to model.
+        crm_feed_factory=lambda _factory: feed,
     )
     return TestClient(app)
 

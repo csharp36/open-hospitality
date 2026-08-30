@@ -96,18 +96,36 @@ SessionDep = Annotated[Session, Depends(_get_session)]
 
 
 def _get_qbo_client(request: Request) -> QboClient:
-    """The app's ONE shared QBO client (built lazily by `create_app`'s factory).
+    """THIS TENANT's QBO client, built from its own credential row (OH-17).
 
-    Refresh-token rotation lives in client memory (see the QboClient docstring),
-    so a per-request client would invalid_grant on the second push. `create_app`
-    wraps whatever factory it was given so this call always returns the same
-    instance for the app's lifetime.
+    No longer one shared instance for the app's lifetime. That memoizer
+    (`server._shared`) existed to protect the refresh-token rotation lineage,
+    which used to live in client memory; `integrations.DbTokenStore` moved the
+    lineage onto the row (D-OH17.7), so a per-request client is now correct —
+    and a shared one would be actively wrong the moment a second tenant
+    pushed, since it would be the FIRST tenant's connection.
+
+    Not connected is refused loudly and by name (ADR-010), never by falling
+    back to the process-wide `USALI_QBO_*` env: a process-wide credential is
+    not this tenant's connection.
+
+    Deliberately NOT wrapped in a `Depends`. It was one (`QboClientDep`) while
+    it could not fail; now that it can, a dependency would resolve BEFORE the
+    push endpoint's own property-scope check and turn an out-of-scope caller's
+    403 into a 503 about the tenant's integrations. Callers invoke it from the
+    handler body, after their refusals. Pinned by
+    tests/test_workforce_api.py::test_qbo_push_property_scope_enforced.
     """
-    client: QboClient = request.app.state.get_qbo_client()
+    client: QboClient | None = request.app.state.get_qbo_client(
+        request_session_factory(request)
+    )
+    if client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="QuickBooks Online is not connected for this tenant — "
+                   "connect it on /integrations",
+        )
     return client
-
-
-QboClientDep = Annotated[QboClient, Depends(_get_qbo_client)]
 
 
 def _run(query: Callable[[], T]) -> T:
@@ -1215,7 +1233,7 @@ def qbo_preview(
 @router.post("/qbo/push")
 def qbo_push_endpoint(
     session: SessionDep,
-    client: QboClientDep,
+    request: Request,
     body: QboPushRequest,
     principal: Principal = Depends(require_operator),
 ) -> PushResultModel:
@@ -1230,10 +1248,17 @@ def qbo_push_endpoint(
     query param, so the check lives here rather than in `require_property_access`
     (which reads `Query(alias="property")`). Enforced BEFORE the push so an
     out-of-scope caller 403s without ever touching QBO.
+
+    ORDER MATTERS, and is why the client is resolved in this body rather than
+    through a dependency (OH-17): `_get_qbo_client` 503s when the tenant has no
+    accounting credential, and as a `Depends` it would run before the scope
+    check above and answer an out-of-scope caller with the tenant's integration
+    state instead of the refusal they earned.
     """
     scope = resolve_scope(principal, session)
     if not scope.allows_property(body.property_id):
         raise HTTPException(status_code=403, detail="property out of scope")
+    client = _get_qbo_client(request)
     result = _run_qbo(
         lambda: qbo_push.push_day(
             session, client, property_id=body.property_id, business_date=body.business_date

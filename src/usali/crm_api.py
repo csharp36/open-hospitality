@@ -13,9 +13,12 @@ that may land in an HTTP log.
 
 Refusals that pass confinement are audited (`crm_refresh_refused`, the
 I6 lesson): a probe of the pull surface is itself an event. Feature-off
-is a loud 503 naming the config switch — the pinned shape (the plan
+is a loud 503 naming the connect surface — the pinned shape (the plan
 offered 404-the-router as the alternative): absence degrades to a named
-blocker, never to a path that looks like a typo.
+blocker, never to a path that looks like a typo. Since OH-17 the blocker
+it names is `/integrations` and no longer `USALI_CRM_PROVIDER`: the env
+var seeds org 1's credential row once and is read by no request path, so
+naming it would point an operator at a lever that does nothing.
 """
 
 from datetime import date, datetime, timedelta
@@ -24,7 +27,6 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from usali.auth import (
@@ -37,7 +39,8 @@ from usali.auth import (
 )
 from usali.crm_feed import CrmFeedError
 from usali.crm_pull import latest_demand, store_pull
-from usali.models import AuditEvent, OrgIntegrationCredential, Property
+from usali.integrations import DEMAND_FEED, connected_provider
+from usali.models import AuditEvent, Property
 from usali.workforce import assignment_scope
 
 require_crm_scheduler = require_grants(ORG_ADMIN, PROPERTY_GM)
@@ -59,19 +62,17 @@ def _session(request: Request) -> Session:
 
 
 def _active_org_crm_provider(session: Session) -> str:
-    """The demand provider for the request's ACTIVE org. OH-17 Task 6 replaces
-    this with integrations.connected_provider; this interim body preserves the
-    exact semantics (row absent => '' => feature OFF).
+    """The demand provider for the request's ACTIVE org (OH-17). '' when the
+    org has no credential row — feature OFF, exactly as the old
+    `org_settings.crm_provider` sentinel degraded.
 
-    The session is org-bound, so both L2 walls confine this SELECT to the
-    active org — there is no env fallback, and none for org != 1 in
-    particular (the mutant L5 kills)."""
-    row = session.execute(
-        select(OrgIntegrationCredential.provider).where(
-            OrgIntegrationCredential.integration == "demand_feed"
-        )
-    ).scalar_one_or_none()
-    return row or ""
+    A one-line delegation kept as a NAMED function rather than inlined: it is
+    the name the L5 per-org pins and `checklist._probe_demand_feed` both cite
+    as "what the pull endpoint means by connected", and the session it takes
+    is org-bound, so both L2 walls confine the read to the active org — there
+    is no env fallback, and none for org != 1 in particular (the mutant L5
+    kills)."""
+    return connected_provider(session, DEMAND_FEED)
 
 
 def _require_property_access(
@@ -131,12 +132,12 @@ def refresh_demand(
             raise HTTPException(status_code=status_code, detail=detail)
 
         provider_name = _active_org_crm_provider(session)
-        feed = request.app.state.get_crm_feed(provider_name)
+        feed = request.app.state.get_crm_feed(request_session_factory(request))
         if provider_name == "" or feed is None:
             refused(
                 503,
-                "crm demand feed is not configured (set USALI_CRM_PROVIDER "
-                "to delphi or tripleseat)",
+                "no demand feed is connected for this tenant — connect "
+                "Delphi or Tripleseat on /integrations",
             )
         if prop.crm_ref is None:
             refused(
@@ -236,7 +237,7 @@ def get_demand(
             raise HTTPException(status_code=404, detail="property not found")
 
         provider_name = _active_org_crm_provider(session)
-        feed = request.app.state.get_crm_feed(provider_name)
+        feed = request.app.state.get_crm_feed(request_session_factory(request))
         if provider_name == "" or feed is None:
             # Stored history is deliberately NOT served while off: with
             # no configured provider there is no capability story to

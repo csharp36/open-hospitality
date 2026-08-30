@@ -3,8 +3,10 @@
 Payroll-Admin-gated endpoints over the pay-run service: execute a run for a
 property + period, list runs, read a run's PERIOD-grain department aggregates,
 and fetch provider results. The provider is resolved per request from the
-`create_app` seam (`app.state.get_payroll_provider`) — config-selected in
-production, injected in tests.
+`create_app` seam (`app.state.get_payroll_provider`) — built from the ACTIVE
+ORG's `org_integration_credential` row since OH-17, injected in tests. A
+tenant with no row is refused with a named 503, never served an adapter built
+from process-wide env.
 
 SECURITY: responses carry NO PII and NO per-employee money, with ONE deliberate
 exception — C3's `GET /runs/{id}/lines` returns per-employee gross-to-net to
@@ -60,7 +62,24 @@ def _session(request: Request) -> Session:
 
 
 def _provider(request: Request) -> PayrollProvider:
-    provider: PayrollProvider = request.app.state.get_payroll_provider()
+    """This tenant's payroll adapter, from its own credential row (OH-17).
+
+    Refused loudly and by name when the row is absent (ADR-010) — never a
+    fallback to `settings.payroll_provider`, whose adapter would be built from
+    process-wide credentials that are not this tenant's connection.
+
+    Called from the handler BODY, not as a `Depends`, so each route's own
+    refusals (403, 404, the 409 on a run with nothing to fetch) keep their
+    place ahead of it."""
+    provider: PayrollProvider | None = request.app.state.get_payroll_provider(
+        request_session_factory(request)
+    )
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="payroll is not connected for this tenant — "
+                   "connect it on /integrations",
+        )
     return provider
 
 
@@ -142,6 +161,16 @@ def create_run(
     settings = get_settings()
     provider = _provider(request)
     opener: Opener = request.app.state.opener
+    # KNOWN OH-17 LOOSE END — `provider_name` below is still read from env
+    # while `provider` above is built from the tenant's credential row. They
+    # cannot diverge today: org 1's row is seeded FROM `settings.payroll_
+    # provider` (property_registry._seed_integration_credentials), and any org
+    # without a row is refused by `_provider` before reaching here. The connect
+    # UI (OH-17 tasks 10-11) is what makes them divergable, and must resolve
+    # this. Do NOT "just" swap in `integrations.connected_provider` on the way
+    # past: `provider_name` is also the IDENTITY KEY of `ProviderEmployeeRef`
+    # (payroll_run.sync_employees), so changing what it holds re-keys stored
+    # provider references and silently orphans every existing one.
     with _session(request) as session:
         try:
             run = execute_pay_run(

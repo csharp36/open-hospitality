@@ -53,6 +53,13 @@ def test_accountant_sees_all_properties(db_engine, db_session, tmp_path):
 
 
 def test_qbo_push_property_scope_enforced(db_engine, db_session, tmp_path):
+    """Also the ORDERING pin for OH-17: `_seed_two_properties` plants no
+    accounting credential row, so this org is NOT connected to QBO — and the
+    caller must still get the 403 for the out-of-scope property, not a 503
+    telling them the tenant's integration state. Resolving the client through
+    a FastAPI `Depends` would invert that, because dependencies run before the
+    handler's scope check; `portal_api.qbo_push_endpoint` therefore resolves
+    it in the body, after the check. Do not turn it back into a dependency."""
     _seed_two_properties(db_session)
     verifier, mint = make_authkit()
     c = _client(db_engine, tmp_path, verifier)

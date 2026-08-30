@@ -44,9 +44,14 @@ SENSITIVE_FIELD_PATTERNS: tuple[str, ...] = (
 
 # The closed set of demand providers (Pillar J / L5, decision 5). The
 # EMPTY string is the OFF sentinel, NOT a provider — the full set config
-# may legally hold is ('',) + CRM_PROVIDERS. This constant is the ONE
-# source the app layer reads: `server` fail-fast + `_crm_feed_for_provider`
-# both reference it, so "add a provider" is a one-line change here. The
+# may legally hold is ('',) + CRM_PROVIDERS. It is read by
+# `mapping.property_registry` (which validates the SEED value of
+# USALI_CRM_PROVIDER) and by the connect surfaces; OH-17 removed its two
+# former readers in `server` — the create_app fail-fast and
+# `_crm_feed_for_provider` — because the provider is no longer a
+# process-wide string but a column on the tenant's credential row.
+# `integrations.PROVIDERS` is now the app layer's working set, and it is
+# where "add a provider" starts. The
 # `ck_org_integration_credential_provider_fields` CHECK
 # (models.OrgIntegrationCredential and the b3a0integcred migration) is the
 # SCHEMA MIRROR of the same set — kept literal on purpose so the DB refuses

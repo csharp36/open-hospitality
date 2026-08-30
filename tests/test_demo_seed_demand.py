@@ -140,3 +140,51 @@ def test_feature_off_skips_the_demand_story_loudly(
     assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
 
 
+
+
+# --- the seams themselves, unmonkeypatched -----------------------------------
+
+
+def test_the_seed_seams_resolve_from_the_founding_orgs_credential_rows(
+    db_session, monkeypatch
+):
+    """`_payroll_provider` and `_crm_feed` are monkeypatched by every other
+    test in this file (they must be — the demo stack's :9300/:9400 services do
+    not exist here). That leaves their REAL bodies unexercised, and OH-17
+    rewrote both: they resolve from the founding org's
+    `org_integration_credential` rows now, not from `Settings`. This runs them.
+
+    It also pins the ORDERING the demo depends on. Each seam opens its OWN
+    connection off `get_settings().db_url`, so it can only see rows that are
+    COMMITTED — which `_seed_base` does (seed_properties -> ensure_default_org
+    -> _seed_integration_credentials). A seam called before `_seed_base`, or a
+    `_seed_base` whose commit were dropped, would resolve nothing and the demo
+    would silently skip its payroll and demand stories."""
+    monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")
+    demo_seed._seed_base(db_session)
+
+    assert isinstance(demo_seed._payroll_provider(), GustoAdapter)
+    assert isinstance(demo_seed._crm_feed(), DelphiAdapter)
+
+
+def test_the_demand_seam_reads_the_row_and_not_the_env(
+    db_session, monkeypatch
+):
+    """The OFF state is the ABSENCE of a demand_feed row, and an unset
+    USALI_CRM_PROVIDER is what leaves it absent AT SEED TIME. Setting the
+    variable afterwards must change NOTHING: `_crm_feed` reads the row.
+
+    That last step is the whole point of the test. `_crm_feed`'s old body read
+    `settings.crm_provider` directly, justified as "the demo seeds the founding
+    org, whose row comes from this same env, so reading env here is reading
+    org 1's provider". True by coincidence, and only until the env and the row
+    disagree — which is exactly the state built below, and which the connect UI
+    makes routine. The old body returns a DelphiAdapter here; the row-reading
+    one returns None, so the seed prints its honest skip note."""
+    monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
+    demo_seed._seed_base(db_session)
+    monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")
+
+    assert demo_seed._crm_feed() is None
+    # Payroll has no off state: its row is seeded unconditionally.
+    assert isinstance(demo_seed._payroll_provider(), GustoAdapter)

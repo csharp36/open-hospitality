@@ -345,22 +345,16 @@ def test_a_multi_night_block_lands_rooms_and_labels_on_every_night():
     assert by_date[date(2026, 8, 6)].event_covers == 120
 
 
-# --- config selection --------------------------------------------------------
-
-
-def test_the_feed_is_selected_by_the_provider_name_alone():
-    """L5: the feed is selected by the PROVIDER NAME the caller resolved
-    (per-org, from the org's demand_feed credential row) — delphi|tripleseat
-    pick an adapter, empty
-    means the feature is OFF (None), and an unknown value refuses loudly.
-    Base URLs stay process-wide (from_settings), so no env is needed here."""
-    from usali.server import _crm_feed_for_provider
-
-    assert isinstance(_crm_feed_for_provider("delphi"), DelphiAdapter)
-    assert isinstance(_crm_feed_for_provider("tripleseat"), TripleseatAdapter)
-    assert _crm_feed_for_provider("") is None
-    with pytest.raises(RuntimeError, match="hubspot"):
-        _crm_feed_for_provider("hubspot")
+# --- provider selection -------------------------------------------------------
+#
+# There is no adapter-selection test HERE any more. Selection used to be
+# `server._crm_feed_for_provider(name)`, a pure function of a provider string;
+# OH-17 deleted it, and selection is now `integrations.resolve_crm_feed(factory)`
+# reading the tenant's credential row — provider name AND credentials together,
+# inseparable by construction (D-OH17.1). Its pins live in
+# tests/test_integrations.py, which owns the credential-row world this file
+# deliberately does not build. Do not reinstate a name-only selector here: a
+# provider name with no row behind it is precisely the state OH-17 abolished.
 
 
 def test_the_in_memory_feed_reports_dropped_fields_too():

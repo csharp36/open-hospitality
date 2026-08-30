@@ -137,9 +137,13 @@ def _seed_credential_fields(
     needs — keyed exactly as the CHECK demands, and enumerated rather than
     inferred.
 
-    It REFUSES an unknown pair, matching `_payroll_provider_from_settings`
-    (`server.py:187`), which already rejects a misspelled
-    `USALI_PAYROLL_PROVIDER` by name. A branch whose `else` meant "adp" would
+    It REFUSES an unknown pair, matching `integrations.resolve_payroll`, which
+    raises by name on a provider it cannot build rather than degrading to "not
+    connected". Since OH-17 deleted `server._payroll_provider_from_settings`
+    and create_app's boot-time check, THIS function is the only place a
+    misspelled `USALI_PAYROLL_PROVIDER` is caught before the DB CHECK sees it —
+    which is the right place, because seeding is the only thing that still
+    reads that variable. A branch whose `else` meant "adp" would
     instead build a row carrying ADP's columns under the misspelled provider
     name, and the typo would surface as a CHECK violation naming no provider —
     the same failure, several layers further from its cause.

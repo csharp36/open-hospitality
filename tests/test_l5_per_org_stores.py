@@ -236,8 +236,7 @@ def two_org_crm_world(db_session):
 
 def _crm_client(db_url, tmp_path, verifier):
     """Serving app connected as the RLS-bound app role (so the DB wall is
-    genuine, not superuser-bypassed) with a delphi feed for any configured
-    provider."""
+    genuine, not superuser-bypassed) with a delphi feed for every request."""
     # Inside the property-local today..+90d pull horizon regardless of the
     # wall clock (store_pull refuses days outside it).
     stay = datetime.now(ZoneInfo("America/Los_Angeles")).date() + timedelta(days=3)
@@ -252,7 +251,12 @@ def _crm_client(db_url, tmp_path, verifier):
         session_factory=make_session_factory(make_engine(app_role_url(db_url))),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(),
-        crm_feed_factory=lambda provider: feed if provider else None,
+        # OH-17: the seam takes the request's org-bound session factory. The
+        # fake ignores it and always yields the feed ON PURPOSE — that is
+        # what makes org B's `configured: false` below a real assertion: it
+        # can only come from B's MISSING credential row, never from the fake
+        # deciding to withhold an adapter.
+        crm_feed_factory=lambda _factory: feed,
     )
     return TestClient(app)
 

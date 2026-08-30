@@ -11,9 +11,12 @@ Readers: `latest_demand` takes the NEWEST batch per stay-date (current
 demand); `demand_pace` pairs it with the previous batch's row (pace is a
 comparison of snapshots — the reason the table is append-only).
 
-Feature-off is PINNED here as a loud 503 naming the config switch (the
+Feature-off is PINNED here as a loud 503 naming the connect surface (the
 plan offered 404-the-router or refuse-loudly; a named refusal is the G1
-absence posture, and it cannot be confused with a typo'd path).
+absence posture, and it cannot be confused with a typo'd path). Since
+OH-17 the blocker it names is `/integrations`, not `USALI_CRM_PROVIDER`:
+the env var seeds org 1's credential row once and is never read at
+request time, so it is not a lever a tenant's operator can pull.
 """
 
 from datetime import date, datetime, timedelta
@@ -76,7 +79,13 @@ def _client(db_engine, tmp_path, verifier, feed):
         session_factory=make_session_factory(db_engine),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(),
-        crm_feed_factory=lambda provider: feed if provider else None,
+        # OH-17: the seam takes the REQUEST'S org-bound session factory, not
+        # a provider name — the fake ignores it. Feature-off is no longer the
+        # factory's job to model (it used to return None for an empty
+        # provider): it is the ABSENCE of a credential row, which
+        # `_active_org_crm_provider` reads. Pass `feed=None` to model the
+        # divergent state (row present, factory yields nothing) instead.
+        crm_feed_factory=lambda _factory: feed,
     )
     return TestClient(app)
 
@@ -289,13 +298,25 @@ def test_a_property_without_crm_ref_refuses_by_name(
     assert refused.resource_id == "SSSJ"
 
 
-def test_feature_off_is_a_loud_503_naming_the_switch(
+def test_feature_off_is_a_loud_503_naming_the_integrations_page(
     db_engine, db_session, tmp_path, monkeypatch
 ):
     """THE feature-off pin (the plan offered two shapes; this is the one):
-    the router stays mounted and refuses loudly, naming the config switch
-    — an unconfigured feed can never read as a typo'd path or a silent
-    no-op. Nothing is written, and the refusal is audited."""
+    the router stays mounted and refuses loudly, naming the blocker — an
+    unconfigured feed can never read as a typo'd path or a silent no-op.
+    Nothing is written, and the refusal is audited.
+
+    OH-17 changed WHICH blocker it names. `USALI_CRM_PROVIDER` is no longer
+    the switch (it seeds org 1's credential row once and is never read at
+    request time), so naming it would send an operator to a lever that does
+    nothing for their tenant. ADR-010 wants a named blocker — it has to name
+    the RIGHT one, and that is the connect surface.
+
+    The audit assertion below is load-bearing, not decoration: it proves the
+    503 came from `refused()` inside the handler rather than from something
+    short-circuiting earlier (a 403 out of scope, a 404 unknown property),
+    which would leave this test green while the refusal it names never ran.
+    """
     monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
     _seed(db_session)
     verifier, mint = make_authkit()
@@ -311,25 +332,14 @@ def test_feature_off_is_a_loud_503_naming_the_switch(
     r = c.post("/api/crm/refresh", headers=_admin(mint),
                json={"property": "HISJ"})
     assert r.status_code == 503
-    assert "USALI_CRM_PROVIDER" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "/integrations" in detail
+    assert "USALI_CRM_PROVIDER" not in detail
     assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
     refused = db_session.execute(
         select(AuditEvent).where(AuditEvent.action == "crm_refresh_refused")
     ).scalar_one()
     assert refused.resource_id == "HISJ"
-
-
-def test_an_unknown_provider_name_fails_app_construction(
-    db_engine, tmp_path, monkeypatch
-):
-    monkeypatch.setenv("USALI_CRM_PROVIDER", "hubspot")
-    with pytest.raises(RuntimeError, match="hubspot"):
-        create_app(
-            inbox_dir=tmp_path / "inbox",
-            processed_dir=tmp_path / "processed",
-            failed_dir=tmp_path / "failed",
-            session_factory=make_session_factory(db_engine),
-        )
 
 
 def test_a_provider_failure_is_502_audited_and_writes_nothing(
