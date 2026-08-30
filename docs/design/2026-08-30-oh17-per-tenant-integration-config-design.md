@@ -467,6 +467,28 @@ load-bearing rather than defence in depth.
 
 ## 6. Frontend
 
+**The PAGE is DEFERRED to its own plan — amended 2026-08-30 during execution.
+This slice is backend-only.** None of it shipped: there is no
+`IntegrationsPage.tsx`, no `api/integrations.ts`, no nav entry, and no
+`IntegrationsPage.test.tsx` (§8's frontend bullet goes with them). What did
+ship from this section is "The checklist edit" below — the three probes, the
+three `where="/integrations"` values, and the deleted `_OH17_REASON`. The rest
+is kept as the specification the frontend plan starts from, not as a record of
+what landed.
+
+This is the largest scope change the slice took, so it is spelled out rather
+than left to be inferred from the header's "scope FINAL": OH-17 delivers
+per-tenant storage, resolution, the `/api/integrations` router and the QBO
+OAuth pair, and the three checklist items point at `/integrations` — a route
+**the SPA does not serve**, so an operator who clicks one reaches the
+not-found page today. Two consequences are load-bearing and are handled where
+they land: `.github/roadmap.yml` gets `in-progress`, not `shipped` (§10's
+amendment), and `router.tsx`'s entry-route restore had to learn to reject a
+remembered href that resolves to no route, or one such click would pin
+Not Found onto every later bare-origin load (`lib/lastRoute.ts`).
+
+The design below is unchanged and still the plan:
+
 New `IntegrationsPage.tsx` at `/integrations`, plus `api/integrations.ts` and
 the `Integration` types mirroring the router's models. A nav entry in
 `Layout.tsx`'s ungrouped section beside Setup — the same reasoning that put
@@ -572,6 +594,12 @@ Per ADR-010, every degradation is loud and named.
   per-integration buttons rather than an `sr-only` span, since a page of three
   cards repeats "Connect" three times.
 
+  **Deferred with the page — amended 2026-08-30 during execution** (§6). The
+  one frontend test this slice DID need is the entry-route consequence of
+  shipping the `/integrations` links without the page:
+  `lib/lastRoute.test.ts` pins that a remembered href with no route falls back
+  to the dashboard instead of restoring Not Found forever.
+
 ## 8a. Raised and RESOLVED in execution — `pay_run.provider_name`
 
 **Resolved 2026-08-30 in `986b5da`.** An earlier revision of this section
@@ -638,3 +666,12 @@ On merge, update in the same commit:
   nothing enforces the two files agreeing, and that OH-18 already drifted for
   two commits by exactly this omission. A status edit in the doc alone is half
   an edit.
+
+  **Amended 2026-08-30 on merge:** the status this slice actually applies is
+  `planned` → **`in-progress`**, not `shipped`, because §6's frontend was
+  deferred (see the amendment there). The yml says so with the reason inline —
+  storage, resolution and the OAuth backend shipped; no `/integrations` page
+  exists, so no hotel can connect from the app. `shipped` belongs to the
+  frontend plan that closes it. The paired-edit rule this bullet exists to
+  enforce is unchanged: whatever the status is, both files say it in the same
+  commit.

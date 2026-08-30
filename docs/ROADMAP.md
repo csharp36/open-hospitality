@@ -151,15 +151,16 @@ backend-complete, not user-complete; nobody can actually connect QuickBooks,
 Gusto, ADP, Delphi, or Tripleseat through the product yet, only through
 `/api/integrations` directly.
 
-Two smaller loose ends the design doc's §8a carries forward, both
-deliberate: `cli.py`'s `_qbo_client_from_settings` (`cli.py:549`) still
-builds its `QboClient` from process-wide `Settings` with a `StaticTokenStore`
-— the CLI is not org-aware at all, acceptable while it is an operator tool
-run against one deployment, but it should not grow a second user. (The
-sibling hazard the design doc raised — `payroll_run_api.create_run` recording
-`provider_name` from `Settings` instead of the resolved row — was in fact
-fixed before merge, in `resolve_payroll`/`ResolvedPayroll`; §8a is stale on
-that point and worth a follow-up correction.)
+**One** smaller loose end the design doc's §8a carries forward, deliberately:
+`cli.py`'s `_qbo_client_from_settings` (`cli.py:549`) still builds its
+`QboClient` from process-wide `Settings` with a `StaticTokenStore` — the CLI
+is not org-aware at all, acceptable while it is an operator tool run against
+one deployment, but it should not grow a second user. (The sibling hazard
+§8a once carried beside it — `payroll_run_api.create_run` recording
+`provider_name` from `Settings` instead of the resolved row — was fixed
+before merge in `resolve_payroll`/`ResolvedPayroll`, and §8a was rewritten to
+say so: it now opens "Resolved 2026-08-30 in `986b5da`". Nothing is stale
+there; the correction has landed.)
 
 ### 2.2 B4 — the open-items model (**OH-18**, shipped)
 

@@ -536,7 +536,8 @@ with the production deployment.
 
 C2 proves the adapter-layer thesis: an approved pay period flows through a
 provider-agnostic `PayrollProvider` port to a Gusto-shaped **or** ADP-shaped
-payroll provider — selected by configuration alone — and the provider's actual
+payroll provider — selected per tenant by the connected credential row since
+OH-17, by process-wide config before it — and the provider's actual
 gross-to-net lands back as department-aggregated USALI facts.
 
 **One port, two adapters, two mocks.** The whole app speaks one canonical model
@@ -553,13 +554,20 @@ a local mock server:
 The mocks apply different tax rates (15%/10% employee/employer vs 18%/11%) so a
 symmetric adapter bug cannot accidentally pass both, and one contract test suite
 runs parametrized over both adapters with zero per-provider test bodies — that
-suite is the swappability proof. `USALI_PAYROLL_PROVIDER=gusto|adp` is the
-**only** switch; defaults target the local mocks, and
-`USALI_GUSTO_BASE_URL`/`_API_TOKEN`/`_COMPANY_ID` or
-`USALI_ADP_BASE_URL`/`_CLIENT_ID`/`_CLIENT_SECRET` point an adapter at a real
-endpoint — the same config-only discipline as the QBO push. Any other provider
-value refuses to build an adapter at all: the first pay-run request raises
-rather than silently falling back to a default.
+suite is the swappability proof. **Since OH-17 the switch is the tenant's
+`org_integration_credential` row** — provider name and its secrets together —
+which `integrations.resolve_payroll` reads per request; no row means payroll
+is not connected and the pay run refuses naming `/integrations`.
+`USALI_PAYROLL_PROVIDER=gusto|adp` with `_API_TOKEN`/`_COMPANY_ID` or
+`_CLIENT_ID`/`_CLIENT_SECRET` now only **seeds org 1's row** on first insert;
+the base URLs (`USALI_GUSTO_BASE_URL` / `USALI_ADP_BASE_URL`) stay
+process-wide, because they name the endpoint the deployment talks to, not the
+tenant. A misspelled provider name is caught at SEED time, by name, in
+`property_registry._seed_credential_fields`
+(`src/usali/mapping/property_registry.py:141-146`) — seeding is the only
+thing that still reads the variable, so the old boot-time and first-pay-run
+fail-fasts (`server._payroll_provider_from_settings`) were deleted with it;
+the DB CHECK is the backstop under that.
 
 **Preflight names every blocker — before any network call.** Executing a run
 first assembles the period from B2's approved hours through B3's California
@@ -985,9 +993,15 @@ POST   /api/crm/refresh          # {property} — one audited pull, today..+90d
 GET    /api/crm/demand?property=&start=&end=   # latest snapshot per stay-date
 ```
 
-**One provider, config-selected.** `USALI_CRM_PROVIDER=delphi|tripleseat`
-(empty = off — the pull refuses with a loud 503 naming the switch; the read
-surface degrades to "no demand data"). Two adapters against deliberately
+**One provider per tenant, connection-selected.** Since OH-17 the provider
+comes from the tenant's own `org_integration_credential` row, and NOT
+CONNECTED is the absence of that row — the pull refuses with a loud 503
+naming `/integrations`, the connect surface, and the read surface degrades to
+"no demand data" (`crm_api.py:16-20`, `integrations.not_connected_detail`).
+`USALI_CRM_PROVIDER=delphi|tripleseat` survives only as the seed that fills
+org 1's row once; no request path reads it, so the 503 must not name it —
+that would point an operator at a lever that does nothing. Two adapters
+against deliberately
 different wire shapes prove the port: Amadeus-Delphi-style (paged
 PascalCase, rooms-on-the-books + room blocks) and Tripleseat-style
 (snake_case events with covers). Local mocks run on :9400/:9401 (`usali
@@ -1088,11 +1102,24 @@ mock, so pointing at real Intuit is a config-only change:
 | `USALI_QBO_CLIENT_SECRET` | `mock` | your app's OAuth2 client secret |
 | `USALI_QBO_REALM_ID` | `mock` | company realm id |
 | `USALI_QBO_REFRESH_TOKEN` | `mock` | refresh token from Intuit's consent flow |
+| `USALI_QBO_AUTHORIZE_URL` | `http://127.0.0.1:9200/connect/oauth2` — **no mock serves this path** | `https://appcenter.intuit.com/connect/oauth2` |
 
-**Token rotation:** the mock rotates refresh tokens like real Intuit and keeps
-state in memory — if a later, separate `qbo-push` invocation fails with
+`USALI_QBO_AUTHORIZE_URL` is Intuit's CONSENT host, a different host from the
+API base URL, which is why it is its own setting. Its default is loopback but
+nothing answers there, so it is not covered by the "defaults target the local
+mock" line above: a deployment that points `USALI_QBO_BASE_URL` at Intuit and
+forgets this one hands operators a localhost consent URL, and
+`_refuse_dev_secrets_in_prod` cannot catch it (loopback is not a dev secret).
+Set both at go-live.
+
+**Token rotation:** the mock rotates refresh tokens like real Intuit. The
+SERVER persists each rotated token to the tenant's `org_integration_credential`
+row through `integrations.DbTokenStore` (OH-17 / D-OH17.7), so a restart or a
+second worker reads the rotated token rather than re-presenting a spent one.
+The **CLI** is the exception and still holds rotation in memory: `qbo-push`
+builds its client from process-wide `Settings` with a `StaticTokenStore`
+(`cli.py:549`), so if a later, separate `qbo-push` invocation fails with
 `invalid_grant`, restart the mock (already-pushed dates never need a token).
-Real deployments must persist the rotated token — a known post-pilot task.
 
 **Placeholder chart of accounts:** the GL codes in `mapping/opera.yaml` /
 `mapping/autoclerk.yaml` (`gl_account_code`) and the account list the mock

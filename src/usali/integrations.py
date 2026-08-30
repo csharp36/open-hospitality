@@ -120,12 +120,13 @@ def not_connected_detail(integration: str) -> str:
     must never appear here is which one THIS tenant chose, or any part of a
     credential.
 
-    `/integrations` is a FORWARD REFERENCE: the connect UI lands in OH-17
-    tasks 10-11, so until then this path 404s for anyone who follows it. That
-    is deliberate — a named blocker an operator can act on soon beats a
-    refusal naming an env var they cannot act on at all (ADR-010, and the
-    reason `USALI_CRM_PROVIDER` came out of these strings). When the UI ships,
-    this is the one string to revisit."""
+    `/integrations` is a FORWARD REFERENCE: OH-17 shipped the backend for it
+    (the router in task 10, the OAuth pair in task 11), but the SPA page is a
+    SEPARATE frontend plan that has not shipped, so today this path resolves
+    to nothing an operator can use. That is deliberate — a named blocker an
+    operator can act on soon beats a refusal naming an env var they cannot act
+    on at all (ADR-010, and the reason `USALI_CRM_PROVIDER` came out of these
+    strings). When the page ships, this is the one string to revisit."""
     label = _INTEGRATION_LABELS.get(integration, integration)
     products = [
         _PRODUCT_NAMES.get(spec.provider, spec.provider)
@@ -257,9 +258,13 @@ def has_credential(session: Session, integration: str) -> bool:
     An UNREADABLE row (ADR-005) propagates `CredentialUnreadable` from
     `credential_for` rather than answering False. False would be the checklist
     item silently re-opening on a connection that exists — the one outcome
-    `CredentialUnreadable` exists to prevent. No checklist surface catches it
-    today, so a rotated key makes the checklist refuse rather than lie; that
-    is a worse page than it could be and a better one than a false answer."""
+    `CredentialUnreadable` exists to prevent. The raise is CONTAINED, not
+    fatal: `checklist.evaluate` guards every probe (`checklist.py:84-94`), so
+    a rotated `field_encryption_key` turns this ONE item into `error` with
+    `detail="CredentialUnreadable"` while the rest of the checklist still
+    renders. Pinned by
+    `tests/test_checklist.py:245`
+    (`test_an_unreadable_credential_reads_as_could_not_check`)."""
     return credential_for(session, integration) is not None
 
 

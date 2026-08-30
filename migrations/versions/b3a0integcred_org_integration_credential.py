@@ -124,6 +124,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # THIS DOWNGRADE DESTROYS EVERY TENANT'S CONNECTED INTEGRATIONS, and the
+    # loss is not symmetric with the upgrade's. The docstring above says
+    # dropping `org_settings` was safe because `crm_provider` was pure config a
+    # re-seed reconstructs from env; that precedent does NOT transfer to this
+    # table. `org_integration_credential` holds each tenant's own payroll,
+    # accounting and demand-feed credentials, and the QBO `refresh_token` in
+    # particular is a ROTATING value whose current lineage exists nowhere else:
+    # Intuit has already consumed every earlier token, and env holds only the
+    # bootstrap one for org 1. An upgrade -> downgrade -> upgrade cycle
+    # therefore leaves every tenant disconnected, and QBO cannot be re-seeded
+    # at all — each tenant must re-run Intuit consent through
+    # `/api/integrations/accounting/authorize`.
+    #
+    # Dump the table before running this against anything holding real
+    # connections. Nothing here reconstructs it.
     op.create_table(
         "org_settings",
         sa.Column(

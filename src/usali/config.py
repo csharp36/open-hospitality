@@ -46,9 +46,16 @@ class Settings(BaseSettings):
     qbo_refresh_token: str = "mock"
     # Intuit's CONSENT host — a DIFFERENT host from the API base URL above
     # (appcenter.intuit.com vs quickbooks.api.intuit.com), which is why it is
-    # its own setting and not a path appended to `qbo_base_url`. Defaults to
-    # the local mock; go-live points this at
-    # https://appcenter.intuit.com/connect/oauth2 via USALI_QBO_AUTHORIZE_URL.
+    # its own setting and not a path appended to `qbo_base_url`.
+    #
+    # UNLIKE every other default here, this one points at NOTHING: `qbo-mock`
+    # serves no /connect/oauth2, so the default is a loopback placeholder, not
+    # a working local mock. GO-LIVE MUST SET IT — every deployment talking to
+    # real Intuit needs USALI_QBO_AUTHORIZE_URL=
+    # https://appcenter.intuit.com/connect/oauth2, and setting only
+    # USALI_QBO_BASE_URL hands operators a consent URL pointing at their own
+    # laptop. `_refuse_dev_secrets_in_prod` will NOT catch that: it exempts
+    # loopback hosts as development mocks, and this value is loopback.
     # There is no companion redirect-URI setting: that is derived from
     # `public_base_url` (see `integrations_api.qbo_redirect_uri`).
     qbo_authorize_url: str = "http://127.0.0.1:9200/connect/oauth2"
