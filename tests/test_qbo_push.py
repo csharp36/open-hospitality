@@ -24,7 +24,13 @@ from usali import qbo_client as qbo_client_module
 from usali import qbo_push
 from usali.cli import app
 from usali.models import QboPushLedger, UsaliFinancialFact
-from usali.qbo_client import QboClient, QboError, StaticTokenStore, SyncASGITransport
+from usali.qbo_client import (
+    QboClient,
+    QboError,
+    StaticTokenStore,
+    SyncASGITransport,
+    TokenStore,
+)
 from usali.qbo_mock import create_mock_qbo
 from usali.qbo_push import (
     JePlan,
@@ -339,7 +345,7 @@ class RecordingTokenStore:
         self.stores.append(refresh_token)
 
 
-def _client_on(mock_app: Any, store: Any) -> QboClient:
+def _client_on(mock_app: Any, store: TokenStore) -> QboClient:
     return QboClient(
         "http://mock-qbo", "client", "secret", REALM, store,
         transport=SyncASGITransport(mock_app),
@@ -349,11 +355,16 @@ def _client_on(mock_app: Any, store: Any) -> QboClient:
 def test_rotation_is_written_through_to_the_store(db_session, seed_six_pdfs, mock_app):
     """D-OH17.7. The lazy first refresh consumes and rotates the bootstrap
     token, so the store must have been written or the NEXT refresh is dead."""
-    store = RecordingTokenStore(_bootstrap_refresh_token(mock_app))
+    bootstrap = _bootstrap_refresh_token(mock_app)
+    store = RecordingTokenStore(bootstrap)
     result = push_day(db_session, _client_on(mock_app, store),
                       property_id="HISJ", business_date=DAY)
     assert result.status == "pushed"
     assert store.stores, "the rotated refresh token was never persisted"
+    # Not just "something was written": the value must have ROTATED. Writing
+    # the bootstrap token back would satisfy the assertion above and still
+    # leave the next refresh dead against a token Intuit has consumed.
+    assert store.stores[-1] != bootstrap
 
 
 def test_a_rebuilt_client_can_still_refresh(db_session, seed_six_pdfs, mock_app):
@@ -385,6 +396,10 @@ def test_a_rebuilt_client_can_still_refresh(db_session, seed_six_pdfs, mock_app)
 
 
 def test_static_store_keeps_the_old_in_memory_behaviour():
+    """StaticTokenStore must be a load/store shim over one string and nothing
+    more, so the port is a strict ADDITION: the mock, the CLI and the portal's
+    settings-built client behave exactly as they did before OH-17. If this
+    ever grows persistence, those paths have silently changed semantics."""
     store = StaticTokenStore("tok")
     assert store.load() == "tok"
     store.store("rotated")

@@ -139,15 +139,18 @@ class StaticTokenStore:
 class QboClient:
     """Minimal QuickBooks Online client: refresh-grant auth + JE create.
 
-    Refresh-token rotation is written back through a `TokenStore` port, so
-    where the lineage lives — and how long it survives — is the caller's
-    choice, not this class's. The first refresh invalidates the token the
-    store handed out, so two clients sharing a `StaticTokenStore`-style
-    in-memory lineage must be one instance for its whole lifetime (the portal
-    holds one via an app.state factory), and a SECOND process bootstrapped
-    from the same static token gets `invalid_grant`. A durable store
-    (`usali.integrations.DbTokenStore`, which takes a row lock) is what makes
-    the rotation outlive this process and serialize across them.
+    Refresh-token rotation is written back through a `TokenStore` port. Every
+    grant consumes the token the store handed out and the replacement is
+    written back before `_refresh` returns, so the lineage lives in the STORE
+    and not in this object: what callers must share is the STORE, not the
+    client. Rebuilding a client over the same store — which is exactly what a
+    restarted process does — refreshes fine.
+
+    What the port does not do on its own is survive the process. With
+    `StaticTokenStore` the lineage dies with it, so a second process
+    bootstrapped from the same static token still gets `invalid_grant`; that
+    is the standing limitation, and a durable store
+    (`usali.integrations.DbTokenStore`) is what removes it.
 
     Thread safety: `post_journal_entry` holds an internal lock for its whole
     body (lazy refresh + POST + retry loops), so concurrent callers on one
@@ -156,7 +159,9 @@ class QboClient:
     grant is `invalid_grant` (Intuit rotates on every grant), surfacing as a
     spurious failed push. Whole-call scope is deliberate: pilot throughput
     never needs refresh-only granularity, and it keeps the 401/429 retry
-    loops trivially race-free.
+    loops trivially race-free. That lock is per-INSTANCE, so this — not the
+    rotation lineage, which the store now carries — is why concurrent callers
+    must share ONE client (the portal holds one via an app.state factory).
     """
 
     def __init__(
@@ -205,9 +210,13 @@ class QboClient:
         self._access_token = payload["access_token"]
         # Intuit rotates the refresh token on every grant; persist the new one
         # or the NEXT refresh fails with invalid_grant. Through the store, so
-        # the lineage outlives this process (D-OH17.7) — `post_journal_entry`
-        # already holds the instance lock around this, and DbTokenStore takes
-        # a row lock, which is what serializes ACROSS processes.
+        # the token has a durable home and the lineage CAN outlive this
+        # process (D-OH17.7). `post_journal_entry` holds the instance lock
+        # around this, which serializes threads here. Whether two PROCESSES
+        # refreshing at once are serialized is the store's problem, not this
+        # client's, and is not settled yet: the critical section is
+        # load() -> grant -> store(), which a lock taken inside store() is
+        # too late to cover. `DbTokenStore` has to answer that.
         self._tokens.store(payload["refresh_token"])
 
     def post_journal_entry(self, je: dict[str, Any], request_id: str) -> str:
