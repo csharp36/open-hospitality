@@ -1631,6 +1631,18 @@ git commit -m "feat(oh17): resolve every integration from the active org"
 > That is D-B4.8's payoff, and it is now confirmed rather than hoped.
 
 
+> **AMENDED 2026-08-30, after this task shipped (D-OH17.16).** This task gave
+> all three integration items `where="/integrations"`. Two of them earned it;
+> `demand_feed` did not. A credential does not finish that connection —
+> verification and every real pull need a property `crm_ref`, whose only
+> writer is the repo's YAML seed — so the route pointed at a form no tenant
+> could complete. `demand_feed` now keeps `where=None` with an
+> `unavailable_reason` of its own, and the two tests below were replaced by
+> `test_demand_feed_is_the_one_item_without_a_surface` (an exact set, so it
+> fails in both directions) and
+> `test_the_connectable_integration_items_route_to_integrations`. The code
+> blocks below are kept as written for the record; do not copy them forward.
+
 **Files:**
 - Modify: `src/usali/checklist.py:167-186` (probes), `:189-192` (`_OH17_REASON`), `:213-231` (three items)
 - Modify: `tests/test_checklist.py:198-224`

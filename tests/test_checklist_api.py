@@ -54,13 +54,14 @@ def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
     already catch a MISSING field (it 500s); this pins that the null arm of
     the D-B4.8 pair serializes over the real endpoint.
 
-    OH-17 (Task 7, D-OH17.12) closed the pair's only non-null-reason
-    inhabitants — payroll, accounting and demand_feed now all route to
-    `/integrations` instead of carrying a reason — so there is no live ITEM
-    left to exercise the other arm through the endpoint. `payroll` stays the
-    item under test here (rather than swapping to some other required item)
-    so a regression that brings back a null `where` for it is caught in the
-    same place this test already watches."""
+    Both arms are live again as of D-OH17.16: `payroll` routes to
+    `/integrations` with no reason, and `demand_feed` carries a reason with no
+    route because a credential does not finish that connection. Asserting
+    both here is the point — this is the only place the pair is checked
+    through real serialization rather than against the dataclass.
+
+    (Between D-OH17.12 and D-OH17.16 no live item carried a reason, and this
+    docstring said so. It was true for about a day.)"""
     _org(db_session)
     verifier, mint = make_authkit()
     c = _client(db_engine, tmp_path, verifier)
@@ -70,16 +71,18 @@ def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
     assert by_key["first_report"]["unavailable_reason"] is None
     assert by_key["payroll"]["where"] == "/integrations"
     assert by_key["payroll"]["unavailable_reason"] is None
+    # The other arm, over the wire: null route, real reason (D-OH17.16).
+    assert by_key["demand_feed"]["where"] is None
+    assert by_key["demand_feed"]["unavailable_reason"] is not None
 
 
 def test_item_model_still_serializes_a_non_null_reason():
-    """The endpoint-level test above lost its non-null-reason example when
-    OH-17 closed the last item that carried one (D-OH17.12) — every real
-    item's `unavailable_reason` is None now. `ItemModel` itself is still
-    meant to carry BOTH arms of the D-B4.8 pair (a future gap gets one
-    again), so this pins that half directly against the model rather than
-    through a real registry item, independent of what ITEMS currently
-    contains."""
+    """`ItemModel` is meant to carry BOTH arms of the D-B4.8 pair whatever
+    ITEMS happens to hold. The endpoint test above covers the non-null arm
+    through a real item today (`demand_feed`), but that is a fact about the
+    registry, not about the model: the day `crm_ref` becomes settable and the
+    last reason disappears again, this keeps the serialization pinned rather
+    than quietly stopping being exercised."""
     model = ItemModel(
         key="x", title="X", description="d", required=False,
         where=None, status="open", unavailable_reason="why not",

@@ -1000,7 +1000,15 @@ naming `/integrations`, the connect surface, and the read surface degrades to
 "no demand data" (`crm_api.py:16-20`, `integrations.not_connected_detail`).
 `USALI_CRM_PROVIDER=delphi|tripleseat` survives only as the seed that fills
 org 1's row once; no request path reads it, so the 503 must not name it —
-that would point an operator at a lever that does nothing. Two adapters
+that would point an operator at a lever that does nothing.
+
+Credentials are necessary but **not sufficient** for this one integration:
+every CRM read is property-scoped, so a connection also needs a property
+`crm_ref`, and nothing outside the repo's YAML seed writes one. Connecting
+without it is refused at the write path (`CannotVerify`), and the
+`demand_feed` checklist item carries an `unavailable_reason` instead of a
+connect route rather than advertise a form no tenant can finish (D-OH17.16).
+Payroll and accounting have no such second requirement. Two adapters
 against deliberately
 different wire shapes prove the port: Amadeus-Delphi-style (paged
 PascalCase, rooms-on-the-books + room blocks) and Tripleseat-style

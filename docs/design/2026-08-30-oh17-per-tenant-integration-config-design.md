@@ -288,13 +288,20 @@ that would fail on first use.
   (CONFIRMED 2026-08-30).** `test_the_integration_items_have_no_connect_surface_yet`
   (`tests/test_checklist.py:215`) fails by design once a `where` is restored —
   that failure is the signal, not a regression. It is deleted **in the same
-  edit** that restores the three `where` values and removes `_OH17_REASON`,
+  edit** that restores the `where` values (two of the three — D-OH17.16) and
+  removes `_OH17_REASON`,
   and replaced by `test_every_item_has_a_connect_surface`, which asserts no
   item carries a null `where`. The paired invariant D-B4.8 established
   (`where is None` ⟺ `unavailable_reason is not None`) stays pinned by the
   existing `test_where_and_unavailable_reason_are_paired`, which is now
   satisfied vacuously and is kept precisely so a future null-`where` item
   cannot slip in unexplained.
+
+  **Amended 2026-08-30 by D-OH17.16:** "all three" turned out to be two.
+  `demand_feed` keeps a null `where` and an honest `unavailable_reason`,
+  because a credential does not finish that connection. The replacement test
+  is narrowed to match, and the pairing invariant is no longer satisfied
+  vacuously — it now has a real pair to check.
 
 - **D-OH17.13 — Credentials are org-level, not property-level (CONFIRMED
   2026-08-30).** A hotel group with two QBO companies is a real shape and this
@@ -353,6 +360,45 @@ that would fail on first use.
   arrive; org 1 is the pilot/demo org and its rows are exactly as honest as
   the process-wide config they replace. A newly provisioned tenant gets no
   rows at all and correctly reads `open`.
+
+- **D-OH17.16 — `demand_feed` keeps an `unavailable_reason` instead of a
+  connect surface (CONFIRMED 2026-08-30, after execution).** Credentials
+  alone do not connect a demand feed. Verification
+  (`integrations.verify_credentials`) and every real pull (`crm_api:167`)
+  need a property `crm_ref`, and the ONLY writer of `crm_ref` is the repo's
+  YAML seed (`mapping/property_registry.py:327`, first-insert-only). No API
+  sets it; `property_config_api` does not expose it. So no tenant can reach
+  `done` through the product, and the refusal text, followed literally, tells
+  an operator to edit a file in our source tree.
+
+  D-OH17.12 gave all three integration items a `where` on the assumption that
+  a credential closes them. For payroll and accounting that holds. For the
+  demand feed it does not, and shipping the route anyway would have flipped
+  the item to a link that cannot finish — the exact drift D-B4.1 and D8.3
+  exist to prevent, and the same class of drift OH-17 was opened to fix.
+
+  Two options were live: add a `crm_ref` field to `property_config_api`, or
+  say so. **Say so**, because the field is the smaller half of that work: a
+  tenant-settable `crm_ref` is a provider-specific identifier a tenant must
+  look up in Delphi or Tripleseat, so it needs its own validation, its own
+  refusal shape, and somewhere in the property-config UI to explain itself.
+  That is a feature, not a field, and it is not this slice.
+
+  So D-B4.8's pairing applies in its other direction: `where=None`,
+  `unavailable_reason` set. Consequences worth naming:
+
+  - The reason is worded to read correctly at **any** status, per `_status`'s
+    standing note — org 1 IS connected, because we put its `crm_ref` in our
+    own YAML. It describes the missing path, never the item's state.
+  - `test_every_item_has_a_connect_surface` becomes
+    `test_demand_feed_is_the_one_item_without_a_surface`, an EXACT set so it
+    fails in both directions: any other item losing its route is a
+    regression, and `demand_feed` gaining one is the signal that the reason
+    must be deleted in the same edit. The same shape as the B4 tripwire this
+    lineage started from.
+  - `PUT /api/integrations/demand_feed` is unchanged and still works. The
+    item is not un-connectable in principle — it is un-connectable
+    *self-serve*, which is what the operator-facing string says.
 
 ## 3. Architecture
 
@@ -518,7 +564,8 @@ This slice is backend-only.** None of it shipped: there is no
 `IntegrationsPage.tsx`, no `api/integrations.ts`, no nav entry, and no
 `IntegrationsPage.test.tsx` (§8's frontend bullet goes with them). What did
 ship from this section is "The checklist edit" below — the three probes, the
-three `where="/integrations"` values, and the deleted `_OH17_REASON`. The rest
+two `where="/integrations"` values plus `demand_feed`'s own
+`unavailable_reason` (D-OH17.16), and the deleted `_OH17_REASON`. The rest
 is kept as the specification the frontend plan starts from, not as a record of
 what landed.
 
@@ -555,9 +602,13 @@ disagree about whether payroll is connected.
 
 ### The checklist edit
 
-In `checklist.py`, in one edit: the three probes gain real bodies, the three
-items get `where="/integrations"`, `unavailable_reason` drops back to its
-`None` default, and `_OH17_REASON` is deleted. `ChecklistItem.where` and
+In `checklist.py`, in one edit: the three probes gain real bodies, **two** of
+the three items get `where="/integrations"` with `unavailable_reason` back at
+its `None` default, and `_OH17_REASON` is deleted. `demand_feed` keeps the
+null `where` and gets a reason of its own, per D-OH17.16 — a credential does
+not finish that connection. (This paragraph said "the three items" until
+2026-08-30; the seam it describes is unchanged, only the count.)
+`ChecklistItem.where` and
 `ItemStatus.where` **stay `str | None`** — D-B4.8's paired invariant is a
 permanent property of the registry, not scaffolding for this one gap, and the
 next un-connectable item will need it again.
@@ -623,8 +674,9 @@ Per ADR-010, every degradation is loud and named.
 - **OAuth state**: forged signature, expired TTL, and replay each refused; a
   valid state writes the row under the org named inside it and no other.
 - **Checklist**: each of the three items reads `done` with a row and `open`
-  without one; `test_every_item_has_a_connect_surface` replaces the deleted
-  tripwire.
+  without one; `test_demand_feed_is_the_one_item_without_a_surface` replaces
+  the deleted tripwire (named `test_every_item_has_a_connect_surface` until
+  D-OH17.16 narrowed it to an exact set).
 - **The seed bridge** (D-OH17.15): `ensure_default_org` populates org 1 from
   env on first insert and does **not** overwrite an operator-set row on
   re-seed — the find-or-create posture `property_registry.py` already pins for

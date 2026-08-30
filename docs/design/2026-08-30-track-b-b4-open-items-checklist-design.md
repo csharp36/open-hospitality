@@ -107,6 +107,16 @@ configured, and the checklist reports on setup without gating it.
   **OH-17 reverses this by giving each item a `where` again** — the reason
   string disappears with the same edit that supplies the surface.
 
+  **What actually happened (2026-08-30, OH-17 D-OH17.16):** two of the three,
+  not each. `payroll` and `accounting` got `/integrations` and lost their
+  reason strings. `demand_feed` kept a null `where` and gained a reason of its
+  own, because a credential does not finish that connection — verification
+  and every real pull need a property `crm_ref`, and nothing outside the
+  repo's YAML seed can write one. Note this vindicates the rejection recorded
+  just above rather than undoing it: `demand_feed` is still the item that
+  reports genuinely, and a provisioned tenant still shows `done`. Only the
+  connect surface is missing, which is now what it says.
+
 ## 3. Architecture
 
 Three pieces:

@@ -211,18 +211,29 @@ def test_where_and_unavailable_reason_are_paired():
         assert (item.where is None) == (item.unavailable_reason is not None), item.key
 
 
-def test_every_item_has_a_connect_surface():
-    """D-OH17.12, the mirror image of the tripwire this replaces. OH-17 gave
-    all three integration items a real `where`, so a null one now means a
-    regression rather than an honest gap."""
-    assert [i.key for i in ITEMS if i.where is None] == []
+def test_demand_feed_is_the_one_item_without_a_surface():
+    """D-OH17.12 as amended by D-OH17.16 — the mirror image of the tripwire
+    this replaces, narrowed to the one honest gap that remains.
+
+    An EXACT set, not a membership check, so it fails in both directions.
+    Any OTHER item losing its `where` is a regression. `demand_feed` GAINING
+    one is the signal that `crm_ref` became settable and the paired
+    `unavailable_reason` must go with it — the same "the failing test is the
+    signal" shape the B4 tripwire had."""
+    assert [i.key for i in ITEMS if i.where is None] == ["demand_feed"]
 
 
-def test_the_integration_items_route_to_integrations():
+def test_the_connectable_integration_items_route_to_integrations():
     by_key = {i.key: i for i in ITEMS}
-    for key in ("payroll", "accounting", "demand_feed"):
+    for key in ("payroll", "accounting"):
         assert by_key[key].where == "/integrations"
         assert by_key[key].unavailable_reason is None
+    # Not demand_feed: credentials do not finish that connection (D-OH17.16),
+    # so it carries the reason instead of the route. Pinned here as well as
+    # above because these two are what a reader greps for when asking "where
+    # do the integration items go?" and a silent absence would answer wrong.
+    assert by_key["demand_feed"].where is None
+    assert "property reference" in by_key["demand_feed"].unavailable_reason
 
 
 def test_payroll_and_accounting_read_the_credential_row(db_session, unconnected_org):

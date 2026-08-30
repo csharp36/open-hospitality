@@ -296,7 +296,12 @@ class CannotVerify(Exception):
     Two inhabitants today, both loud rather than silent:
       * a demand feed in a workspace where no property carries a `crm_ref` —
         every real CRM read is property-scoped, so there is nothing to verify
-        against (ADR-010: name the blocker the operator can act on);
+        against (ADR-010: name the blocker the operator can act on). Note the
+        operator often CANNOT act on it: `crm_ref` is written only by the
+        repo's YAML seed, which is why the `demand_feed` checklist item
+        carries an `unavailable_reason` rather than a connect route
+        (D-OH17.16). This refusal is the enforcement half of that decision;
+        if `crm_ref` ever becomes settable, both halves move together;
       * QuickBooks, whose credential is proven by COMPLETING the OAuth grant
         (OH-17 Task 11) and cannot be proven from a paste at all — Intuit
         rotates the refresh token on every grant, so "checking" a pasted one

@@ -150,11 +150,22 @@ signals that separate a hijack from a normal connection.
 The open-items checklist (§2.2) is the one place this is fully wired
 end-to-end: `payroll`, `accounting`, and `demand_feed` each probe the
 tenant's own credential row (`checklist.py`'s `_probe_payroll` /
-`_probe_accounting` / `_probe_demand_feed`) and route to `/integrations`
-(`tests/test_checklist.py:221`). The old tripwire that pinned all three to
-`where: null` is deleted; its mirror,
-`test_every_item_has_a_connect_surface` (`tests/test_checklist.py:214`,
-D-OH17.12), now fails if any item ever loses its connect surface again.
+`_probe_accounting` / `_probe_demand_feed`). Payroll and accounting route to
+`/integrations`. The old tripwire that pinned all three to `where: null` is
+deleted; its mirror,
+`test_demand_feed_is_the_one_item_without_a_surface` (D-OH17.12 as amended by
+D-OH17.16), pins the exact set of items with no connect surface, so it fails
+in both directions.
+
+**`demand_feed` is deliberately NOT one of them** (decided 2026-08-30). A
+credential does not finish that connection: verification and every real pull
+need a property `crm_ref`, and the only writer of `crm_ref` is the repo's
+YAML seed — no API sets it, `property_config_api` included. Routing it to
+`/integrations` would have flipped a checklist item to a form no tenant can
+complete, which is the drift OH-17 exists to remove, so it carries an honest
+`unavailable_reason` instead. Making `crm_ref` tenant-settable is a feature
+of its own (a provider identifier needs validation, a refusal shape, and a
+place in property-config to explain itself), not a field to bolt on here.
 
 **What is still not done, and must not be glossed:** the **`/integrations`
 frontend page does not exist yet** — it is a separate, not-yet-started plan.

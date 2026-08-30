@@ -231,7 +231,25 @@ ITEMS: tuple[ChecklistItem, ...] = (
     ChecklistItem(
         key="demand_feed", title="Connect a demand feed",
         description="Optional. Pull group and event demand from Delphi or Tripleseat.",
-        required=False, where="/integrations", probe=_probe_demand_feed,
+        # The one integration item WITHOUT a connect surface, and deliberately
+        # (OH-17, D-OH17.16). Credentials alone do not connect a demand feed:
+        # verification and every real pull need a property `crm_ref`, and the
+        # only writer of `crm_ref` is the repo's YAML seed
+        # (`mapping/property_registry.py:327`, first-insert-only) — no API
+        # sets it. Routing here to `/integrations` would send an operator to a
+        # form that cannot finish, which is exactly the drift D-B4.1 and D8.3
+        # exist to prevent, so it says so instead.
+        #
+        # The reason is worded to read correctly at ANY status (see `_status`):
+        # org 1 IS connected, because we put its crm_ref in our own YAML.
+        # Delete this pair — not just the string — the day `crm_ref` becomes
+        # settable; `test_demand_feed_is_the_one_item_without_a_surface`
+        # fails until both halves move together.
+        required=False, where=None, probe=_probe_demand_feed,
+        unavailable_reason=(
+            "Needs a Delphi or Tripleseat property reference, which nothing in "
+            "the app can set yet — contact us to have it added."
+        ),
     ),
     ChecklistItem(
         key="team", title="Invite your team",
