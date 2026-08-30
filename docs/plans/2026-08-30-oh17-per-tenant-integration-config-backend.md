@@ -2550,4 +2550,9 @@ git commit -m "docs(oh17): per-tenant integration config is shipped"
   instruction ("declare a crm_ref first"), not as "wrong key".
 - The exact `identifiers` keys the read endpoint returns per provider — the
   page renders them, and they come from `ProviderSpec.plain_fields`.
-- Whether `qbo_mock` needed a `/connect/oauth2` consent stub added for the e2e.
+- `qbo_mock` needs NO change for the code exchange: it already handles
+  `grant_type=authorization_code` and mints tokens (`qbo_mock.py:298`,
+  verified 2026-08-30). What it lacks is a `/connect/oauth2` CONSENT page —
+  irrelevant to the backend (the `authorize` endpoint only builds a URL
+  string; nothing follows it), but the frontend e2e will need a stub if it
+  drives the full round trip in a browser.
