@@ -313,7 +313,7 @@ user-facing capability because the bot matches on `summary`:
 |---|---|---|---|
 | **OH-16** | Public marketing front door | `planned` | §1.1 |
 | **OH-17** | Connect your own accounting and payroll accounts | `planned` | §2.1 |
-| **OH-18** | Onboarding checklist of open setup items | `planned` | §2.2 |
+| **OH-18** | Onboarding checklist of open setup items | `in-progress` — backend shipped, frontend pending | §2.2 |
 | **OH-19** | Subscription plans and billing | `planned` | §4 |
 | **OH-20** | Review and correct USALI transaction-code mapping | `considering` | §4.1 |
 | **OH-21** | Conversational interface to hotel performance | `considering` | §4.4 |

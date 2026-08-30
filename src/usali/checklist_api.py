@@ -93,7 +93,9 @@ def dismiss(
 
     Idempotent (D-B4.5): concurrent browser sessions must not collide on the
     composite key, so a repeat is ON CONFLICT DO NOTHING — which also keeps
-    the FIRST dismisser's audit row, the decision that actually happened.
+    the FIRST dismisser's override row, the decision that actually happened.
+    Note the AUDIT log is not deduplicated: a repeat PUT is a real event
+    (someone re-affirmed the decision) and writes its own row.
     """
     item = _item_or_404(key)
     if item.required:

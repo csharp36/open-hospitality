@@ -23,6 +23,30 @@ Branch: `feat/track-b-b4-checklist`.
 
 ---
 
+## ⚠️ The code samples below are AS-PLANNED, not as-shipped
+
+**Executed and closed 2026-08-30.** Review found real defects in this plan's
+own code blocks, and the fixes landed in the source — but the samples below
+were deliberately left as originally written, so this document stays an honest
+record of what was planned rather than a retroactively-correct one.
+
+**Do not regenerate the module from these blocks.** The authoritative sources
+are `src/usali/checklist.py`, `src/usali/checklist_api.py`, and the design doc
+(whose §6 and §8 WERE amended). Known divergences:
+
+| Task | The sample shows | The shipped code does |
+|---|---|---|
+| 3 | `evaluate()` with no `session.rollback()` | rolls back in the probe handler — without it a DBAPI error cascades and containment is a fiction |
+| 4 | imports six models the probes need | Task 3 trims them; Task 4 restores only what it references |
+| 5 | `all_clear = open_count == 0`, no `error_count` | `all_clear` also requires `error_count == 0`, and `error_count` is on the wire |
+| 5 | `from usali.tenancy import request_session_factory` | it lives in `usali.auth` (corrected inline above) |
+| 6 | `_BY_KEY` snapshot dict | reads the live registry, so a patched `ITEMS` is visible |
+| 6 | unbounded `DismissRequest.note` | `Field(max_length=200)` — an over-long note was a 500 |
+| 6 | no audit events | both verbs write an `AuditEvent` |
+
+Each divergence is explained where it happened: see the design's §8 (the
+rollback), §6 (`error_count`), and §4 (the demand-feed routing gap).
+
 ## Gates (run for EVERY task before committing)
 
 ```bash
