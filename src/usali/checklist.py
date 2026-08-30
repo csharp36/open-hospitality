@@ -95,7 +95,6 @@ def evaluate(
 
 @dataclass(frozen=True)
 class ChecklistSummary:
-    items: list[ItemStatus]
     open_count: int
     error_count: int
     all_clear: bool
@@ -109,7 +108,6 @@ def summarize(rows: list[ItemStatus]) -> ChecklistSummary:
     open_count = sum(1 for r in rows if r.status == OPEN)
     error_count = sum(1 for r in rows if r.status == ERROR)
     return ChecklistSummary(
-        items=rows,
         open_count=open_count,
         error_count=error_count,
         all_clear=open_count == 0 and error_count == 0,
