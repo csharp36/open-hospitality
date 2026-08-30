@@ -2381,6 +2381,31 @@ git commit -m "feat(oh17): connect/disconnect endpoints that verify before persi
 
 ## Task 11: The QBO OAuth pair
 
+> **Two security defects in the plan's own `verify_state`, and one instruction
+> that was unsatisfiable (found in execution, 2026-08-30).**
+> 1. **`hmac.compare_digest` on `str` raises `TypeError` on non-ASCII.**
+>    `state` is attacker-supplied, so `?state=1:s:1:é` answered **500** where
+>    every other bad state answered 400 — a crash on unauthenticated input AND
+>    a distinguishing refusal shape, breaking the indistinguishability rule
+>    stated two lines below it in the same docstring. Compare **bytes**.
+> 2. **A required `state` parameter is itself an oracle.** `state: str` makes a
+>    *missing* state FastAPI's 422 naming the field, distinguishable from the
+>    400 that forged/expired/malformed receive. All three params are optional
+>    so every failure yields one identical 400.
+> 3. `rsplit(":", 3)` mis-parses any subject containing a colon, silently
+>    refusing a valid state as forged. Verify the MAC FIRST, then parse a
+>    payload already vouched for.
+>
+> **The brief's mutation instruction was wrong, not the implementation.** It
+> said: replace `compare_digest` with `==`, and if nothing fails your signature
+> test is too weak. But `==` and `compare_digest` agree on *every input* and
+> differ only in timing — **no behavioural test can kill that mutant**. It is
+> pinned with a source assertion, which is the only thing that can hold it; the
+> forgery property itself is held behaviourally by the forged-state and
+> org-from-signature tests. Do not "fix" that source assertion into a
+> behavioural one.
+
+
 > **Six defects, found in execution 2026-08-30. Two of them are security
 > defects in the security-critical half of this task.**
 >
