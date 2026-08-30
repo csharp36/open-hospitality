@@ -72,6 +72,41 @@ configured, and the checklist reports on setup without gating it.
   `organization`. Adding a status column would resurrect the promotion model
   D8 explicitly killed.
 
+- **D-B4.8 — An item with no connect surface carries `where = null` and says
+  why (CONFIRMED 2026-08-30, resolving §4's known gap).** `where` becomes
+  nullable and a sibling `unavailable_reason` joins the wire, with the paired
+  invariant **`where is None` ⟺ `unavailable_reason is not None`**. All three
+  integration items — `payroll`, `accounting`, `demand_feed` — take it.
+
+  The gap §4 recorded as a `demand_feed` routing mistake is really a property
+  of the whole integration class. `_probe_payroll` and `_probe_accounting`
+  return `False` unconditionally (D-B4.3), and their routes are a pay-runs
+  page and a QBO *push* page — neither can close its item either. `/schedule`
+  is worse than merely unhelpful: it renders **no** demand UI at all while
+  `configured` is false (`SchedulePage.tsx:204`), so the link lands on a page
+  where the feature is invisible. One shape, three items, one fix.
+
+  Dismissal remains available on all three, and that is the point: "we don't
+  use payroll" is a true answer an operator can give today, so `all_clear` is
+  still reachable — three required items done, three integrations dismissed.
+  The item is un-closeable, never a dead end.
+
+  Rejected: **building the connect control now** — D-B4.3 and §10 defer
+  per-tenant integration config to OH-17, and the feed factory is still
+  process-wide, so a tenant picking `delphi` would flip the item to `done`
+  while `POST /api/crm/refresh` still 503s. A `done` over a broken integration
+  is precisely the drift D-B4.1 and D8.3 exist to prevent. Rejected: **a
+  frontend-side set of "not connectable yet" keys** — a second registry in a
+  React file that the backend does not know exists, drifting silently on the
+  next rename and surviving OH-17 only if someone remembers to delete it.
+  Rejected: **dropping `demand_feed` until OH-17** — it is the one item that
+  reports genuinely, and a provisioned tenant legitimately shows `done`;
+  deleting a true fact because we lack a button trades one dishonesty for
+  another and churns the schema mirror twice.
+
+  **OH-17 reverses this by giving each item a `where` again** — the reason
+  string disappears with the same edit that supplies the surface.
+
 ## 3. Architecture
 
 Three pieces:
@@ -96,7 +131,8 @@ GET /api/checklist
 ```
 
 `ChecklistItem` is a frozen dataclass: `key`, `title`, `description`,
-`required`, `where` (the SPA route that closes it), `probe`.
+`required`, `where` (the SPA route that closes it, **or `None`**),
+`unavailable_reason` (**why there is no route**, D-B4.8), `probe`.
 
 ## 4. The registry
 
@@ -133,16 +169,13 @@ than a common path.
 `demand_feed` is the only item that can answer truthfully today, because
 `crm_provider` is the one integration already modelled per-org.
 
-**Known gap (recorded 2026-08-30, found in review):** `demand_feed`'s `where`
-points at `/schedule`, but that page only *displays* demand already pulled —
-nothing in the SPA sets `org_settings.crm_provider`. There is no connect
-surface for it anywhere today. So the one item a tenant could genuinely close
-is the one with no UI to close it. This is accepted for the backend slice
-rather than papered over: the item reports its true status, and the operator
-is simply routed somewhere unhelpful. **The frontend plan must resolve it** —
-either by routing the item to a real connect control, or by rendering it
-without an actionable link and saying why. **OH-17** is what eventually
-supplies that surface for all three integrations.
+**Known gap (recorded 2026-08-30, found in review; RESOLVED by D-B4.8
+below).** `demand_feed`'s `where` pointed at `/schedule`, but that page only
+*displays* demand already pulled — nothing in the SPA sets
+`org_settings.crm_provider`. So the one item a tenant could genuinely close
+was the one with no UI to close it, and the operator was routed somewhere
+unhelpful. Investigating it for the frontend plan found the gap is **wider
+than `demand_feed`**: see D-B4.8.
 
 ## 5. Data model
 
@@ -189,7 +222,8 @@ which is past 1200 lines already.
 {
   "items": [
     {"key": "first_report", "title": "...", "description": "...",
-     "required": true, "status": "done", "where": "/upload"}
+     "required": true, "status": "done", "where": "/upload",
+     "unavailable_reason": null}
   ],
   "open_count": 4,
   "error_count": 0,
@@ -220,8 +254,11 @@ Refusals, per the fail-loud posture of
 
 - **`/setup`** — a top-level sidebar entry with a count badge, above the
   Accounting section (it belongs to neither Accounting nor Employee
-  Management). Required and optional items grouped separately; every item links
-  to the route named by `where`; optional items carry a dismiss control.
+  Management). Required and optional items grouped separately; an item links
+  to the route named by `where`, or — when `where` is null — renders as a
+  non-link showing its `unavailable_reason` (D-B4.8). Optional items carry a
+  dismiss control regardless, because dismissal is the one action available on
+  an item that cannot yet be connected.
 - **Dashboard card** — rendered while **`all_clear` is false** (NOT while
   `open_count > 0`: on a total probe failure `open_count` is zero while
   nothing is actually known, and gating on it would retire the card exactly
