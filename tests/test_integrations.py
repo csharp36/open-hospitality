@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import String, text
 from sqlalchemy.exc import IntegrityError
 
+from usali import integrations as integ
 from usali.crypto import EncryptedString
 from usali.models import Base, OrgIntegrationCredential
 
@@ -101,3 +102,27 @@ def test_the_check_refuses_a_provider_from_another_integration(db_session, found
             "(org_id, integration, provider, realm_id, refresh_token, connected_by) "
             "VALUES (1, 'demand_feed', 'qbo', 'r1', 'tok', 'sub')"
         ))
+
+
+def test_every_spec_names_at_least_one_secret():
+    for spec in integ.PROVIDERS:
+        assert spec.secret_fields, spec.provider
+
+
+def test_specs_cover_exactly_the_three_integrations():
+    assert {s.integration for s in integ.PROVIDERS} == set(integ.INTEGRATIONS)
+
+
+def test_spec_for_is_keyed_on_the_pair_not_the_provider_alone():
+    """'qbo' is only legal under 'accounting' — the pair is the key, which is
+    what the DB CHECK also enforces."""
+    assert integ.spec_for("accounting", "qbo") is not None
+    assert integ.spec_for("demand_feed", "qbo") is None
+
+
+def test_the_registry_mirrors_the_crm_provider_closed_set():
+    """crm_feed.CRM_PROVIDERS stays the source for demand-feed provider names;
+    a new adapter must not be reachable here without being added there."""
+    from usali.crm_feed import CRM_PROVIDERS
+    feed = {s.provider for s in integ.PROVIDERS if s.integration == integ.DEMAND_FEED}
+    assert feed == set(CRM_PROVIDERS)
