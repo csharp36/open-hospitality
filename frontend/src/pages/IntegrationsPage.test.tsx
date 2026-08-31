@@ -14,7 +14,9 @@ vi.mock('../api/client', async (importOriginal) => ({
   getAuthorizeUrl: vi.fn(),
   getMe: vi.fn(),
 }))
-import { ApiError, connectIntegration, getAuthorizeUrl, getIntegrations, getMe } from '../api/client'
+import {
+  ApiError, connectIntegration, disconnectIntegration, getAuthorizeUrl, getIntegrations, getMe,
+} from '../api/client'
 import type { Integration } from '../api/types'
 
 function gusto(overrides: Partial<Integration> = {}): Integration {
@@ -109,6 +111,12 @@ describe('IntegrationsPage', () => {
     renderPage()
     expect(await screen.findByText('some_retired_provider')).toBeInTheDocument()
     expect(screen.queryByText('Not connected')).not.toBeInTheDocument()
+    // Disconnect only needs item.integration, not the spec, so a retired
+    // provider must not also strand the operator with a live credential they
+    // cannot remove.
+    expect(screen.getByRole('button', { name: 'Disconnect' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Replace credentials' }))
+      .not.toBeInTheDocument()
   })
 
   it('shows an unconnected integration as not connected', async () => {
@@ -233,5 +241,34 @@ describe('IntegrationsPage', () => {
     vi.mocked(getIntegrations).mockResolvedValue({ items: [qbo()] })
     renderPage('/integrations?error=QuickBooks+refused+the+grant%3A+access_denied')
     expect(await screen.findByText(/access_denied/)).toBeInTheDocument()
+  })
+
+  it('disconnects only after the confirm names what is going', async () => {
+    vi.mocked(getIntegrations).mockResolvedValue({
+      items: [qbo({
+        connected: true, provider: 'qbo',
+        identifiers: { realm_id: '4620816365' },
+        connected_at: '2026-08-31T10:00:00',
+      })],
+    })
+    vi.mocked(disconnectIntegration).mockResolvedValue(undefined)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect' }))
+    expect(disconnectIntegration).not.toHaveBeenCalled()
+    // The confirm restates the identifier, so an operator with two QuickBooks
+    // companies can tell which one they are about to drop. Scoped to the
+    // confirm's own sentence (not a bare /4620816365/) because the connected
+    // card already renders the identifier above the button, in its own
+    // "realm_id: 4620816365" line — a loose match would pass even if the
+    // confirm text never mentioned it.
+    expect(
+      screen.getByText('Disconnect QuickBooks Online (4620816365)?'),
+    ).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, disconnect' }))
+    await waitFor(() => {
+      expect(disconnectIntegration).toHaveBeenCalledWith('accounting')
+    })
   })
 })

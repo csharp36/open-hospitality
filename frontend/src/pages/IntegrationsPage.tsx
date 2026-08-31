@@ -7,7 +7,9 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 
-import { ApiError, connectIntegration, getAuthorizeUrl, getIntegrations } from '../api/client'
+import {
+  ApiError, connectIntegration, disconnectIntegration, getAuthorizeUrl, getIntegrations,
+} from '../api/client'
 import type { Integration, IntegrationProvider } from '../api/types'
 import { Card, PageHeader, controlClass } from '../components/ui'
 import { errorMessage } from '../lib/errors'
@@ -83,6 +85,74 @@ function OauthConnect({ spec }: { spec: IntegrationProvider }) {
   )
 }
 
+/** The connected card's own controls: disconnect (behind a same-card confirm,
+ * never `window.confirm`) and replace-credentials. `spec` is the entry this
+ * integration's `provider` has in the served PROVIDERS list, which can be
+ * `undefined` for a live row whose provider has since been retired — see the
+ * comment on the connected branch in IntegrationCard. Disconnect only needs
+ * `item.integration`, so it works either way; Replace needs the spec's field
+ * list, so it is withheld when there is none. */
+function ConnectedActions({
+  item, spec, onDone,
+}: {
+  item: Integration
+  spec: IntegrationProvider | undefined
+  onDone: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [replacing, setReplacing] = useState(false)
+  const drop = useMutation({
+    mutationFn: () => disconnectIntegration(item.integration),
+    onSuccess: () => { setConfirming(false); onDone() },
+  })
+  const identifiers = Object.values(item.identifiers).join(', ')
+  const label = spec?.label ?? item.provider ?? item.integration
+  return (
+    <div className="mt-3 space-y-2">
+      {/* Replace needs a spec to know which fields to ask for. A connected
+          row whose provider has left PROVIDERS has none, so it can still be
+          disconnected but not re-entered here — the honest surface for a
+          state nothing in the app can rebuild. */}
+      {spec !== undefined && (
+        <>
+          <button type="button" className={controlClass}
+                  onClick={() => setReplacing((r) => !r)}>
+            Replace credentials
+          </button>
+          {/* PUT is a full replace, so re-connecting is the identical call the
+              disconnected card makes — no second code path. `_store_credential`
+              in src/usali/integrations_api.py is where the replace is made
+              total, nulling every column the chosen provider does not use. */}
+          {replacing && (spec.oauth
+            ? <OauthConnect spec={spec} />
+            : <ProviderForm integration={item.integration} spec={spec} onDone={onDone} />)}
+        </>
+      )}
+      {confirming ? (
+        <div className="space-y-2">
+          <p className="text-sm">
+            {`Disconnect ${label}${identifiers === '' ? '' : ` (${identifiers})`}?`}
+          </p>
+          <button type="button" className={controlClass} onClick={() => drop.mutate()}>
+            Yes, disconnect
+          </button>
+          <button type="button" className={controlClass}
+                  onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+          {drop.error !== null && (
+            <p className="text-sm text-danger-red">{errorMessage(drop.error)}</p>
+          )}
+        </div>
+      ) : (
+        <button type="button" className={controlClass} onClick={() => setConfirming(true)}>
+          Disconnect
+        </button>
+      )}
+    </div>
+  )
+}
+
 function IntegrationCard({
   item, onDone, note, error,
 }: {
@@ -112,6 +182,7 @@ function IntegrationCard({
               {name}: <span className="tabular-nums">{value}</span>
             </p>
           ))}
+          <ConnectedActions item={item} spec={connected} onDone={onDone} />
         </div>
       ) : (
         <>
