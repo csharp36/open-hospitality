@@ -203,9 +203,11 @@ roadmap:
       Each hotel connects its OWN QuickBooks Online, Gusto, or ADP account from
       inside the app — authorizing once, with its own credentials stored
       encrypted and used only for that property. The per-tenant storage,
-      resolution, and OAuth backend exist now; there is still no page in the
-      app for a hotel to actually do this.
-    status: in-progress  # storage + OAuth backend shipped (ROADMAP §2.1); no /integrations frontend page yet, so no one can actually connect from the app
+      resolution, and OAuth backend exist now, and the /integrations page ties
+      them together: an org_admin connects QuickBooks through its OAuth
+      redirect, or Gusto and ADP through a credential form, and can disconnect
+      or replace what is stored.
+    status: shipped  # /integrations page (org_admin-gated nav entry) drives the OAuth and credential-form backend from ROADMAP §2.1
     tags: [integrations, multi-tenancy, payroll, accounting]
 
   - id: OH-18
