@@ -256,9 +256,9 @@ class ProviderModel(BaseModel):
 and add to `IntegrationModel`, after `connected_at`:
 
 ```python
-    # Every provider this integration accepts, so the page renders forms it
-    # does not have a field list for. Derived from PROVIDERS on each read —
-    # cheap, and it cannot go stale the way a module-level copy could.
+    # Every provider this integration accepts, so a caller can offer a form
+    # without carrying a field list of its own. Derived from PROVIDERS on each
+    # read — cheap, and it cannot go stale the way a module-level copy could.
     providers: list[ProviderModel]
 ```
 
@@ -268,7 +268,7 @@ Add above `get_integrations`:
 
 ```python
 def _providers_for(integration: str) -> list[ProviderModel]:
-    """The provider specs the page renders, straight off PROVIDERS.
+    """The provider specs this endpoint serves, straight off PROVIDERS.
 
     `secret` is membership in `secret_fields`, not a second list: the two
     halves of `fields` are what the spec already distinguishes, and deriving
@@ -404,9 +404,10 @@ _BAD_STATE_DETAIL = "invalid authorization state"
 
 
 def _error_redirect(detail: str) -> RedirectResponse:
-    """A failed grant, handed back to the page instead of raised at the
-    browser. Carries neither `code` nor `state`, for the reason the success
-    redirect gives."""
+    """A failed grant, returned as a redirect rather than raised, so the
+    browser that followed Intuit's redirect lands on `_INTEGRATIONS_PATH`
+    instead of on a JSON body. Carries neither `code` nor `state`, for the
+    reason the success redirect above gives."""
     return RedirectResponse(
         url=f"{_INTEGRATIONS_PATH}?{urlencode({'error': detail})}",
         status_code=307,
