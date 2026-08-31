@@ -99,3 +99,59 @@ def test_a_reseed_does_not_overwrite_an_operator_set_row(db_session, monkeypatch
         "SELECT company_id FROM org_integration_credential "
         "WHERE integration = 'payroll'"
     )).scalar_one() == "operator-chosen"
+
+
+def test_a_reseed_does_not_resurrect_a_disconnected_integration(
+    db_session, monkeypatch
+):
+    """The seed bug, pinned (found in review 2026-08-31).
+
+    Disconnecting is a row DELETE, and the seed's `on_conflict_do_nothing`
+    keys on the row being PRESENT — so absence read as "never seeded" rather
+    than "deliberately removed". `scripts/cloud/job.sh` runs the seed on EVERY
+    deploy, which made this reachable in one step: an operator revokes a
+    compromised credential, the next deploy puts it back from env, and the
+    checklist reads `done` again over a credential they believed was gone.
+
+    Two assertions, because either alone passes for the wrong reason: the
+    accounting row must STAY gone, and payroll must still be there — a seed
+    that simply stopped running would satisfy the first and break every fresh
+    install."""
+    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "gusto")
+    ensure_default_org(db_session)
+    assert _row_count(db_session, "accounting") == 1  # positive control
+
+    db_session.execute(text(
+        "DELETE FROM org_integration_credential "
+        "WHERE org_id = 1 AND integration = 'accounting'"
+    ))
+
+    ensure_default_org(db_session)  # the redeploy
+
+    assert _row_count(db_session, "accounting") == 0, "the revoked row came back"
+    assert _row_count(db_session, "payroll") == 1, "the untouched row vanished"
+
+
+def test_a_fresh_database_still_seeds(db_session, monkeypatch):
+    """The other side of the gate, and the reason it is keyed on org CREATION
+    rather than on a tombstone or a "seed once" flag file.
+
+    `scripts/e2e_backend.py` states that the Gusto defaults ARE the working
+    local config with no env set, and payrun.spec.ts depends on it. A gate
+    that skipped seeding on a fresh database would break that e2e silently —
+    green suite, red browser."""
+    monkeypatch.setenv("USALI_PAYROLL_PROVIDER", "gusto")
+    db_session.execute(text("DELETE FROM org_integration_credential"))
+    db_session.execute(text("DELETE FROM organization WHERE org_id = 1"))
+
+    ensure_default_org(db_session)
+
+    assert _row_count(db_session, "payroll") == 1
+    assert _row_count(db_session, "accounting") == 1
+
+
+def _row_count(session, integration: str) -> int:
+    return session.execute(text(
+        "SELECT count(*) FROM org_integration_credential "
+        "WHERE org_id = 1 AND integration = :i"
+    ), {"i": integration}).scalar_one()

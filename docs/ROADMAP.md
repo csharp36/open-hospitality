@@ -147,6 +147,15 @@ residual-risk block. **This makes one frontend requirement non-optional: the
 stored `realm_id` plus the `integration_connected` audit event are the only
 signals that separate a hijack from a normal connection.
 
+**Two review outcomes worth carrying (2026-08-31).** The env seed is now
+first-provisioning only — it used to run on every deploy and silently
+reinstated a credential an operator had revoked, because disconnect is a row
+delete and the seed was keyed on absence. And the deployed demo reports
+`all_clear` over integrations whose seeded credentials are the literal
+`"mock"` pointed at `127.0.0.1`: **accepted while org 1 is a demo, and a real
+defect the moment org 1 serves a pilot tenant** — see D-OH17.15's amendments
+for why the obvious fix (skip the defaults) is closed off by the pay-run e2e.
+
 The open-items checklist (§2.2) is the one place this is fully wired
 end-to-end: `payroll`, `accounting`, and `demand_feed` each probe the
 tenant's own credential row (`checklist.py`'s `_probe_payroll` /

@@ -361,6 +361,41 @@ that would fail on first use.
   the process-wide config they replace. A newly provisioned tenant gets no
   rows at all and correctly reads `open`.
 
+  **Two amendments from the 2026-08-31 review.**
+
+  *(a) Seeding is now FIRST-PROVISIONING ONLY, not per-call.* The idempotency
+  described above was `on_conflict_do_nothing`, which keys on the row being
+  PRESENT — and disconnecting is a row DELETE. `scripts/cloud/job.sh` re-seeds
+  on every deploy, so an operator who revoked a compromised credential got it
+  reinstated from env at the next deploy, with the checklist reading `done`
+  again. `ensure_default_org` now gates the seed on whether it CREATED the
+  founding org (`RETURNING` on the `on_conflict_do_nothing` insert), which
+  needs no tombstone table and so keeps all four hand-maintained RLS lists
+  untouched. A fresh database seeds exactly as before, so `e2e_backend.py`'s
+  no-env Gusto world and `payrun.spec.ts` are unaffected. An org that already
+  exists never gains credential rows from env again — deliberate.
+
+  *(b) The mock-credential asymmetry is ACCEPTED, scoped to the demo.* The
+  cloud deploy sets no integration credentials, so the seed copies the
+  `Settings` defaults verbatim — `gusto_api_token="mock"` against
+  `http://127.0.0.1:9300`, and likewise QBO and Delphi. Because the checklist
+  probes are presence checks, the deployed demo shows payroll, accounting and
+  demand feed as `done` and reports `all_clear` over three integrations that
+  cannot work from a Cloud Run container. That is the D8.3 drift this slice
+  exists to remove, and it is tolerated **only because org 1 is a demo**
+  (confirmed 2026-08-31).
+
+  Note the obvious fix is closed off: "seed only when env differs from the
+  committed defaults" is refused above, because those defaults ARE the
+  working local config the pay-run e2e depends on. So the fix, when it is
+  needed, is deploy-side — the cloud seed skipping integration credentials, or
+  real sandbox credentials in `deploy_app.sh`.
+
+  **The trigger that makes this a real defect: org 1 serving a pilot tenant.**
+  At that moment an operator is being told they are fully configured over
+  three integrations that 502 on first use. Anyone making org 1 a real tenant
+  must fix this in the same change.
+
 - **D-OH17.16 — `demand_feed` keeps an `unavailable_reason` instead of a
   connect surface (CONFIRMED 2026-08-30, after execution).** Credentials
   alone do not connect a demand feed. Verification

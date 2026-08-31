@@ -68,11 +68,16 @@ def ensure_default_org(session: Session) -> int:
     re-seed never blanks or overwrites an alias an operator set by hand
     (the seed_properties find-or-create posture).
     """
-    session.execute(
+    # RETURNING tells us whether this call CREATED the founding org or found
+    # it. `on_conflict_do_nothing` returns no row when it conflicts, so an
+    # empty result means "already existed" — which is what gates the
+    # credential seed at the end of this function. See there for why.
+    org_was_created = session.execute(
         insert(Organization)
         .values(org_id=FOUNDING_ORG_ID, name=_DEFAULT_ORG, kc_org_alias=DEFAULT_ORG_ALIAS)
         .on_conflict_do_nothing(index_elements=["org_id"])
-    )
+        .returning(Organization.org_id)
+    ).first() is not None
     # An EXPLICIT id does not advance the identity sequence (no nextval was
     # called), so a later provisioned org's autoincrement would collide on the
     # founding id. Advance it past the current max.
@@ -115,7 +120,26 @@ def ensure_default_org(session: Session) -> int:
     org_id = session.execute(
         select(Organization.org_id).where(Organization.org_id == FOUNDING_ORG_ID)
     ).scalar_one()
-    _seed_integration_credentials(session, org_id)
+    if org_was_created:
+        # FIRST PROVISIONING ONLY (2026-08-31). Seeding used to run on every
+        # call, idempotent by `on_conflict_do_nothing` — which keys on the row
+        # being PRESENT. Disconnecting is a row DELETE
+        # (`integrations_api.disconnect`), so absence read as "never seeded"
+        # rather than "deliberately removed", and `scripts/cloud/job.sh` runs
+        # the seed on EVERY deploy: an operator who revoked a compromised
+        # credential got it silently reinstated from env at the next deploy.
+        # Found in review.
+        #
+        # Gating on org creation rather than on a tombstone keeps this
+        # schema-free — a tombstone table would drag in all four
+        # hand-maintained RLS lists for one boolean.
+        #
+        # Consequence, deliberate: an org that already exists never gains
+        # credential rows from env again. A fresh database still seeds exactly
+        # as before (the org is created in the same call), so
+        # `scripts/e2e_backend.py`'s no-env Gusto world and payrun.spec.ts are
+        # untouched.
+        _seed_integration_credentials(session, org_id)
     return org_id
 
 
@@ -171,11 +195,14 @@ def _seed_credential_fields(
 
 
 def _seed_integration_credentials(session: Session, org_id: int) -> None:
-    """Seed org 1's integration credentials from the process-wide env, ON
-    FIRST INSERT ONLY (OH-17, D-OH17.15) — the crm_ref / wage_jurisdiction
-    find-or-create posture, so a bare re-seed never blanks a credential an
-    operator connected by hand. At runtime every adapter reads THIS row, never
-    env; an env fallback for org != 1 is the mutant L5 killed.
+    """Seed org 1's integration credentials from the process-wide env.
+
+    Called ONLY when `ensure_default_org` just created the org (2026-08-31) —
+    see the call site. The `on_conflict_do_nothing` below is still here as the
+    inner guard, but it is no longer what makes a re-seed safe: it keys on the
+    row being present, and a disconnect deletes the row. At runtime every
+    adapter reads THIS row, never env; an env fallback for org != 1 is the
+    mutant L5 killed.
 
     This is a BRIDGE, not a connect action: it reproduces exactly what each
     default means today and does NOT run the connect endpoint's verification.
