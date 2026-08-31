@@ -119,19 +119,21 @@ git commit -m "feat(oh17): mark qbo as the one oauth provider"
 
 ```python
 def test_every_provider_has_an_operator_facing_name():
-    """A provider with no product name would render as its key on the
-    integrations page. An exact pairing over PROVIDERS, so a sixth provider
-    fails here rather than shipping a card labeled "adp2"."""
-    from usali.integrations import PROVIDERS, product_name
-
-    for spec in PROVIDERS:
-        assert product_name(spec.provider) != spec.provider
+    """An exact pairing over PROVIDERS. A provider with no product name falls
+    back to its own key — the cosmetic failure `product_name`'s docstring
+    describes — so a sixth provider fails here rather than reaching an
+    operator as "adp2"."""
+    for spec in integ.PROVIDERS:
+        assert integ.product_name(spec.provider) != spec.provider
 ```
+
+Use the file's module-level `integ` alias rather than an inline import; that is
+the convention across its other ~48 assertions.
 
 - [ ] **Step 2: Run it and watch it fail**
 
 Run: `pytest tests/test_integrations.py::test_every_provider_has_an_operator_facing_name -v`
-Expected: FAIL — `ImportError: cannot import name 'product_name'`
+Expected: FAIL — `AttributeError: module 'usali.integrations' has no attribute 'product_name'`
 
 - [ ] **Step 3: Add the accessor and correct the comment**
 
