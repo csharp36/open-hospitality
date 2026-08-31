@@ -110,8 +110,10 @@ class IntegrationModel(BaseModel):
     identifiers: dict[str, str]
     connected_at: str | None
     # Every provider this integration accepts, so a caller can offer a form
-    # without carrying a field list of its own. Derived from PROVIDERS on each
-    # read — cheap, and it cannot go stale the way a module-level copy could.
+    # without carrying a field list of its own. Built inline per read rather
+    # than hoisted to a module constant: the set is three integrations by at
+    # most two providers, so there is nothing to save, and a fresh list per
+    # response means no pydantic model instance is shared between requests.
     providers: list[ProviderModel]
 
 
@@ -155,8 +157,9 @@ def get_integrations(
     request: Request,
     principal: Principal = Depends(require_integration_admin),
 ) -> IntegrationsModel:
-    """Every integration, connected or not, with its provider and non-secret
-    identifiers. Never a secret — see this module's docstring."""
+    """Every integration, connected or not, with its provider, non-secret
+    identifiers, and the providers block listing every provider it accepts.
+    Never a secret — see this module's docstring."""
     del principal  # the gate is the point; the read is not attributed
     items: list[IntegrationModel] = []
     with _session(request) as session:

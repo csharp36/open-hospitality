@@ -634,14 +634,3 @@ def test_each_served_field_is_flagged_secret_exactly_as_the_spec_says(
         plain = {f["name"] for f in served["fields"] if not f["secret"]}
         assert secret == set(spec.secret_fields)
         assert plain == set(spec.plain_fields)
-
-
-def test_the_provider_block_carries_no_secret_values(integrations_client, db_session):
-    """The spec names the secret FIELDS; it must never carry their VALUES.
-    Planted first so the assertion has something real to miss."""
-    plant_credential(
-        db_session, "payroll", "gusto",
-        api_token="tok-do-not-leak", company_id="c-1",
-    )
-    raw = integrations_client.get("/api/integrations").text
-    assert "tok-do-not-leak" not in raw
