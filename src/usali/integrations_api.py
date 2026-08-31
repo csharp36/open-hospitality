@@ -52,9 +52,11 @@ from usali.integrations import (
     ACCOUNTING,
     ALL_CREDENTIAL_FIELDS,
     INTEGRATIONS,
+    PROVIDERS,
     CannotVerify,
     CredentialUnreadable,
     credential_for,
+    product_name,
     spec_for,
 )
 from usali.models import AuditEvent, OrgIntegrationCredential, Property
@@ -83,6 +85,22 @@ def _session(request: Request) -> Session:
     return request_session_factory(request)()
 
 
+class ProviderFieldModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    secret: bool
+
+
+class ProviderModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    label: str
+    oauth: bool
+    fields: list[ProviderFieldModel]
+
+
 class IntegrationModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -91,6 +109,10 @@ class IntegrationModel(BaseModel):
     provider: str | None
     identifiers: dict[str, str]
     connected_at: str | None
+    # Every provider this integration accepts, so a caller can offer a form
+    # without carrying a field list of its own. Derived from PROVIDERS on each
+    # read — cheap, and it cannot go stale the way a module-level copy could.
+    providers: list[ProviderModel]
 
 
 class IntegrationsModel(BaseModel):
@@ -104,6 +126,28 @@ def _integration_or_404(integration: str) -> str:
     if integration not in INTEGRATIONS:
         raise HTTPException(status_code=404, detail="unknown integration")
     return integration
+
+
+def _providers_for(integration: str) -> list[ProviderModel]:
+    """The provider specs this endpoint serves, straight off PROVIDERS.
+
+    `secret` is membership in `secret_fields`, not a second list: the two
+    halves of `fields` are what the spec already distinguishes, and deriving
+    the flag here is what stops a field being described as plain on the wire
+    while sitting on an EncryptedString column."""
+    return [
+        ProviderModel(
+            provider=spec.provider,
+            label=product_name(spec.provider),
+            oauth=spec.oauth,
+            fields=[
+                ProviderFieldModel(name=name, secret=name in spec.secret_fields)
+                for name in spec.fields
+            ],
+        )
+        for spec in PROVIDERS
+        if spec.integration == integration
+    ]
 
 
 @router.get("")
@@ -139,6 +183,7 @@ def get_integrations(
                 items.append(IntegrationModel(
                     integration=integration, connected=False, provider=None,
                     identifiers={}, connected_at=None,
+                    providers=_providers_for(integration),
                 ))
                 continue
             spec = spec_for(integration, row.provider)
@@ -154,6 +199,7 @@ def get_integrations(
                     if (value := getattr(row, field)) is not None
                 },
                 connected_at=row.connected_at.isoformat(),
+                providers=_providers_for(integration),
             ))
     return IntegrationsModel(items=items)
 

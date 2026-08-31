@@ -597,3 +597,51 @@ def test_connect_refuses_a_crm_credential_when_no_property_has_a_crm_ref(
     assert resp.status_code == 422
     assert "crm_ref" in resp.json()["detail"]
     assert _row(db_session, "demand_feed") is None
+
+
+# --------------------------------------------------------- the provider specs
+
+
+def test_the_read_serves_the_provider_specs(integrations_client):
+    """Derived from PROVIDERS, never a hand-written list: a sixth provider
+    needs no edit here, and a frontend copy of this data would have nothing
+    checking it (see the design doc, section 3)."""
+    body = integrations_client.get("/api/integrations").json()
+    served = {
+        item["integration"]: {p["provider"] for p in item["providers"]}
+        for item in body["items"]
+    }
+    expected: dict[str, set[str]] = {}
+    for spec in integrations.PROVIDERS:
+        expected.setdefault(spec.integration, set()).add(spec.provider)
+    assert served == expected
+
+
+def test_each_served_field_is_flagged_secret_exactly_as_the_spec_says(
+    integrations_client,
+):
+    body = integrations_client.get("/api/integrations").json()
+    by_pair = {
+        (item["integration"], p["provider"]): p
+        for item in body["items"]
+        for p in item["providers"]
+    }
+    for spec in integrations.PROVIDERS:
+        served = by_pair[(spec.integration, spec.provider)]
+        assert served["oauth"] is spec.oauth
+        assert served["label"] == integrations.product_name(spec.provider)
+        secret = {f["name"] for f in served["fields"] if f["secret"]}
+        plain = {f["name"] for f in served["fields"] if not f["secret"]}
+        assert secret == set(spec.secret_fields)
+        assert plain == set(spec.plain_fields)
+
+
+def test_the_provider_block_carries_no_secret_values(integrations_client, db_session):
+    """The spec names the secret FIELDS; it must never carry their VALUES.
+    Planted first so the assertion has something real to miss."""
+    plant_credential(
+        db_session, "payroll", "gusto",
+        api_token="tok-do-not-leak", company_id="c-1",
+    )
+    raw = integrations_client.get("/api/integrations").text
+    assert "tok-do-not-leak" not in raw
