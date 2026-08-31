@@ -145,7 +145,7 @@ def not_connected_detail(integration: str) -> str:
     strings). When the page ships, this is the one string to revisit."""
     label = _INTEGRATION_LABELS.get(integration, integration)
     products = [
-        _PRODUCT_NAMES.get(spec.provider, spec.provider)
+        product_name(spec.provider)
         for spec in PROVIDERS
         if spec.integration == integration
     ]
