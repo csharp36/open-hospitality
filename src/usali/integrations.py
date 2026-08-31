@@ -66,6 +66,11 @@ class ProviderSpec:
     provider: str
     secret_fields: tuple[str, ...]
     plain_fields: tuple[str, ...]
+    # True when the credential is obtained by redirect rather than typed in.
+    # The read endpoint serves this so the page renders a Connect button and
+    # no inputs; without it the frontend would compare against "qbo", which
+    # is the closed set restated in another language.
+    oauth: bool = False
 
     @property
     def fields(self) -> tuple[str, ...]:
@@ -75,7 +80,7 @@ class ProviderSpec:
 PROVIDERS: tuple[ProviderSpec, ...] = (
     ProviderSpec(PAYROLL, "gusto", ("api_token",), ("company_id",)),
     ProviderSpec(PAYROLL, "adp", ("client_secret",), ("client_id",)),
-    ProviderSpec(ACCOUNTING, "qbo", ("refresh_token",), ("realm_id",)),
+    ProviderSpec(ACCOUNTING, "qbo", ("refresh_token",), ("realm_id",), oauth=True),
     ProviderSpec(DEMAND_FEED, "delphi", ("subscription_key",), ()),
     ProviderSpec(DEMAND_FEED, "tripleseat", ("api_key",), ()),
 )
