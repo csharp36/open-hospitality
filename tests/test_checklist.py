@@ -223,6 +223,22 @@ def test_demand_feed_is_the_one_item_without_a_surface():
     assert [i.key for i in ITEMS if i.where is None] == ["demand_feed"]
 
 
+def test_every_item_route_is_pinned():
+    """The Python half of the dead-link pair. Its counterpart is
+    `frontend/src/router.test.ts`, which asserts every path here is served by
+    the SPA — neither test can see the other's language, so the set is pinned
+    in both and a new `where` fails here until both move together.
+
+    /integrations was in this list before it was a route, which is how the
+    setup checklist shipped two links into nothing."""
+    assert sorted({i.where for i in ITEMS if i.where is not None}) == [
+        "/employees",
+        "/integrations",
+        "/property-config",
+        "/upload",
+    ]
+
+
 def test_the_connectable_integration_items_route_to_integrations():
     by_key = {i.key: i for i in ITEMS}
     for key in ("payroll", "accounting"):
