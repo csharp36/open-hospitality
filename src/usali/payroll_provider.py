@@ -105,6 +105,26 @@ class PayRunResult:
 
 class PayrollProvider(Protocol):
     def capabilities(self) -> ProviderCapabilities: ...
+
+    def verify(self) -> None:
+        """Prove these credentials authenticate, reading nothing and writing
+        nothing (OH-17, D-OH17.8). Raises ProviderError on failure.
+
+        Exists because the connect endpoint must refuse a credential that
+        cannot authenticate BEFORE storing it — otherwise a typo'd key becomes
+        a checklist item reading `done` over an integration that 502s on first
+        use, which is the exact drift OH-17 exists to prevent.
+        `capabilities()` cannot serve as that proof: it is a purely local
+        declaration that touches no network, so using it would make D-OH17.8
+        quietly false while looking correct.
+
+        Read-only BY CONTRACT: this runs against a tenant's real payroll
+        account on a button press, so it must never create, update or submit
+        anything. Do not "strengthen" it into a create-and-delete probe or a
+        zero-dollar test run — a write into a live payroll account is not
+        undone by deleting it afterwards."""
+        ...
+
     def sync_employee(self, employee: PayrollEmployee) -> str: ...
     def update_employee(
         self, provider_employee_id: str, employee: PayrollEmployee
@@ -149,6 +169,13 @@ class InMemoryPayrollProvider:
             supports_employee_update=True,
             supports_sick_balance_display=True,
         )
+
+    def verify(self) -> None:
+        # The fake authenticates against nothing, so there is nothing to
+        # prove. Present because the port declares it: a fake missing part
+        # of the surface would let endpoint tests pass over a shape
+        # production does not have.
+        return None
 
     def sync_employee(self, employee: PayrollEmployee) -> str:
         self._employees.append(employee)

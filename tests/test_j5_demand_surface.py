@@ -20,13 +20,15 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
+from tests.orgworld import set_demand_feed
 from usali.config import get_settings
 from usali.crm_feed import CrmCapabilities, CrmDemandDay, CrmDemandPull, InMemoryCrmFeed
 from usali.crm_pull import store_pull
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali.models import AuditEvent, Organization, OrgSettings, Property
+from usali.models import AuditEvent, Organization, Property
 from usali.photo_store import InMemoryPhotoStore
 from usali.server import create_app
 from usali.mapping.property_registry import DEFAULT_ORG_ALIAS
@@ -34,9 +36,11 @@ from usali.mapping.property_registry import DEFAULT_ORG_ALIAS
 
 def _seed(db_session):
     db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS, name="Org"))
-    db_session.flush()  # org row before its org_settings FK child
-    # L5: the provider lives on org 1's org_settings row, seeded from env.
-    db_session.add(OrgSettings(org_id=1, crm_provider=get_settings().crm_provider))
+    db_session.flush()  # org row before its credential row's FK
+    # OH-17: the provider lives on org 1's `org_integration_credential`
+    # demand_feed row alongside its credentials, seeded from env. An empty
+    # env means NO ROW at all (the OFF state), not an empty sentinel.
+    set_demand_feed(db_session, get_settings().crm_provider)
     db_session.add_all([
         Property(property_id="HISJ", org_id=1, name="HISJ",
                  pms_source="OPERA", wage_jurisdiction="US-CA",
@@ -59,7 +63,11 @@ def _client(db_engine, tmp_path, verifier, feed):
         session_factory=make_session_factory(db_engine),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(),
-        crm_feed_factory=lambda provider: feed if provider else None,
+        # OH-17: the seam takes the request's org-bound session factory, not
+        # a provider name. Feature-off is the ABSENCE of a credential row
+        # (see `test_feature_off_degrades_to_not_configured`, which uses the
+        # DEFAULT factory), never something this fake has to model.
+        crm_feed_factory=lambda _factory: feed,
     )
     return TestClient(app)
 
@@ -220,6 +228,40 @@ def test_feature_off_degrades_to_not_configured(
                          "event_covers": False},
         "days": [],
     }
+
+
+def test_an_unreadable_credential_refuses_instead_of_degrading(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    """The ONE case this surface does not degrade for (ADR-005).
+
+    Feature-off degrades because a surface with no configured provider has
+    nothing honest to say. An UNREADABLE credential is a different fact: the
+    feed is connected, its history is stored, and the deployment simply cannot
+    read the key any more. Rendering `configured: false` here would tell a
+    scheduler the feed is switched off, hide the stored days behind that lie,
+    and invite an operator to reconnect a feed that is fine — so this one
+    refuses by name."""
+    monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
+    _seed(db_session)  # no demand_feed row: the env is empty
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("delphi-key"))
+
+    verifier, mint = make_authkit()
+    app = create_app(
+        inbox_dir=tmp_path / "inbox", processed_dir=tmp_path / "processed",
+        failed_dir=tmp_path / "failed",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(),
+    )
+    c = TestClient(app)
+    r = c.get("/api/crm/demand", headers=_gm(mint), params=_WINDOW)
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "demand_feed" in detail
+    assert "decrypted" in detail
+    assert "delphi-key" not in detail
 
 
 def test_window_refusals(db_engine, db_session, tmp_path, crm_on):

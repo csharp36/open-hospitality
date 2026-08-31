@@ -431,9 +431,10 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     """Every org-scoped table — no sampling — carries the org_wall
     policy, ENABLE and FORCE. The size is a literal (44 = L1's 42 +
     property + organization): the migration's own tuple is the source
-    for NAMES only, never for the count. L5 adds one more org-scoped
-    table (org_settings) with its OWN RLS in the l5a0orgsettings
-    migration — enumerated here so the inventory stays exact, not sampled.
+    for NAMES only, never for the count. OH-17 replaces org_settings with
+    org_integration_credential (b3a0integcred): the credential row absorbed
+    crm_provider, so the old table is dropped and the new one carries its own
+    RLS — enumerated here so the inventory stays exact, not sampled.
     m1a0propcfg adds three more (room_inventory, out_of_order_room,
     fiscal_calendar), each with its own RLS, for the same reason.
     m2a0perffoundations adds two more (property_stat_config,
@@ -441,13 +442,15 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     B4 adds one more (org_checklist_override) with its own RLS in the
     b2a0checklist migration, enumerated here for the same reason."""
     assert len(_l2.RLS_TABLES) == 44
-    # The full org-scoped inventory at head = L2's 44 + L5's org_settings +
+    # The full org-scoped inventory at head = L2's 44 +
     # m1a0propcfg's three property-config tables +
     # m2a0perffoundations's two performance-foundation tables +
-    # B4's org_checklist_override.
+    # B4's org_checklist_override + OH-17's org_integration_credential
+    # (which REPLACED L5's org_settings, dropped in the same migration).
     expected = set(_l2.RLS_TABLES) | {
-        "org_settings", "room_inventory", "out_of_order_room", "fiscal_calendar",
+        "room_inventory", "out_of_order_room", "fiscal_calendar",
         "property_stat_config", "ingestion_coverage", "org_checklist_override",
+        "org_integration_credential",
     }
     with db_engine.connect() as conn:
         policied = {

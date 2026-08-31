@@ -93,53 +93,107 @@ delivery story.
 
 This is where the two structural blockers live.
 
-### 2.1 ⚠️ Integration config is process-wide, not per tenant (**OH-17**)
+### 2.1 Per-tenant integration config (**OH-17**, backend shipped — frontend still missing)
 
-**This is the largest hidden lift on the list.** `config.py:33–50` holds
-`qbo_client_id`, `qbo_realm_id`, `qbo_refresh_token`, `payroll_provider`,
-`gusto_api_token`, `gusto_company_id`, and the `adp_client_*` pair as
-process-wide `Settings` — environment variables, one value for the whole
-deployment. Only `crm_provider` was ever made per-org, and it lives on
-`OrgSettings` (`models.py:467`), which holds *nothing else*.
+Built to the
+[OH-17 design](design/2026-08-30-oh17-per-tenant-integration-config-design.md).
+`org_integration_credential` (`OrgIntegrationCredential`, `models.py:467`) is
+one `OrgScoped` row per `(org, integration)`: the row IS the connection, so a
+tenant cannot hold a provider without credentials for it, and secrets
+(`EncryptedString`, per ADR-005) cannot drift from the provider name that
+reads them. It absorbed L5's `org_settings.crm_provider` — `OrgSettings` is
+now gone entirely, since that column was its only reason to exist. RLS's
+`org_wall` policy covers the table like every other tenant table
+(`tests/test_l2_rls_wall.py:453`), and a real two-org isolation suite exercises
+it through the ORM wall and with the ORM wall bypassed
+(`tests/test_integrations.py:452`).
 
-The consequence: **"does QBO exist for this tenant?" is currently
-unanswerable.** Connecting QuickBooks or Gusto for tenant A would change it for
-every tenant. Nothing in the ingestion or reporting path is wrong — the
-isolation walls are sound — but the integration layer was built for the
-single-org world and never followed D1/D2 into multi-tenancy.
+`src/usali/integrations.py` is the registry and the resolution seam:
+`resolve_payroll` (returning `ResolvedPayroll`, so a run's provider *name*
+travels with its adapter — see the module docstring for the mis-pay this
+prevents), `resolve_qbo`, `resolve_crm_feed`, `DbTokenStore`, and the
+`IntegrationNotConfigured` / `CredentialUnreadable` refusals ADR-005's
+rotation hazard requires. `QboClient` now takes a `TokenStore` instead of a
+bare refresh token, so Intuit's per-grant token rotation
+(`qbo_client.py:177`) is durable per tenant — closing a bug the client's own
+docstring used to document against itself. Every adapter has a real
+read-only authenticated `verify()`, so `src/usali/integrations_api.py`'s
+`PUT /api/integrations/{integration}` refuses a credential that cannot
+authenticate before it is ever stored (D-OH17.8) — connecting is no longer
+"paste a key and hope."
 
-What it requires:
+`src/usali/integrations_api.py` exposes `GET` / `PUT` / `DELETE
+/api/integrations` (org_admin only, no secret ever returned in a response)
+plus the QBO OAuth pair (`/api/integrations/accounting/authorize` and its
+callback) with an HMAC-signed `state`. One amendment from the design's
+original plan: **D-OH17.7 was revised during execution** — `DbTokenStore`
+takes no row lock, so concurrent QBO pushes are not serialized, in one
+process or across them. Two simultaneous pushes fork the refresh-token
+lineage exactly as two workers would; the loser's grant fails visibly and a
+retry succeeds. This is accepted, not mitigated — a row lock held across an
+outbound HTTP call with no release path on a failed grant was judged worse —
+so nothing here should be read as promising cross-process serialization.
 
-1. Per-tenant credential storage, encrypted at rest (the per-org key machinery
-   from [ADR-005](adr/adr-005-symmetric-field-encryption-per-org-keys.md)
-   already exists and is the natural home).
-2. A per-tenant **OAuth connect flow** for QBO and Gusto — the tenant's own
-   consent, their own realm/company id, and QBO's rotating refresh token
-   persisted per org rather than per process (`qbo_client.py` already handles
-   the rotation correctly; it just has one place to put it).
-3. The adapters resolving configuration from the active org instead of `Settings`,
-   extending the existing config-selected-seam pattern that `crm_provider`
-   already demonstrates per-org.
+**A second accepted residual, decided 2026-08-30:** the OAuth `state` is
+signed and short-lived but **not single-use**, so a captured, unexpired state
+submitted with an attacker's own fresh Intuit `code` binds the attacker's
+QuickBooks company onto the victim org's accounting row. Accepted after
+working out that a nonce store would not have closed it — single-use refuses
+only the second use, and an attacker who calls back first consumes the nonce
+himself. The fix, if it is ever needed, is a browser-bound cookie across the
+authorize/callback pair, not a nonce table. Full reasoning in D-OH17.11's
+residual-risk block. **This makes one frontend requirement non-optional: the
+`/integrations` page must DISPLAY the connected QBO company id**, because the
+stored `realm_id` plus the `integration_connected` audit event are the only
+signals that separate a hijack from a normal connection.
 
-Three separate connect surfaces are waiting on this: payroll, QuickBooks
-Online, and — since D-B4.8 — the demand feed. The first two need the whole
-per-tenant credential lift above. The third needs less of it, because
-`crm_provider` is already per-org, but its *credentials* are not
-(`delphi_subscription_key`, `tripleseat_api_key`, `config.py:58–61`) and no page
-in the SPA writes `crm_provider` at all — so a tenant has no way to turn it on,
-and turning it on would not give them their own feed.
+**Two review outcomes worth carrying (2026-08-31).** The env seed is now
+first-provisioning only — it used to run on every deploy and silently
+reinstated a credential an operator had revoked, because disconnect is a row
+delete and the seed was keyed on absence. And the deployed demo reports
+`all_clear` over integrations whose seeded credentials are the literal
+`"mock"` pointed at `127.0.0.1`: **accepted while org 1 is a demo, and a real
+defect the moment org 1 serves a pilot tenant** — see D-OH17.15's amendments
+for why the obvious fix (skip the defaults) is closed off by the pay-run e2e.
 
-The open-items checklist (§2.2) is **no longer** among them. It shipped, and it
-reports the absence honestly rather than waiting: `payroll`, `accounting` and
-`demand_feed` each carry `where: null` plus an `unavailable_reason` naming
-OH-17, so `/setup` renders them as non-links that say why there is nothing to
-click (D-B4.8). Restoring their `where` — and deleting the reason with the same
-edit — is part of OH-17's frontend work.
-`test_the_integration_items_have_no_connect_surface_yet`
-(`tests/test_checklist.py:215`) is the tripwire: it pins the set of null-`where`
-keys to exactly those three and asserts each reason names OH-17, so it fails in
-both directions — when OH-17 supplies a surface, and if a fourth item ever
-joins the class unnoticed.
+The open-items checklist (§2.2) is the one place this is fully wired
+end-to-end: `payroll`, `accounting`, and `demand_feed` each probe the
+tenant's own credential row (`checklist.py`'s `_probe_payroll` /
+`_probe_accounting` / `_probe_demand_feed`). Payroll and accounting route to
+`/integrations`. The old tripwire that pinned all three to `where: null` is
+deleted; its mirror,
+`test_demand_feed_is_the_one_item_without_a_surface` (D-OH17.12 as amended by
+D-OH17.16), pins the exact set of items with no connect surface, so it fails
+in both directions.
+
+**`demand_feed` is deliberately NOT one of them** (decided 2026-08-30). A
+credential does not finish that connection: verification and every real pull
+need a property `crm_ref`, and the only writer of `crm_ref` is the repo's
+YAML seed — no API sets it, `property_config_api` included. Routing it to
+`/integrations` would have flipped a checklist item to a form no tenant can
+complete, which is the drift OH-17 exists to remove, so it carries an honest
+`unavailable_reason` instead. Making `crm_ref` tenant-settable is a feature
+of its own (a provider identifier needs validation, a refusal shape, and a
+place in property-config to explain itself), not a field to bolt on here.
+
+**What is still not done, and must not be glossed:** the **`/integrations`
+frontend page does not exist yet** — it is a separate, not-yet-started plan.
+The checklist items above point real operators at a route the SPA does not
+serve, so today a click lands on the SPA's not-found page. OH-17 is
+backend-complete, not user-complete; nobody can actually connect QuickBooks,
+Gusto, ADP, Delphi, or Tripleseat through the product yet, only through
+`/api/integrations` directly.
+
+**One** smaller loose end the design doc's §8a carries forward, deliberately:
+`cli.py`'s `_qbo_client_from_settings` (`cli.py:549`) still builds its
+`QboClient` from process-wide `Settings` with a `StaticTokenStore` — the CLI
+is not org-aware at all, acceptable while it is an operator tool run against
+one deployment, but it should not grow a second user. (The sibling hazard
+§8a once carried beside it — `payroll_run_api.create_run` recording
+`provider_name` from `Settings` instead of the resolved row — was fixed
+before merge in `resolve_payroll`/`ResolvedPayroll`, and §8a was rewritten to
+say so: it now opens "Resolved 2026-08-30 in `986b5da`". Nothing is stale
+there; the correction has landed.)
 
 ### 2.2 B4 — the open-items model (**OH-18**, shipped)
 
@@ -290,7 +344,7 @@ most visible.
 | # | Work | Why here |
 |---|---|---|
 | 1 | **B4 — tenant state + open-items model** (§2.2) — **shipped** | The container onboarding UI, integration status, alerting, and billing all hang from. Everything downstream invents its own tenant-state model without it. |
-| 2 | **Per-tenant integration config + OAuth connect** (§2.1) | Unblocks connect-payroll, connect-QBO, and the honest "off, not mock" rendering D8.3 requires. The single biggest unlisted lift. |
+| 2 | **Per-tenant integration config + OAuth connect** (§2.1) — **backend shipped** | Unblocks connect-payroll, connect-QBO, and the honest "off, not mock" rendering D8.3 requires. The checklist already routes to `/integrations`; that page itself is the remaining, still-unplanned frontend slice. |
 | 3 | **Ingestion-boundary redaction** (§2.4) | A compliance gate on the first real tenant's first real upload. Cheap now, expensive after. |
 | 4 | **Marketing site + open signup** (§1.1, §1.2) | Only worth opening the funnel once a tenant that walks in can reach a working, honestly-labelled portal. |
 | 5 | **Billing** (Band 3) | Consumes (1) as an open item; needs (4) to have a pricing page to point at. |
@@ -299,8 +353,9 @@ most visible.
 
 Items 1 and 2 are unglamorous plumbing that three separate user-facing features
 are silently waiting on, and the two most likely to be under-scoped if planned
-from the feature side. (1) has landed; (2) has not, and the same risk still
-applies to it.
+from the feature side. (1) has landed, and so has (2)'s backend; the
+under-scoping risk that motivated calling it out has now moved onto the
+`/integrations` frontend slice specifically, which is still unplanned.
 
 ---
 
@@ -313,8 +368,11 @@ before the corresponding build starts:
    per-org override layer? (§4.1, blocks the mapping UI)
 2. **Pricing basis and the open-core boundary** — what the Apache-2.0 core
    always includes. (§4, blocks billing and the pricing page)
-3. **Per-tenant secret storage shape** — reuse the per-org field encryption
-   from ADR-005, or a dedicated credential store? (§2.1)
+3. ~~**Per-tenant secret storage shape**~~ — **settled** by D-OH17.2 in the
+   [OH-17 design](design/2026-08-30-oh17-per-tenant-integration-config-design.md):
+   ADR-005 symmetric field encryption, not a dedicated credential store or
+   ADR-004's blind vault — Intuit's server-side QBO token rotation needs a
+   write-back path a blind vault cannot offer. (§2.1)
 4. **SMS vendor** — required for D-B5's verified cell and owner alerting, still
    unchosen. (§1.3)
 5. **Whether redaction is destructive** — does `/ingest` redact before writing

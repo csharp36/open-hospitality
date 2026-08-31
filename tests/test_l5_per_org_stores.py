@@ -9,14 +9,16 @@ Two independent concerns, one wall each:
   another hotel's punch photos. Org 1 (founding) is DEFINED as the raw
   master key — existing objects stay readable with no re-encrypt.
 
-- **Integration config**: a per-org `org_settings.crm_provider`, read
-  under the active org's session; empty = the feature is OFF for that org
-  (the J4 loud-refuse posture, now per-tenant). `USALI_CRM_PROVIDER` is
-  the SEED default for org 1 only; runtime never reads env.
+- **Integration config**: a per-org demand-feed credential row
+  (`org_integration_credential`, OH-17's replacement for L5's
+  `org_settings.crm_provider`), read under the active org's session; NO row
+  = the feature is OFF for that org (the J4 loud-refuse posture, now
+  per-tenant). `USALI_CRM_PROVIDER` is the SEED default for org 1 only;
+  runtime never reads env.
 
 Mutants killed here: HKDF salt dropped (all org != 1 collapse to one
 key), the org prefix dropped (keys collide + both decrypt under org 1),
-and the org_settings read falling back to env for org != 1.
+and the credential read falling back to env for org != 1.
 """
 
 from datetime import datetime, timedelta
@@ -25,11 +27,11 @@ from zoneinfo import ZoneInfo
 import pytest
 from cryptography.exceptions import InvalidTag
 from fastapi.testclient import TestClient
-from sqlalchemy import update
 
 from tests.authkit import DEFAULT_ORG_ALIAS, make_authkit
 from tests.grants import grant_role
 from tests.orgwall import app_role_url
+from tests.orgworld import set_demand_feed
 from usali.auth import ACTIVE_ORG_HEADER
 from usali.crm_feed import CrmCapabilities, CrmDemandDay, InMemoryCrmFeed
 from usali.crypto import (
@@ -44,7 +46,7 @@ from usali.crypto import (
 from usali.db import make_engine, make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
 from usali.mapping.property_registry import ensure_default_org
-from usali.models import Organization, OrgSettings, Property
+from usali.models import Organization, Property
 from usali.photo_store import (
     FOUNDING_ORG_ID,
     InMemoryPhotoStore,
@@ -207,16 +209,14 @@ def test_in_memory_store_two_org_face_keys_never_collide():
 @pytest.fixture
 def two_org_crm_world(db_session):
     """Org 1 (founding, alias DEFAULT_ORG_ALIAS) runs delphi; org 2 (rival)
-    has NO org_settings row = feature OFF. One property each with a crm_ref;
-    ADMIN holds org-wide org_admin in BOTH orgs so only the provider — not
-    the gate — differs between them. Written by the superuser session so the
-    world exists regardless of the walls."""
-    ensure_default_org(db_session)  # org 1 + its org_settings (env default)
-    # Org 1 explicitly runs delphi (the env default in this suite is empty).
-    db_session.execute(
-        update(OrgSettings).where(OrgSettings.org_id == 1)
-        .values(crm_provider="delphi")
-    )
+    has NO demand-feed credential row = feature OFF. One property each with a
+    crm_ref; ADMIN holds org-wide org_admin in BOTH orgs so only the provider
+    — not the gate — differs between them. Written by the superuser session so
+    the world exists regardless of the walls."""
+    ensure_default_org(db_session)  # org 1 + its env-seeded credential rows
+    # Org 1 explicitly runs delphi (the env default in this suite is empty, so
+    # the seed left the demand-feed slot disconnected).
+    set_demand_feed(db_session, "delphi")
     db_session.add(Organization(
         org_id=2, name="Rival Hotel Group", kc_org_alias=RIVAL_ALIAS
     ))
@@ -236,8 +236,7 @@ def two_org_crm_world(db_session):
 
 def _crm_client(db_url, tmp_path, verifier):
     """Serving app connected as the RLS-bound app role (so the DB wall is
-    genuine, not superuser-bypassed) with a delphi feed for any configured
-    provider."""
+    genuine, not superuser-bypassed) with a delphi feed for every request."""
     # Inside the property-local today..+90d pull horizon regardless of the
     # wall clock (store_pull refuses days outside it).
     stay = datetime.now(ZoneInfo("America/Los_Angeles")).date() + timedelta(days=3)
@@ -252,7 +251,12 @@ def _crm_client(db_url, tmp_path, verifier):
         session_factory=make_session_factory(make_engine(app_role_url(db_url))),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(),
-        crm_feed_factory=lambda provider: feed if provider else None,
+        # OH-17: the seam takes the request's org-bound session factory. The
+        # fake ignores it and always yields the feed ON PURPOSE — that is
+        # what makes org B's `configured: false` below a real assertion: it
+        # can only come from B's MISSING credential row, never from the fake
+        # deciding to withhold an adapter.
+        crm_feed_factory=lambda _factory: feed,
     )
     return TestClient(app)
 
@@ -310,12 +314,12 @@ def test_off_org_reads_no_provider_even_with_env_set(
     db_url, tmp_path, two_org_crm_world, monkeypatch
 ):
     """The env-fallback mutant, on the read SEAM directly: org 2 has no
-    org_settings row, so `_active_org_crm_provider` returns '' (OFF) even
-    when USALI_CRM_PROVIDER is set in the process — the read is the active
-    org's row, NEVER env (env seeds org 1 only). Under the mutant that falls
-    back to env for org != 1, org B would resolve 'delphi' and wrongly pull.
-    Org 1 still reads its OWN row (delphi), proving the read is per-org, not
-    a blanket ignore-env."""
+    demand-feed credential row, so `_active_org_crm_provider` returns ''
+    (OFF) even when USALI_CRM_PROVIDER is set in the process — the read is
+    the active org's row, NEVER env (env seeds org 1 only). Under the mutant
+    that falls back to env for org != 1, org B would resolve 'delphi' and
+    wrongly pull. Org 1 still reads its OWN row (delphi), proving the read is
+    per-org, not a blanket ignore-env."""
     from usali.crm_api import _active_org_crm_provider
 
     monkeypatch.setenv("USALI_CRM_PROVIDER", "delphi")

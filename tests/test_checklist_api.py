@@ -6,6 +6,7 @@ from sqlalchemy import select
 import usali.checklist as checklist_module
 from tests.authkit import DEFAULT_ORG_ALIAS, make_authkit
 from tests.grants import grant_role
+from usali.checklist_api import ItemModel
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
 from usali.models import AuditEvent, IngestBatch, OrgChecklistOverride, Organization
@@ -50,8 +51,17 @@ def test_get_checklist_reports_open_items(db_engine, db_session, tmp_path):
 def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
     """`ItemModel` sets extra="forbid" and is built with **vars(ItemStatus),
     so the model's field set is coupled to the dataclass's. The existing tests
-    already catch a MISSING field (it 500s); this pins the harder half — that
-    both arms of the D-B4.8 pair serialize, null and non-null."""
+    already catch a MISSING field (it 500s); this pins that the null arm of
+    the D-B4.8 pair serializes over the real endpoint.
+
+    Both arms are live again as of D-OH17.16: `payroll` routes to
+    `/integrations` with no reason, and `demand_feed` carries a reason with no
+    route because a credential does not finish that connection. Asserting
+    both here is the point — this is the only place the pair is checked
+    through real serialization rather than against the dataclass.
+
+    (Between D-OH17.12 and D-OH17.16 no live item carried a reason, and this
+    docstring said so. It was true for about a day.)"""
     _org(db_session)
     verifier, mint = make_authkit()
     c = _client(db_engine, tmp_path, verifier)
@@ -59,8 +69,26 @@ def test_get_carries_the_unavailable_reason(db_engine, db_session, tmp_path):
     by_key = {i["key"]: i for i in body["items"]}
     assert by_key["first_report"]["where"] == "/upload"
     assert by_key["first_report"]["unavailable_reason"] is None
-    assert by_key["payroll"]["where"] is None
-    assert "OH-17" in by_key["payroll"]["unavailable_reason"]
+    assert by_key["payroll"]["where"] == "/integrations"
+    assert by_key["payroll"]["unavailable_reason"] is None
+    # The other arm, over the wire: null route, real reason (D-OH17.16).
+    assert by_key["demand_feed"]["where"] is None
+    assert by_key["demand_feed"]["unavailable_reason"] is not None
+
+
+def test_item_model_still_serializes_a_non_null_reason():
+    """`ItemModel` is meant to carry BOTH arms of the D-B4.8 pair whatever
+    ITEMS happens to hold. The endpoint test above covers the non-null arm
+    through a real item today (`demand_feed`), but that is a fact about the
+    registry, not about the model: the day `crm_ref` becomes settable and the
+    last reason disappears again, this keeps the serialization pinned rather
+    than quietly stopping being exercised."""
+    model = ItemModel(
+        key="x", title="X", description="d", required=False,
+        where=None, status="open", unavailable_reason="why not",
+    )
+    assert model.model_dump()["unavailable_reason"] == "why not"
+    assert model.model_dump()["where"] is None
 
 
 def test_get_checklist_marks_done_items(db_engine, db_session, tmp_path):

@@ -345,21 +345,16 @@ def test_a_multi_night_block_lands_rooms_and_labels_on_every_night():
     assert by_date[date(2026, 8, 6)].event_covers == 120
 
 
-# --- config selection --------------------------------------------------------
-
-
-def test_the_feed_is_selected_by_the_provider_name_alone():
-    """L5: the feed is selected by the PROVIDER NAME the caller resolved
-    (per-org, from org_settings) — delphi|tripleseat pick an adapter, empty
-    means the feature is OFF (None), and an unknown value refuses loudly.
-    Base URLs stay process-wide (from_settings), so no env is needed here."""
-    from usali.server import _crm_feed_for_provider
-
-    assert isinstance(_crm_feed_for_provider("delphi"), DelphiAdapter)
-    assert isinstance(_crm_feed_for_provider("tripleseat"), TripleseatAdapter)
-    assert _crm_feed_for_provider("") is None
-    with pytest.raises(RuntimeError, match="hubspot"):
-        _crm_feed_for_provider("hubspot")
+# --- provider selection -------------------------------------------------------
+#
+# There is no adapter-selection test HERE any more. Selection used to be
+# `server._crm_feed_for_provider(name)`, a pure function of a provider string;
+# OH-17 deleted it, and selection is now `integrations.resolve_crm_feed(factory)`
+# reading the tenant's credential row — provider name AND credentials together,
+# inseparable by construction (D-OH17.1). Its pins live in
+# tests/test_integrations.py, which owns the credential-row world this file
+# deliberately does not build. Do not reinstate a name-only selector here: a
+# provider name with no row behind it is precisely the state OH-17 abolished.
 
 
 def test_the_in_memory_feed_reports_dropped_fields_too():
@@ -644,3 +639,91 @@ def test_j7_hostile_field_names_are_shaped_in_the_dropped_report():
     }, frozenset({"Date"}), dropped)
     assert kept == {"Date": "08/06/2026"}
     assert dropped == {"PickedUpRooms": 1, "<non-identifier field>": 2}
+
+
+# --- D-OH17.8: verify() proves a key BEFORE the connect endpoint stores it ---
+#
+# The connect endpoint must refuse a credential that cannot authenticate, so a
+# checklist item never reads `done` over an integration that 502s on first
+# pull. `capabilities()` cannot serve as that proof — it is a local
+# declaration that touches no network. Both CRM adapters therefore verify by
+# making the SAME read the real pull makes, over the smallest possible window:
+# a provider that answers a one-day fetch will answer the real one, and
+# `fetch_demand` is already GET-only, so verify inherits read-only for free.
+#
+# The ref is required because every real CRM read is property-scoped — there
+# is no account-level ping to call instead, and a key that authenticates
+# against an account the tenant's property does not live in is still a broken
+# connection.
+
+
+def test_verify_succeeds_against_both_mocks():
+    _delphi().verify(DELPHI_HOTEL_REF)
+    _tripleseat().verify(str(TRIPLESEAT_LOCATION_ID))
+
+
+def test_verify_raises_on_a_bad_key():
+    """The whole point of D-OH17.8: a typo'd key is refused at connect time,
+    not discovered on the tenant's first demand pull."""
+    with pytest.raises(CrmFeedError, match="401"):
+        _delphi(key="wrong").verify(DELPHI_HOTEL_REF)
+    with pytest.raises(CrmFeedError, match="401"):
+        _tripleseat(key="wrong").verify(str(TRIPLESEAT_LOCATION_ID))
+
+
+def test_verify_raises_on_a_ref_the_key_cannot_reach():
+    """A good key aimed at a property this account does not hold is still a
+    broken connection — and the refusal names the REF, never a response body
+    (CRM bodies carry contacts and revenue)."""
+    with pytest.raises(CrmFeedError, match="NOPE"):
+        _delphi().verify("NOPE")
+    with pytest.raises(CrmFeedError, match="999999"):
+        _tripleseat().verify("999999")
+    # A Delphi ref pointed at the Tripleseat adapter is a MAPPING mistake;
+    # verify surfaces it at connect time, before any HTTP.
+    with pytest.raises(CrmFeedError, match="DELPHI-HISJ"):
+        _tripleseat().verify(DELPHI_HOTEL_REF)
+
+
+class _RecordingTransport(httpx.BaseTransport):
+    """Wraps a transport and records every request URL, so the tests below
+    can pin what verify() actually put on the wire."""
+
+    def __init__(self, inner: httpx.BaseTransport) -> None:
+        self._inner = inner
+        self.requests: list[httpx.Request] = []
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return self._inner.handle_request(request)
+
+
+def test_verify_reads_one_day_and_never_writes():
+    """The verification window is the smallest one that still exercises the
+    real read path: a wide window would pull a tenant's whole forward book
+    just to answer "does this key work?". And read-only is checked at the
+    wire, not asserted in a docstring — do not "improve" verify() into a
+    probe that creates a throwaway block or event, because that would run
+    against a tenant's live CRM on a button press."""
+    delphi_wire = _RecordingTransport(SyncASGITransport(create_mock_delphi()))
+    DelphiAdapter(base_url="http://mock-delphi", subscription_key="mock",
+                  transport=delphi_wire).verify(DELPHI_HOTEL_REF)
+    assert delphi_wire.requests
+    assert {r.method for r in delphi_wire.requests} == {"GET"}
+    for request in delphi_wire.requests:
+        assert request.url.params["startDate"] == request.url.params["endDate"]
+
+    ts_wire = _RecordingTransport(SyncASGITransport(create_mock_tripleseat()))
+    TripleseatAdapter(base_url="http://mock-tripleseat", api_key="mock",
+                      transport=ts_wire).verify(str(TRIPLESEAT_LOCATION_ID))
+    assert ts_wire.requests
+    assert {r.method for r in ts_wire.requests} == {"GET"}
+    for request in ts_wire.requests:
+        assert request.url.params["start_date"] == request.url.params["end_date"]
+
+
+def test_the_in_memory_feed_verifies_too():
+    """The fake implements the port's full surface — otherwise the endpoint
+    tests that inject it would be exercising a shape production does not
+    have (and D-OH17.8's refusal would go untested there)."""
+    InMemoryCrmFeed().verify("REF-1")

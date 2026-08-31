@@ -15,6 +15,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 _TOKEN = "mock"
+# The one company this mock's token is scoped to. Only the company READ below
+# enforces it: the employee/payroll routes predate it and ignore company_id,
+# and narrowing them is a behaviour change for the whole contract suite, not
+# part of adding a verification endpoint. Tightening them is a fine follow-on.
+_COMPANY_ID = "mock"
 _EMPLOYEE_TAX = Decimal("0.15")
 _EMPLOYER_TAX = Decimal("0.10")
 _OT = Decimal("1.5")
@@ -76,6 +81,18 @@ def create_mock_gusto() -> FastAPI:
                 status_code=422,
                 detail="deposit_accounts must contain exactly one remainder",
             )
+
+    @app.get("/v1/companies/{company_id}")
+    async def get_company(company_id: str, request: Request) -> dict[str, Any]:
+        # OH-17 / D-OH17.8: the read the adapter's `verify()` makes before a
+        # credential is stored. It must be able to fail in BOTH the ways a
+        # real connection fails — a bad bearer (401, same check as every
+        # other route) and a company id this token cannot reach (404) — or
+        # the connect endpoint's refusal would be untestable.
+        _check_bearer(request)
+        if company_id != _COMPANY_ID:
+            raise HTTPException(status_code=404, detail="company not found")
+        return {"uuid": company_id, "name": "Mock Hotel Co"}
 
     @app.post("/v1/companies/{company_id}/employees", status_code=201)
     async def create_employee(

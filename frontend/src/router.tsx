@@ -66,12 +66,18 @@ const dashboardRoute = createRoute({
  * last on (a reload of the bare origin, or the post-login bounce, which always
  * returns to '/'), and on a first visit it opens the dashboard. `replace` keeps
  * the entry route out of history so Back never bounces through it again.
+ *
+ * The remembered href is checked against the routes this router actually
+ * serves (`isServedPath`) before it is restored: redirecting to a path with no
+ * route renders Not Found, and because the entry route runs on every
+ * bare-origin load and every post-login return, that Not Found would repeat
+ * until the operator typed a URL by hand.
  */
 const entryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
   beforeLoad: () => {
-    throw redirect({ href: lastRoute(), replace: true })
+    throw redirect({ href: lastRoute(isServedPath), replace: true })
   },
 })
 
@@ -230,7 +236,7 @@ const signupRoute = createRoute({
   }),
 })
 
-const routeTree = rootRoute.addChildren([
+const childRoutes = [
   callbackRoute,
   entryRoute,
   dashboardRoute,
@@ -251,7 +257,45 @@ const routeTree = rootRoute.addChildren([
   scheduleRoute,
   tryRoute,
   signupRoute,
-])
+]
+
+const routeTree = rootRoute.addChildren(childRoutes)
+
+/**
+ * The paths this router serves, read off the SAME array that builds the route
+ * tree — so it is not a second registry to keep in sync: a route added or
+ * removed above changes both at once.
+ *
+ * Read the DECLARED path off `options` (the '/dashboard' passed above), not
+ * `route.path`: that one is the router's normalised form and stays undefined
+ * until the tree has been processed by `createRouter`, which happens later.
+ * The accessor is widened because `RouteOptions` is a union whose pathless
+ * (id-only) member has no `path` at all — a member none of these routes use.
+ *
+ * Every route here is a static path — no dynamic segments — so exact set
+ * membership is the whole matching rule, and the least clever thing that
+ * works. If a `$param` route is ever added, this must ask the router to match
+ * instead of comparing strings.
+ */
+function declaredPath(route: { options: unknown }): string | undefined {
+  return (route.options as { path?: string }).path
+}
+
+const servedPaths = new Set<string>(
+  childRoutes.map(declaredPath).filter((path) => path !== undefined),
+)
+
+/**
+ * Does the SPA serve this href? Passed to `lastRoute` so a remembered route
+ * that no longer resolves (or never did) falls back to the dashboard instead
+ * of redirecting the entry route into Not Found.
+ */
+export function isServedPath(href: string): boolean {
+  // href is pathname + search + hash; only the pathname decides the route,
+  // and a trailing slash is the same route ('/try/' is '/try').
+  const path = href.replace(/[?#].*$/, '')
+  return servedPaths.has(path.length > 1 ? path.replace(/\/+$/, '') : path)
+}
 
 export function createAppRouter(history?: RouterHistory) {
   return createRouter({ routeTree, history })

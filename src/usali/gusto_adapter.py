@@ -55,6 +55,24 @@ class GustoAdapter:
             supports_employee_update=True,
         )
 
+    def verify(self) -> None:
+        """D-OH17.8: read the company the token is scoped to. Proves BOTH
+        halves of the credential — a valid token aimed at a company id this
+        integration cannot reach is still a broken connection, and it fails
+        HERE, at connect time, rather than on the tenant's first pay run.
+
+        A plain GET: nothing is created, updated or submitted. `include_detail`
+        is True here and only here on this adapter's error paths — unlike the
+        sync path, this REQUEST carries no PII, so there is no SSN or account
+        number a provider's validation error could echo back into the message,
+        and the provider's own wording is genuinely useful to whoever just
+        pasted the key."""
+        try:
+            resp = self._http.get(f"/v1/companies/{self._company_id}")
+        except httpx.HTTPError as exc:
+            raise ProviderError(f"gusto unreachable: {type(exc).__name__}") from exc
+        self._raise_for(resp, "credential verify", include_detail=True)
+
     def update_employee(
         self, provider_employee_id: str, employee: PayrollEmployee
     ) -> None:

@@ -1,13 +1,15 @@
 from datetime import date
 
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
+from tests.orgworld import set_demand_feed
+from tests.test_integrations import _connect
 from usali.checklist import ITEMS, ChecklistItem, ItemStatus, evaluate, summarize
 from usali.models import (
     Base,
     FiscalCalendar,
     IngestBatch,
     OrgChecklistOverride,
-    OrgSettings,
     Property,
     RoomInventory,
 )
@@ -180,11 +182,15 @@ def test_fiscal_calendar_done_when_every_property_has_a_row(db_session, founding
     assert _status_of(db_session, "fiscal_calendar") == "done"
 
 
-def test_demand_feed_reads_org_settings(db_session, founding_org):
-    db_session.merge(OrgSettings(org_id=1, crm_provider=""))
+def test_demand_feed_reads_the_org_credential_row(db_session, founding_org):
+    """OH-17 (D-OH17.1): "not connected" is the ABSENCE of a demand_feed
+    credential row, not an empty `crm_provider` sentinel on an always-present
+    one. The probe still derives its answer from what is actually configured
+    (D-B4.1) — only the shape of "configured" changed."""
+    set_demand_feed(db_session, "")
     db_session.commit()
     assert _status_of(db_session, "demand_feed") == "open"
-    db_session.merge(OrgSettings(org_id=1, crm_provider="delphi"))
+    set_demand_feed(db_session, "delphi")
     db_session.commit()
     assert _status_of(db_session, "demand_feed") == "done"
 
@@ -196,13 +202,6 @@ def test_team_needs_a_second_subject(db_session, founding_org):
     assert _status_of(db_session, "team") == "done"
 
 
-def test_payroll_and_accounting_ignore_process_wide_settings(db_session, founding_org):
-    """D-B4.3: a deployment-wide credential is not THIS tenant's connection.
-    Both stay open until OH-17 gives them per-tenant config."""
-    assert _status_of(db_session, "payroll") == "open"
-    assert _status_of(db_session, "accounting") == "open"
-
-
 def test_where_and_unavailable_reason_are_paired():
     """D-B4.8: an item either routes somewhere real or says why it does not.
     Exactly one of the two, never both and never neither — an item with a
@@ -212,17 +211,97 @@ def test_where_and_unavailable_reason_are_paired():
         assert (item.where is None) == (item.unavailable_reason is not None), item.key
 
 
-def test_the_integration_items_have_no_connect_surface_yet():
-    """The three OH-17 items, named explicitly. This test is the tripwire that
-    OH-17 must delete: when it supplies a connect surface it restores `where`
-    and drops the reason, and this assertion fails loudly rather than leaving
-    a stale "coming later" string on a working page."""
+def test_demand_feed_is_the_one_item_without_a_surface():
+    """D-OH17.12 as amended by D-OH17.16 — the mirror image of the tripwire
+    this replaces, narrowed to the one honest gap that remains.
+
+    An EXACT set, not a membership check, so it fails in both directions.
+    Any OTHER item losing its `where` is a regression. `demand_feed` GAINING
+    one is the signal that `crm_ref` became settable and the paired
+    `unavailable_reason` must go with it — the same "the failing test is the
+    signal" shape the B4 tripwire had."""
+    assert [i.key for i in ITEMS if i.where is None] == ["demand_feed"]
+
+
+def test_the_connectable_integration_items_route_to_integrations():
     by_key = {i.key: i for i in ITEMS}
-    no_surface = {i.key for i in ITEMS if i.where is None}
-    assert no_surface == {"payroll", "accounting", "demand_feed"}
-    for key in no_surface:
-        assert by_key[key].unavailable_reason is not None
-        assert "OH-17" in by_key[key].unavailable_reason
+    for key in ("payroll", "accounting"):
+        assert by_key[key].where == "/integrations"
+        assert by_key[key].unavailable_reason is None
+    # Not demand_feed: credentials do not finish that connection (D-OH17.16),
+    # so it carries the reason instead of the route. Pinned here as well as
+    # above because these two are what a reader greps for when asking "where
+    # do the integration items go?" and a silent absence would answer wrong.
+    assert by_key["demand_feed"].where is None
+    assert "property reference" in by_key["demand_feed"].unavailable_reason
+
+
+def test_payroll_and_accounting_read_the_credential_row(db_session, unconnected_org):
+    """D-OH17.8: the probe is a presence check on what is actually configured
+    for THIS tenant — still derived (D-B4.1), never a stored status.
+
+    `unconnected_org`, not bare `founding_org`: `ensure_default_org` seeds
+    org 1's payroll and accounting rows unconditionally (D-OH17.15), so under
+    `founding_org` alone both would already read "done" and `_connect` below
+    would collide with the seed on the (org_id, integration) primary key
+    instead of testing anything."""
+    assert _status_of(db_session, "payroll") == "open"
+    assert _status_of(db_session, "accounting") == "open"
+    _connect(db_session, "payroll", "gusto", api_token="t", company_id="c")
+    _connect(db_session, "accounting", "qbo", realm_id="r", refresh_token="tok")
+    assert _status_of(db_session, "payroll") == "done"
+    assert _status_of(db_session, "accounting") == "done"
+
+
+def test_an_unreadable_credential_reads_as_could_not_check(db_session, unconnected_org):
+    """ADR-005's rotation hazard meeting D-B4.1's derived status.
+
+    `integrations.CredentialUnreadable` (OH-17 Task 12) is raised when a
+    stored credential cannot be decrypted — a rotated `field_encryption_key`,
+    with no envelope or key version to fall back on. It reaches the checklist
+    through `has_credential`, and lands in `evaluate`'s per-item guard
+    (checklist.py:85), so the item derives to `error` with the exception NAME
+    as its detail.
+
+    That is the honest answer, and both alternatives are lies. `done` would
+    put a green badge over a credential nothing can read. `open` — which is
+    what a `resolve_*` returning None would have produced — silently re-opens
+    a finished item and invites the operator to reconnect an integration that
+    is fine, while the rotation is never named anywhere. `error` says the one
+    true thing: this could not be checked, and here is what went wrong.
+
+    The second half is CONTAINMENT (design §8). `team` is probed AFTER
+    demand_feed and issues a real query, so it is the item that would break
+    if one unreadable credential poisoned the walk — one broken integration
+    must not take the whole checklist down with it."""
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("delphi-key"))
+    _connect(db_session, "payroll", "gusto", api_token="t", company_id="c")
+    # Two distinct subjects, so `team` derives to a definite `done` rather
+    # than a bare "not error" — the containment assertion below is stronger
+    # when the later probe reaches a real answer.
+    grant_role(db_session, "org_admin", sub="first-subject")
+    grant_role(db_session, "property_gm", sub="second-subject")
+
+    rows = evaluate(db_session)
+    by_key = {r.key: r for r in rows}
+    assert by_key["demand_feed"].status == "error"
+    assert by_key["demand_feed"].detail == "CredentialUnreadable"
+    # Stated as its own assertion because these are the two failures that
+    # matter, and a future change could reach either without touching the
+    # line above.
+    assert by_key["demand_feed"].status not in ("done", "open")
+
+    summary = summarize(rows)
+    assert summary.all_clear is False
+    assert summary.error_count == 1
+
+    # Containment: everything else still evaluates on its own terms — the
+    # readable credential, the absent one, and the probe that runs after the
+    # failure and touches the database.
+    assert by_key["payroll"].status == "done"
+    assert by_key["accounting"].status == "open"
+    assert by_key["team"].status == "done"
 
 
 def _row(key, status, *, required=False):

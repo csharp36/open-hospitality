@@ -80,6 +80,7 @@ from usali.mapping.loader import load_mappings  # noqa: E402
 from usali.mapping.property_registry import seed_properties  # noqa: E402
 from usali.mapping.schedules import seed_schedules  # noqa: E402
 from usali.crm_pull import store_pull  # noqa: E402
+from usali.integrations import DEMAND_FEED, connected_provider  # noqa: E402
 from usali.models import (  # noqa: E402
     AssignmentRate,
     AuditEvent,
@@ -407,24 +408,56 @@ def _punch_period(session: Session, emp_id: int, worker: DemoWorker,
             ))
 
 
-def _payroll_provider():
-    """The same config-selected adapter the API process uses (the C2 seam)
-    — a module-level function so the G6 tests can point it at the
-    in-process mock instead of the :9300 dev service."""
-    from usali.server import _payroll_provider_from_settings
+def _founding_factory() -> OrgBoundSessionFactory:
+    """A founding-org-bound session factory — the shape `integrations`'
+    `resolve_*` takes (OH-17). Built fresh rather than threaded down from
+    `main`, so the two seams below keep their zero-argument shape and stay
+    monkeypatchable by the G6 tests. Cheap: each is called once per seed, and
+    the engine connects lazily."""
+    return OrgBoundSessionFactory(
+        make_session_factory(make_engine(get_settings().db_url)),
+        FOUNDING_ORG_ID,
+    )
 
-    return _payroll_provider_from_settings()
+
+def _payroll_provider():
+    """The same adapter the API process uses (the C2 seam) — a module-level
+    function so the G6 tests can point it at the in-process mock instead of
+    the :9300 dev service.
+
+    Returns a `ResolvedPayroll` (adapter + provider NAME), matching the API
+    seam exactly: the name is what `execute_pay_run` keys ProviderEmployeeRefs
+    on, so it must come from the same row the adapter did.
+
+    Since OH-17 it resolves from the founding org's `org_integration_credential`
+    row, not from `settings.payroll_provider`. `_seed_base` runs first and
+    commits that row (seed_properties -> ensure_default_org), so the row is
+    there by the time `_seed_world` calls this — and payroll has no OFF state
+    (the row is seeded unconditionally), so a None here means the seed order
+    broke rather than that the demo is unconfigured. Say so instead of handing
+    back a None that surfaces as an AttributeError three frames later."""
+    from usali import integrations
+
+    resolved = integrations.resolve_payroll(_founding_factory())
+    if resolved is None:
+        raise RuntimeError(
+            "the founding org has no payroll credential row — _seed_base "
+            "(seed_properties -> ensure_default_org) must run and COMMIT "
+            "before _seed_world resolves the payroll seam"
+        )
+    return resolved
 
 
 def _crm_feed():
-    """The same provider-selected demand feed the API uses (the J4/L5
-    seam) — None when USALI_CRM_PROVIDER is unset (demo.sh sets delphi).
-    The demo seeds the FOUNDING org, whose org_settings.crm_provider is
-    seeded from this same env (ensure_default_org), so reading env here is
-    reading org 1's provider. Tests point this at the in-process mock."""
-    from usali.server import _crm_feed_for_provider
+    """The same demand feed the API uses (the J4/L5 seam) — None when the
+    founding org has no demand_feed credential row, which is what an unset
+    USALI_CRM_PROVIDER leaves behind (demo.sh sets delphi). The demo seeds the
+    FOUNDING org, and OH-17 makes that row the single source for both the
+    provider name and its credentials. Tests point this at the in-process
+    mock."""
+    from usali import integrations
 
-    return _crm_feed_for_provider(get_settings().crm_provider)
+    return integrations.resolve_crm_feed(_founding_factory())
 
 
 # The Delphi mock's world is FIXED: the week of 2026-08-03, a fat Thursday
@@ -726,10 +759,13 @@ def _seed_world(
         session.flush()
         promote_timecard(session, card0, anchor=ANCHOR)
         session.commit()
+        # Adapter and NAME from the same resolution, never the name from env:
+        # `provider_name` keys the ProviderEmployeeRefs this run submits on.
+        payroll = _payroll_provider()
         run0 = execute_pay_run(
             session, clean_prop, PERIOD0_START, anchor=ANCHOR,
-            provider=_payroll_provider(),
-            provider_name=get_settings().payroll_provider,
+            provider=payroll.adapter,
+            provider_name=payroll.provider_name,
             opener=opener, actor="demo-seed",
         )
         session.commit()
@@ -845,7 +881,12 @@ def _seed_world(
         pull = feed.fetch_demand(crm_prop.crm_ref, DEMAND_WEEK, horizon_end)
         batch = store_pull(
             session, property_id="HISJ",
-            provider=get_settings().crm_provider,
+            # The ROW's provider, matching `crm_api.refresh_demand` — and NOT
+            # `settings.crm_provider`, which is only the SEED default and can
+            # already disagree today: a founding org holding a demand_feed row
+            # with USALI_CRM_PROVIDER unset in the serving environment would
+            # stamp the batch `provider=""`.
+            provider=connected_provider(session, DEMAND_FEED),
             horizon_start=DEMAND_WEEK, horizon_end=horizon_end, pull=pull,
         )
         session.add(AuditEvent(

@@ -32,7 +32,13 @@ from tests.orgworld import ORG1_ADMIN, ORG2_ALIAS, rls_client
 from usali.auth import ACTIVE_ORG_HEADER, effective_roles
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali.models import Employee, Organization, OrgSettings, Property, RoleAssignment
+from usali.models import (
+    Employee,
+    Organization,
+    OrgIntegrationCredential,
+    Property,
+    RoleAssignment,
+)
 from usali.photo_store import InMemoryPhotoStore, face_reference_key
 from usali.provisioning import provision_tenant
 from usali.tenancy import bind_org_context
@@ -40,8 +46,8 @@ from usali.tenancy import bind_org_context
 
 def test_two_tenants_coexist_fully_isolated(two_tenant_world, app_role_engine):
     """THE walk: on the RLS-bound app role, each org's admin sees ONLY its own
-    tenant — properties, employees, grants, and per-org settings — and none of
-    the other's. One world, both walls, all five decisions at once."""
+    tenant — properties, employees, grants, and per-org integration config —
+    and none of the other's. One world, both walls, all five decisions at once."""
     w = two_tenant_world
     factory = make_session_factory(app_role_engine)
 
@@ -54,11 +60,20 @@ def test_two_tenants_coexist_fully_isolated(two_tenant_world, app_role_engine):
         # its grant lives in org 2 and org 1's walls show none of it.
         assert effective_roles(s, ORG1_ADMIN) == frozenset({"org_admin"})
         assert effective_roles(s, w.org2_admin) == frozenset()
-        # Per-org settings (L5): org 1 runs delphi; org 2's row is invisible,
-        # so exactly one org_settings row is in view.
-        assert s.get(OrgSettings, 1).crm_provider == "delphi"
+        # Per-org integration config (L5 -> OH-17): org 1's demand feed runs
+        # delphi; org 2's demand-feed slot is invisible here, so exactly one
+        # demand_feed credential row is in view. Scoped to that ONE
+        # integration on purpose — the seed also writes org 1 a payroll and an
+        # accounting row, so an unscoped count would assert row arithmetic
+        # rather than tenant isolation.
         assert s.execute(
-            select(func.count()).select_from(OrgSettings)
+            select(OrgIntegrationCredential.provider).where(
+                OrgIntegrationCredential.integration == "demand_feed"
+            )
+        ).scalar_one() == "delphi"
+        assert s.execute(
+            select(func.count()).select_from(OrgIntegrationCredential)
+            .where(OrgIntegrationCredential.integration == "demand_feed")
         ).scalar_one() == 1
 
     # ---- Active in ORG 2: org 2's data, NONE of org 1's -------------------
@@ -68,10 +83,11 @@ def test_two_tenants_coexist_fully_isolated(two_tenant_world, app_role_engine):
         assert set(s.execute(select(Employee.full_name)).scalars()) == {"Cy Two"}
         assert effective_roles(s, w.org2_admin) == frozenset({"org_admin"})
         assert effective_roles(s, ORG1_ADMIN) == frozenset()
-        # Org 2 was provisioned, never given an org_settings row: crm is OFF,
-        # and org 1's delphi row is not visible here either.
+        # Org 2 was provisioned, never given a demand-feed credential row: crm
+        # is OFF, and org 1's delphi row is not visible here either.
         assert s.execute(
-            select(func.count()).select_from(OrgSettings)
+            select(func.count()).select_from(OrgIntegrationCredential)
+            .where(OrgIntegrationCredential.integration == "demand_feed")
         ).scalar_one() == 0
 
     # ---- The store outside Postgres (L5 photos): KEY NAMESPACING only. This

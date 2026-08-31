@@ -24,7 +24,12 @@ from usali.models import Timecard
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from usali.notifications import Notifier, notifier_from_settings
 from usali.photo_store import LocalPhotoStore
-from usali.qbo_client import QboClient
+from usali.qbo_client import (
+    QboClient,
+    QboError,
+    QboUnreachable,
+    StaticTokenStore,
+)
 from usali.roster_seed import RosterError, load_roster, seed_roster
 from usali.stage import stage_records
 from usali.tenancy import FOUNDING_ORG_ID, OrgBoundSessionFactory
@@ -553,7 +558,7 @@ def _qbo_client_from_settings() -> QboClient:
         settings.qbo_client_id,
         settings.qbo_client_secret,
         settings.qbo_realm_id,
-        settings.qbo_refresh_token,
+        StaticTokenStore(settings.qbo_refresh_token),
     )
 
 
@@ -605,13 +610,32 @@ def qbo_push_cmd(
         except ValueError as exc:
             typer.echo(f"FAILED: {exc}", err=True)
             raise typer.Exit(code=1) from exc
-        except httpx.HTTPError as exc:
-            # Connection refused / DNS failure / timeout — the QBO endpoint
-            # itself is unreachable, not a per-date outcome: fail loudly.
+        except (httpx.HTTPError, QboUnreachable) as exc:
+            # The QBO endpoint itself is unreachable — connection refused, DNS
+            # failure, timeout — not a per-date outcome: fail loudly and
+            # record nothing.
+            #
+            # Both types, because the same condition now arrives two ways: as
+            # a bare httpx error from the API calls, and as QboUnreachable
+            # from the TOKEN grant, which wraps transport failures so the
+            # unauthenticated OAuth callback cannot 500 on them (2026-08-31).
+            # The host comes from settings, never from the exception: this is
+            # an operator tool and naming the configured endpoint is the whole
+            # value of the message, but the exception's own text carries the
+            # RESOLVED upstream address, which is why the wrapper drops it.
             typer.echo(
                 f"FAILED: cannot reach QBO at {get_settings().qbo_base_url}: {exc}",
                 err=True,
             )
+            raise typer.Exit(code=1) from exc
+        except QboError as exc:
+            # Every refusal the client itself raises: a spent or revoked
+            # refresh token, a 401, a fault from Intuit — and, since
+            # 2026-08-31, an unreachable TOKEN endpoint too (the grant now
+            # wraps httpx errors so the unauthenticated OAuth callback cannot
+            # 500 on them). There was no handler here at all before that, so
+            # an ordinary `invalid_grant` reached the operator as a traceback.
+            typer.echo(f"FAILED: {exc}", err=True)
             raise typer.Exit(code=1) from exc
     any_failed = False
     for d, result in results:

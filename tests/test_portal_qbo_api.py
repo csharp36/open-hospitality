@@ -2,13 +2,22 @@
 
 Endpoint tests over the seeded six-PDF database with the QBO side served by
 the in-process mock through ``SyncASGITransport`` — the portal's client factory
-is injected, so the real shared-client wiring in ``create_app`` is exercised
-end to end (two pushes through the SAME app prove the rotated refresh token
-survives across requests; a per-request client would invalid_grant on the
-second push). Also: the CPA pack's explicit error mapping (unknown property is
-a plain ValueError, NOT a NoFactsError — mapped to 404 by message), the
-structured unmapped-GL 422 worklist, the 502 wrap for an unreachable QBO, and
-the no-float walker over every new payload.
+is injected, so the real per-request wiring in ``create_app`` is exercised end
+to end (three pushes through the SAME app build THREE clients over ONE token
+store, and prove the rotated refresh token survives across them).
+
+That used to read the other way round: before OH-17 ``create_app`` memoized one
+shared client for the app's lifetime because the rotated token lived in client
+MEMORY, so a per-request client would ``invalid_grant`` on the second push.
+``DbTokenStore`` moved the lineage onto the tenant's credential row, which is
+what let the memoizer go — and had to go, because one process-wide client is
+one tenant's connection handed to every tenant.
+
+Also: the CPA pack's explicit error mapping (unknown property is a plain
+ValueError, NOT a NoFactsError — mapped to 404 by message), the structured
+unmapped-GL 422 worklist, the 502 wrap for an unreachable QBO, the loud
+refusal when the tenant has no accounting credential, and the no-float walker
+over every new payload.
 """
 
 from decimal import Decimal
@@ -22,10 +31,12 @@ from sqlalchemy import Engine, update
 from sqlalchemy.orm import Session
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
 from usali.db import make_session_factory
-from usali.models import UsaliFinancialFact
-from usali.qbo_client import QboClient, SyncASGITransport
+from usali.mapping.property_registry import DEFAULT_ORG_ALIAS
+from usali.models import Organization, Property, UsaliFinancialFact
+from usali.qbo_client import QboClient, StaticTokenStore, SyncASGITransport
 from usali.qbo_mock import create_mock_qbo
 from usali.server import create_app
 
@@ -84,28 +95,35 @@ def client(
 ) -> TestClient:
     """Portal app whose QBO client factory targets the in-process mock.
 
-    The refresh token is bootstrapped exactly ONCE, outside the factory, and
-    every factory call closes over that single token. That is what makes the
-    rotation test a real regression guard: the first client's refresh consumes
-    (rotates) the token, so if `create_app` called the factory per request
-    instead of sharing one client, the second factory-built client would
-    refresh with the already-consumed token -> invalid_grant -> failed push.
+    The refresh token is bootstrapped exactly ONCE, outside the factory, into
+    ONE `StaticTokenStore` that every client the factory builds SHARES. That
+    store is the test's stand-in for `integrations.DbTokenStore`: a durable
+    per-tenant lineage that outlives any single client, which is precisely
+    what OH-17 put on the credential row.
+
+    Sharing the STORE (and not the client) is what keeps the rotation test a
+    real regression guard. The first push's refresh consumes and rotates the
+    bootstrap token and writes the replacement back to the store; the second
+    request builds a NEW client, loads the rotated token from that same store,
+    and succeeds. Give each client its own `StaticTokenStore(token)` instead
+    and the second push `invalid_grant`s — that failure is the whole point of
+    the port, so do not "simplify" this back into a per-client store.
     (Bootstrapping INSIDE the factory would mint every client its own fresh
-    token — the mock's authorization_code grant is repeatable — and mask
-    exactly that regression.) `factory_calls` counts invocations so the
-    multi-push test can also assert the factory ran exactly once.
+    token — the mock's authorization_code grant is repeatable — and mask the
+    regression just as thoroughly.) `factory_calls` counts invocations so the
+    multi-push test can assert the factory now runs once PER REQUEST.
     """
-    token = _bootstrap_refresh_token(mock_app)
+    store = StaticTokenStore(_bootstrap_refresh_token(mock_app))
     factory_calls: list[None] = []
 
-    def factory() -> QboClient:
+    def factory(_session_factory: Any = None) -> QboClient:
         factory_calls.append(None)
         return QboClient(
             "http://mock-qbo",
             "client",
             "secret",
             REALM,
-            token,
+            store,
             transport=SyncASGITransport(mock_app),
         )
 
@@ -254,7 +272,7 @@ def test_qbo_preview_no_facts_is_404_and_bad_date_is_422(client):
 # --- POST /api/qbo/push + GET /api/qbo/status ---------------------------------------
 
 
-def test_push_status_repush_and_shared_client_rotation(client, mock_app):
+def test_push_status_repush_and_rotation_across_per_request_clients(client, mock_app):
     # First write action of the portal: push HISJ.
     r = client.post("/api/qbo/push", json={"property": "HISJ", "date": DAY})
     assert r.status_code == 200, r.text
@@ -270,16 +288,19 @@ def test_push_status_repush_and_shared_client_rotation(client, mock_app):
     assert len(_stored_jes(mock_app)) == 1
 
     # A second push through the SAME app (the seeded corpus has one business
-    # date, so a different PROPERTY) proves the shared client survives refresh-
-    # token rotation: the fixture's single bootstrap token was consumed by the
-    # first push's refresh, so a per-request client would invalid_grant here.
+    # date, so a different PROPERTY) proves the rotated refresh token survives
+    # ACROSS CLIENTS: the fixture's single bootstrap token was consumed by the
+    # first push's refresh, and this request is served by a brand-new client
+    # that can only succeed by loading the rotation from the shared store.
     r = client.post("/api/qbo/push", json={"property": "SSSJ", "date": DAY})
     assert r.status_code == 200, r.text
     assert r.json() == {"status": "pushed", "qbo_je_id": "2", "message": None}
     assert len(_stored_jes(mock_app)) == 2
-    # Belt and braces: three pushes, ONE factory call — the app built exactly
-    # one client and shared it.
-    assert len(client.qbo_factory_calls) == 1
+    # Belt and braces: three pushes, THREE factory calls — OH-17 deleted the
+    # `_shared` memoizer, so each request resolves its own client from the
+    # ACTIVE ORG's credential row. One process-wide client would be one
+    # tenant's QBO connection serving every tenant.
+    assert len(client.qbo_factory_calls) == 3
 
     # The push ledger over the API, unfiltered and filtered.
     r = client.get("/api/qbo/status")
@@ -332,8 +353,10 @@ def test_push_no_facts_is_404_and_bad_body_is_422(client):
 def test_push_unreachable_qbo_is_502(db_engine, db_session, seed_six_pdfs, tmp_path):
     # Nothing listens on port 1: the transport error is wrapped as a clear 502,
     # not a raw httpx traceback (a 500), and nothing is recorded in the ledger.
-    def factory() -> QboClient:
-        return QboClient("http://127.0.0.1:1", "client", "secret", REALM, "token")
+    def factory(_session_factory: Any = None) -> QboClient:
+        return QboClient(
+            "http://127.0.0.1:1", "client", "secret", REALM, StaticTokenStore("token")
+        )
 
     grant_role(db_session, "accountant")
     client = _make_client(db_engine, tmp_path, factory)
@@ -341,6 +364,76 @@ def test_push_unreachable_qbo_is_502(db_engine, db_session, seed_six_pdfs, tmp_p
     assert r.status_code == 502, r.text
     assert "cannot reach QBO" in r.json()["detail"]
     assert client.get("/api/qbo/status").json() == []
+
+
+def test_an_unconnected_tenant_gets_a_503_naming_the_connect_surface(
+    db_engine, db_session, tmp_path
+):
+    """ADR-010: no accounting credential row => a loud, named refusal. It must
+    NOT fall back to the process-wide `USALI_QBO_*` env, which still holds a
+    working local-mock realm and token — a process-wide credential is not this
+    tenant's connection.
+
+    The world is built by hand rather than via `seed_six_pdfs`, because
+    `seed_properties` -> `ensure_default_org` PLANTS org 1's accounting row
+    from env (D-OH17.15). A test that used the seeded world would resolve a
+    real client and never reach the refusal — green, and proving nothing.
+
+    HISJ here has no financial facts either, so the 503 also pins the ORDER:
+    the tenant is told it is not connected before the push is attempted and
+    404s on empty facts. (The other edge of that order — a 403 for an
+    out-of-scope property, which must still beat the 503 — is pinned in
+    tests/test_workforce_api.py::test_qbo_push_property_scope_enforced.)"""
+    db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS,
+                                name="Org"))
+    db_session.add(Property(property_id="HISJ", org_id=1, name="HISJ",
+                            pms_source="OPERA", wage_jurisdiction="US-CA"))
+    db_session.commit()
+    grant_role(db_session, "accountant")
+
+    client = _make_client(db_engine, tmp_path, None)
+    r = client.post("/api/qbo/push", json={"property": "HISJ", "date": DAY})
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "/integrations" in detail
+    assert "USALI_QBO" not in detail
+
+
+def test_an_unreadable_accounting_credential_gets_its_own_named_503(
+    db_engine, db_session, tmp_path
+):
+    """ADR-005: rotating `field_encryption_key` leaves this tenant's stored
+    refresh token undecryptable. That is NOT the state above — the row is
+    there and the Intuit authorization is intact — so it must not be answered
+    with "not connected", which would send the operator to re-authorize a
+    connection that is fine while the real cause is never named.
+
+    Nor may it be a 500: the decrypt fails while the row is LOADED, deep
+    inside `resolve_qbo`, so without an explicit refusal this arrives as an
+    unhandled `InvalidTag` in the middle of a push.
+
+    The same world as the test above, plus one unreadable row — the only
+    difference between the two is which refusal the tenant is given."""
+    db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS,
+                                name="Org"))
+    db_session.add(Property(property_id="HISJ", org_id=1, name="HISJ",
+                            pms_source="OPERA", wage_jurisdiction="US-CA"))
+    db_session.commit()
+    grant_role(db_session, "accountant")
+    plant_credential(db_session, "accounting", "qbo", realm_id="realm-9",
+                     refresh_token=unreadable_ciphertext("intuit-token"))
+
+    client = _make_client(db_engine, tmp_path, None)
+    r = client.post("/api/qbo/push", json={"property": "HISJ", "date": DAY})
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "accounting" in detail
+    assert "decrypted" in detail
+    assert "not connected" not in detail
+    # Nothing about the credential itself reaches the wire — not the value
+    # nobody can read, and not the realm it points at.
+    assert "intuit-token" not in detail
+    assert "realm-9" not in detail
 
 
 def test_default_qbo_factory_builds_lazily(db_engine, db_session, founding_org, tmp_path):

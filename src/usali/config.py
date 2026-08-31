@@ -7,8 +7,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_DEFAULT_FIELD_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
 
+# URLs that must be HTTPS for a non-loopback host in production (see
+# _refuse_dev_secrets_in_prod). Mostly clients that transmit API credentials;
+# `qbo_authorize_url` is here for the mirror-image reason (OH-17, D-OH17.11) —
+# nothing is sent TO it by us, but the operator's browser carries the signed
+# `state` there, and a state read off the wire is a cross-tenant
+# credential-injection primitive for as long as its TTL runs.
 _CREDENTIAL_URL_FIELDS = (
     "qbo_base_url",
+    "qbo_authorize_url",
+    # The MIRROR of qbo_authorize_url, and it was missing until 2026-08-31.
+    # The browser carries the signed `state` OUT to the authorize URL and the
+    # authorization CODE back to this one (it is what `qbo_redirect_uri` is
+    # built from), so a cleartext value here registers a cleartext redirect
+    # URI with Intuit and puts the code on the wire. Guarding one direction
+    # and not the other was an asymmetry, not a decision.
+    "public_base_url",
     "gusto_base_url",
     "adp_base_url",
     "delphi_base_url",
@@ -37,6 +51,21 @@ class Settings(BaseSettings):
     qbo_client_secret: str = "mock"
     qbo_realm_id: str = "mock"
     qbo_refresh_token: str = "mock"
+    # Intuit's CONSENT host — a DIFFERENT host from the API base URL above
+    # (appcenter.intuit.com vs quickbooks.api.intuit.com), which is why it is
+    # its own setting and not a path appended to `qbo_base_url`.
+    #
+    # UNLIKE every other default here, this one points at NOTHING: `qbo-mock`
+    # serves no /connect/oauth2, so the default is a loopback placeholder, not
+    # a working local mock. GO-LIVE MUST SET IT — every deployment talking to
+    # real Intuit needs USALI_QBO_AUTHORIZE_URL=
+    # https://appcenter.intuit.com/connect/oauth2, and setting only
+    # USALI_QBO_BASE_URL hands operators a consent URL pointing at their own
+    # laptop. `_refuse_dev_secrets_in_prod` will NOT catch that: it exempts
+    # loopback hosts as development mocks, and this value is loopback.
+    # There is no companion redirect-URI setting: that is derived from
+    # `public_base_url` (see `integrations_api.qbo_redirect_uri`).
+    qbo_authorize_url: str = "http://127.0.0.1:9200/connect/oauth2"
 
     # Payroll provider (Pillar C2). Which adapter the app uses; defaults target
     # the local mocks (`usali gusto-mock` / `usali adp-mock`). Go-live points

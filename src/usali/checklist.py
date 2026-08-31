@@ -21,11 +21,11 @@ from dataclasses import dataclass
 from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import InstrumentedAttribute, Session
 
+from usali.integrations import ACCOUNTING, DEMAND_FEED, PAYROLL, has_credential
 from usali.models import (
     FiscalCalendar,
     IngestBatch,
     OrgChecklistOverride,
-    OrgSettings,
     Property,
     RoleAssignment,
     RoomInventory,
@@ -165,20 +165,32 @@ def _probe_fiscal_calendar(session: Session) -> bool:
 
 
 def _probe_payroll(session: Session) -> bool:
-    """D-B4.3: deliberately ignores `settings.payroll_provider`. A
-    process-wide credential is not this tenant's connection, so the honest
-    answer for a real tenant is "not connected". OH-17 replaces this body."""
-    return False
+    """OH-17 (D-OH17.8): the tenant's OWN payroll credential row, not
+    `settings.payroll_provider` — a process-wide credential is not this
+    tenant's connection. See `has_credential`'s docstring for why this is a
+    presence check rather than a live provider call."""
+    return has_credential(session, PAYROLL)
 
 
 def _probe_accounting(session: Session) -> bool:
-    """D-B4.3, as `_probe_payroll`. OH-17 replaces this body."""
-    return False
+    """D-OH17.8, as `_probe_payroll`, for the accounting credential."""
+    return has_credential(session, ACCOUNTING)
 
 
 def _probe_demand_feed(session: Session) -> bool:
-    row = session.execute(select(OrgSettings.crm_provider)).scalar_one_or_none()
-    return bool(row)
+    """`has_credential` picks out the one row (if any) this org holds for the
+    demand-feed slot — the same filter `crm_api._active_org_crm_provider`
+    uses (both delegate to `integrations.credential_for`), so the checklist
+    and the pull endpoint agree on what "connected" means.
+
+    "OFF" used to be `org_settings.crm_provider == ''`, an explicit sentinel
+    value on an always-present row. Under `OrgIntegrationCredential` there is
+    no sentinel: OFF is the ABSENCE of a row entirely (D-OH17.1 — a tenant
+    cannot hold a provider without its credentials, so an unconnected org
+    simply has no row for this integration). See `has_credential`'s
+    docstring for why this is a presence check rather than a live provider
+    call."""
+    return has_credential(session, DEMAND_FEED)
 
 
 def _probe_team(session: Session) -> bool:
@@ -187,15 +199,6 @@ def _probe_team(session: Session) -> bool:
     ).scalar_one()
     return count > 1
 
-
-# One constant, not three near-identical strings: the three integration items
-# share a single cause, and D-B4.8's point is that this is one class rather
-# than three special cases. OH-17 deletes it along with the `where=None`s.
-# Deliberately says nothing about dismissing: `demand_feed` can probe `done`
-# today, and "you can dismiss this" is false next to a Done badge (D-B4.4).
-_OH17_REASON = (
-    "No connect surface yet — per-tenant integration setup arrives with OH-17."
-)
 
 ITEMS: tuple[ChecklistItem, ...] = (
     ChecklistItem(
@@ -218,20 +221,35 @@ ITEMS: tuple[ChecklistItem, ...] = (
         key="payroll", title="Connect payroll",
         description="Optional. Compare estimated labor cost against the actual "
                     "gross-to-net from your provider.",
-        required=False, where=None, probe=_probe_payroll,
-        unavailable_reason=_OH17_REASON,
+        required=False, where="/integrations", probe=_probe_payroll,
     ),
     ChecklistItem(
         key="accounting", title="Connect QuickBooks Online",
         description="Optional. Push the journal entry behind your statement.",
-        required=False, where=None, probe=_probe_accounting,
-        unavailable_reason=_OH17_REASON,
+        required=False, where="/integrations", probe=_probe_accounting,
     ),
     ChecklistItem(
         key="demand_feed", title="Connect a demand feed",
         description="Optional. Pull group and event demand from Delphi or Tripleseat.",
+        # The one integration item WITHOUT a connect surface, and deliberately
+        # (OH-17, D-OH17.16). Credentials alone do not connect a demand feed:
+        # verification and every real pull need a property `crm_ref`, and the
+        # only writer of `crm_ref` is the repo's YAML seed
+        # (`mapping/property_registry.py:327`, first-insert-only) — no API
+        # sets it. Routing here to `/integrations` would send an operator to a
+        # form that cannot finish, which is exactly the drift D-B4.1 and D8.3
+        # exist to prevent, so it says so instead.
+        #
+        # The reason is worded to read correctly at ANY status (see `_status`):
+        # org 1 IS connected, because we put its crm_ref in our own YAML.
+        # Delete this pair — not just the string — the day `crm_ref` becomes
+        # settable; `test_demand_feed_is_the_one_item_without_a_surface`
+        # fails until both halves move together.
         required=False, where=None, probe=_probe_demand_feed,
-        unavailable_reason=_OH17_REASON,
+        unavailable_reason=(
+            "Needs a Delphi or Tripleseat property reference, which nothing in "
+            "the app can set yet — contact us to have it added."
+        ),
     ),
     ChecklistItem(
         key="team", title="Invite your team",

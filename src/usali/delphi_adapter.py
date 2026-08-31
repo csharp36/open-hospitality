@@ -79,6 +79,22 @@ class DelphiAdapter:
             emits_rooms_on_books=True, emits_group_rooms=True,
         )
 
+    def verify(self, external_ref: str) -> None:
+        """D-OH17.8: ONE narrow demand fetch — the same call the real pull
+        will make, over the smallest possible window. A provider that answers
+        this will answer the real pull, so this proves the subscription key
+        AND that the ref is reachable under it, which is what connect needs
+        before it stores anything.
+
+        Deliberately the real read path rather than a bespoke ping: a
+        separate probe endpoint would be a second thing to keep true, and it
+        could pass while `fetch_demand` 401s. The result is discarded — this
+        asks "does this work?", not "what is the demand?" — and the one-day
+        window keeps it from pulling a tenant's whole forward book to answer
+        that. GET-only, like everything on this port."""
+        today = date.today()
+        self.fetch_demand(external_ref, today, today)
+
     def fetch_demand(
         self, external_ref: str, start: date, end: date
     ) -> CrmDemandPull:

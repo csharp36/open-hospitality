@@ -7,6 +7,15 @@ _REAL_KEY = "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ=="  # 32 bytes, base
 
 _CREDENTIAL_URL_FIELDS = (
     "qbo_base_url",
+    # The Intuit CONSENT host (OH-17): the operator's browser carries the
+    # signed OAuth `state` there, so cleartext to a remote host hands out a
+    # live cross-tenant credential-injection token.
+    "qbo_authorize_url",
+    # Its mirror, added 2026-08-31: the browser carries the state OUT to the
+    # authorize host and the authorization CODE back to this one, which is
+    # what `qbo_redirect_uri` is built from. Guarding only the outbound half
+    # left the code's return trip unguarded.
+    "public_base_url",
     "gusto_base_url",
     "adp_base_url",
     "delphi_base_url",

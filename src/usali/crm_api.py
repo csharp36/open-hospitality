@@ -13,9 +13,12 @@ that may land in an HTTP log.
 
 Refusals that pass confinement are audited (`crm_refresh_refused`, the
 I6 lesson): a probe of the pull surface is itself an event. Feature-off
-is a loud 503 naming the config switch — the pinned shape (the plan
+is a loud 503 naming the connect surface — the pinned shape (the plan
 offered 404-the-router as the alternative): absence degrades to a named
-blocker, never to a path that looks like a typo.
+blocker, never to a path that looks like a typo. Since OH-17 the blocker
+it names is `/integrations` and no longer `USALI_CRM_PROVIDER`: the env
+var seeds org 1's credential row once and is read by no request path, so
+naming it would point an operator at a lever that does nothing.
 """
 
 from datetime import date, datetime, timedelta
@@ -24,7 +27,6 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from usali.auth import (
@@ -37,7 +39,13 @@ from usali.auth import (
 )
 from usali.crm_feed import CrmFeedError
 from usali.crm_pull import latest_demand, store_pull
-from usali.models import AuditEvent, OrgSettings, Property
+from usali.integrations import (
+    DEMAND_FEED,
+    CredentialUnreadable,
+    connected_provider,
+    not_connected_detail,
+)
+from usali.models import AuditEvent, Property
 from usali.workforce import assignment_scope
 
 require_crm_scheduler = require_grants(ORG_ADMIN, PROPERTY_GM)
@@ -59,19 +67,17 @@ def _session(request: Request) -> Session:
 
 
 def _active_org_crm_provider(session: Session) -> str:
-    """The demand provider for the request's ACTIVE org (L5 decision 5):
-    the org's `org_settings.crm_provider`, or '' (feature OFF) when it has
-    no row. The session is org-bound, so both L2 walls confine this SELECT
-    to exactly the active org's row — there is no env fallback, and none for
-    org != 1 in particular (the mutant L5 kills). '' degrades exactly like
-    feature-off did process-wide before L5.
+    """The demand provider for the request's ACTIVE org (OH-17). '' when the
+    org has no credential row — feature OFF, exactly as the old
+    `org_settings.crm_provider` sentinel degraded.
 
-    The bare `select(OrgSettings)` yields AT MOST one row because the walls
-    filter it to the active org (org_id is the PK) — that single-row
-    guarantee is the walls', NOT an explicit LIMIT/WHERE here; do not add a
-    redundant filter."""
-    row = session.execute(select(OrgSettings)).scalar_one_or_none()
-    return row.crm_provider if row is not None else ""
+    A one-line delegation kept as a NAMED function rather than inlined: it is
+    the name the L5 per-org pins and `checklist._probe_demand_feed` both cite
+    as "what the pull endpoint means by connected", and the session it takes
+    is org-bound, so both L2 walls confine the read to the active org — there
+    is no env fallback, and none for org != 1 in particular (the mutant L5
+    kills)."""
+    return connected_provider(session, DEMAND_FEED)
 
 
 def _require_property_access(
@@ -130,14 +136,34 @@ def refresh_demand(
             session.commit()
             raise HTTPException(status_code=status_code, detail=detail)
 
-        provider_name = _active_org_crm_provider(session)
-        feed = request.app.state.get_crm_feed(provider_name)
+        # TWO reads of the same demand_feed row per request: this one for the
+        # NAME (echoed in the response and stamped on the batch), and one more
+        # inside the seam, which takes a factory rather than a name and so
+        # opens its own short session. Accepted: it is two indexed PK-shaped
+        # reads on a request that is about to make an outbound HTTP call, and
+        # the alternative — passing the name in — is what OH-17 deliberately
+        # removed, because a name without its row is a provider selected
+        # without its credentials. The `or` below is redundant while both
+        # reads see the same committed row, and is kept as the honest
+        # predicate: either half being absent means OFF, and the J7 review
+        # found the divergent state (name present, seam yields None) was the
+        # one nobody tested.
+        try:
+            provider_name = _active_org_crm_provider(session)
+            feed = request.app.state.get_crm_feed(request_session_factory(request))
+        except CredentialUnreadable as exc:
+            # ADR-005: the feed IS connected; its subscription key just cannot
+            # be decrypted any more (a rotated `field_encryption_key`).
+            # Refused on the SAME audited path as feature-off but with its own
+            # detail — reporting it as "not connected" would send an operator
+            # to reconnect a feed that is fine and never name the rotation.
+            #
+            # BOTH reads are inside the block, not just the seam: the row is
+            # decrypted when it is LOADED, so the name lookup on the line
+            # above is the first thing to meet the failure.
+            refused(503, str(exc))
         if provider_name == "" or feed is None:
-            refused(
-                503,
-                "crm demand feed is not configured (set USALI_CRM_PROVIDER "
-                "to delphi or tripleseat)",
-            )
+            refused(503, not_connected_detail(DEMAND_FEED))
         if prop.crm_ref is None:
             refused(
                 409,
@@ -235,8 +261,17 @@ def get_demand(
         if session.get(Property, property_id) is None:
             raise HTTPException(status_code=404, detail="property not found")
 
-        provider_name = _active_org_crm_provider(session)
-        feed = request.app.state.get_crm_feed(provider_name)
+        try:
+            provider_name = _active_org_crm_provider(session)
+            feed = request.app.state.get_crm_feed(request_session_factory(request))
+        except CredentialUnreadable as exc:
+            # The ONE case this surface does not degrade for (ADR-005). Off
+            # degrades because there is no capability story to label the
+            # history with; an UNREADABLE credential has a provider, a
+            # history, and a cause worth naming. `configured: false` here
+            # would read as "the feed is switched off" to a scheduler and
+            # would hide the stored days behind that.
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
         if provider_name == "" or feed is None:
             # Stored history is deliberately NOT served while off: with
             # no configured provider there is no capability story to

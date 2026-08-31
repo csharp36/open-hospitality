@@ -155,11 +155,24 @@ describe('PayrollDashboardPage', () => {
   })
 
   it('refetches on a period change', async () => {
-    renderPage()
-    await screen.findAllByText('$2,000')
-    vi.mocked(getLaborAnalytics).mockClear()
-    await userEvent.click(screen.getByRole('button', { name: 'Last month' }))
-    // Both windows move together: the reading and what it is compared against.
-    expect(getLaborAnalytics).toHaveBeenCalledTimes(2)
+    // The clock is FROZEN mid-month, and that is load-bearing rather than
+    // tidiness. The page reads the real `new Date()`, and on the LAST day of a
+    // month "this month"'s comparison window (the prior month, clamped to
+    // today's day-of-month) is exactly "last month"'s primary window — so
+    // React Query serves one of the two from cache and only one new fetch
+    // fires. This test failed for real on 2026-08-31, on `main` as well: the
+    // page was behaving correctly and the assertion was assuming a date.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-08-12T09:00:00Z'))
+    try {
+      renderPage()
+      await screen.findAllByText('$2,000')
+      vi.mocked(getLaborAnalytics).mockClear()
+      await userEvent.click(screen.getByRole('button', { name: 'Last month' }))
+      // Both windows move together: the reading and what it is compared against.
+      expect(getLaborAnalytics).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

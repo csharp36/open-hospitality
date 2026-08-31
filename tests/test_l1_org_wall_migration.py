@@ -173,8 +173,9 @@ def test_l1_round_trips_on_an_empty_database():
             } | {
                 "ix_property_org_id",
                 # m1a0propcfg (#8): three more org-scoped tables, each with
-                # its own org_id index (unlike org_settings, whose org_id is
-                # the primary key and so carries no separate ix_ index).
+                # its own org_id index (unlike org_checklist_override and
+                # org_integration_credential, whose org_id is PART OF the
+                # primary key and so carries no separate ix_ index).
                 "ix_room_inventory_org_id",
                 "ix_out_of_order_room_org_id",
                 "ix_fiscal_calendar_org_id",

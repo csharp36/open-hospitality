@@ -8,8 +8,10 @@ protection is defined here, once.
 """
 
 import base64
+import binascii
 import os
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -35,6 +37,14 @@ _PHOTO_MASTER_ORG_ID = 1
 # photo test.
 _PHOTO_HKDF_INFO = b"usali-punch-photo-key-v1"
 
+# Domain-separation label for the OAuth `state` signing key (OH-17,
+# D-OH17.11). A fixed info string so this derivation can never collide with
+# the photo keys' — same master, different purpose, and the labels are what
+# keep them apart. Changing this string invalidates every state signed under
+# the old one, which is harmless (they live 10 minutes) but is the only thing
+# it does; it is not a rotation mechanism for the master key.
+_OAUTH_STATE_HKDF_INFO = b"usali-integration-oauth-state-v1"
+
 
 def _key() -> bytes:
     raw = base64.b64decode(get_settings().field_encryption_key)
@@ -49,10 +59,41 @@ def encrypt_str(plaintext: str) -> str:
     return base64.b64encode(nonce + ct).decode("ascii")
 
 
+class MalformedCiphertext(ValueError):
+    """A stored value is not something this module ever wrote.
+
+    Exists to be DISTINGUISHABLE from `_key()`'s ValueError, which the
+    callers must never swallow: a misconfigured key is a deployment fault
+    affecting every tenant and every column, and reporting it to one tenant
+    as "reconnect your integration" would send them chasing a problem they
+    cannot fix. Both used to be bare ValueError, so `integrations._UNREADABLE`
+    could only catch the subset that happened to fail base64 first — a long
+    plaintext raised binascii.Error and was named, a SHORT one ('mock', '',
+    'abcd') raised ValueError from the nonce split and escaped as a 500.
+    Found in review 2026-08-31; the coverage was accidental, not designed.
+    """
+
+
 def decrypt_str(token: str) -> str:
-    raw = base64.b64decode(token)
-    nonce, ct = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
-    return AESGCM(_key()).decrypt(nonce, ct, None).decode("utf-8")
+    """Decrypt a value written by `encrypt_str`.
+
+    Raises `MalformedCiphertext` for anything this module did not write —
+    a hand-edited row, a half-restored backup, a column populated before
+    ADR-005. Raises `InvalidTag` for a real ciphertext under the wrong key.
+    Lets `_key()`'s own ValueError through untouched: see above."""
+    key = _key()  # OUTSIDE the guard — a bad key is not a bad ciphertext.
+    try:
+        raw = base64.b64decode(token)
+        nonce, ct = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
+        return AESGCM(key).decrypt(nonce, ct, None).decode("utf-8")
+    except InvalidTag:
+        raise
+    except (ValueError, binascii.Error) as exc:
+        # binascii.Error IS a ValueError, named for the reader. The nonce
+        # length check inside AESGCM raises plain ValueError, as does a
+        # non-ASCII argument to b64decode and a ct that is not valid UTF-8
+        # after a (vanishingly unlikely) successful decrypt.
+        raise MalformedCiphertext(str(exc)) from exc
 
 
 def encrypt_bytes(data: bytes) -> bytes:
@@ -105,6 +146,31 @@ def _photo_key(org_id: int) -> bytes:
         salt=str(org_id).encode("ascii"),
         info=_PHOTO_HKDF_INFO,
     ).derive(master)
+
+
+def oauth_state_key() -> bytes:
+    """The HMAC key protecting the integration OAuth `state` parameter
+    (OH-17, D-OH17.11).
+
+    HKDF-derived from the master field-encryption key rather than configured
+    separately — the `_photo_key` precedent directly above: OH-17 introduces
+    no new deployment secret, and production already fail-fasts on the
+    committed dev-default master (`config._refuse_dev_secrets_in_prod`), so
+    this key inherits that guard for free.
+
+    Derived and NOT the master itself, which would be the tempting
+    one-liner: `state` signing and PII decryption would then be the same
+    compromise, and a forged state is a cross-tenant credential injection
+    (`integrations_api.callback`). The fixed info label is what separates
+    them; there is no salt because there is exactly one such key
+    process-wide — unlike the photo keys, which are per-org and salt on the
+    org id."""
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=_OAUTH_STATE_HKDF_INFO,
+    ).derive(_key())
 
 
 def encrypt_photo(data: bytes, org_id: int) -> bytes:

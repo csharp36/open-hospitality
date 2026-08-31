@@ -75,36 +75,43 @@ describe('ChecklistPage', () => {
   })
 
   // D-B4.8. The item is un-closeable today, and says so — it is never a link
-  // to a page where the feature is invisible.
+  // to a page where the feature is invisible. Synthetic: no real item has a
+  // null `where` as of OH-17 (Task 7), but the component must keep handling
+  // one, because D-B4.8's pair is a permanent property of the registry
+  // shape, not a fact about which items happen to be closeable today.
   it('renders an item with no `where` as a non-link carrying its reason', async () => {
     vi.mocked(getChecklist).mockResolvedValue({
       items: [item({
-        key: 'payroll', title: 'Connect payroll', required: false, where: null,
-        unavailable_reason: 'No connect surface yet — per-tenant integration setup arrives with OH-17.',
+        key: 'no_surface_item', title: 'An item with no connect surface',
+        required: false, where: null,
+        unavailable_reason: 'No connect surface yet.',
       })],
       open_count: 1, error_count: 0, all_clear: false,
     })
     renderSetup()
-    expect(await screen.findByText(/connect payroll/i)).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /connect payroll/i })).toBeNull()
-    expect(screen.getByText(/arrives with OH-17/i)).toBeInTheDocument()
+    expect(await screen.findByText(/an item with no connect surface/i)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /an item with no connect surface/i })).toBeNull()
+    expect(screen.getByText(/no connect surface yet/i)).toBeInTheDocument()
   })
 
-  // The reason is deliberately status-neutral: a demand_feed a tenant was
-  // provisioned with probes `done` while still having had no way to connect
-  // it, so Done and the reason legitimately appear together.
+  // The reason is deliberately status-neutral: an item a tenant was
+  // provisioned already connected to probes `done` while still having had no
+  // way to connect it ITSELF, so Done and the reason legitimately appear
+  // together. Synthetic, as above — no real item is both `done` and
+  // reason-carrying today.
   it('keeps the reason on a done item that still has no connect surface', async () => {
     vi.mocked(getChecklist).mockResolvedValue({
       items: [item({
-        key: 'demand_feed', title: 'Connect a demand feed', required: false,
-        where: null, unavailable_reason: 'No connect surface yet — arrives with OH-17.',
+        key: 'no_surface_item', title: 'An item with no connect surface',
+        required: false,
+        where: null, unavailable_reason: 'No connect surface yet.',
         status: 'done',
       })],
       open_count: 0, error_count: 0, all_clear: true,
     })
     renderSetup()
     expect(await screen.findByText(/^done$/i)).toBeInTheDocument()
-    expect(screen.getByText(/arrives with OH-17/i)).toBeInTheDocument()
+    expect(screen.getByText(/no connect surface yet/i)).toBeInTheDocument()
   })
 
   it('renders an errored item as unchecked, never as progress', async () => {
@@ -191,14 +198,16 @@ describe('ChecklistPage', () => {
   })
 })
 
-// Three of the seven items have no connect surface until OH-17 (D-B4.8), so
-// dismissal is the only action an operator can take on them: without it those
-// rows are dead ends and `all_clear` is unreachable for every tenant.
+// A dismissable item can lack a connect surface (D-B4.8's `where: null` /
+// `unavailable_reason` pair), and dismissal is the only action an operator
+// can take on one: without it that row is a dead end and `all_clear` is
+// unreachable for every tenant. Synthetic fixture below — no real item is
+// in this state as of OH-17 (Task 7), but the page must keep handling one.
 describe('ChecklistPage — dismissal', () => {
-  function payroll(over: Partial<ChecklistItem> = {}): ChecklistItem {
+  function noSurfaceItem(over: Partial<ChecklistItem> = {}): ChecklistItem {
     return item({
-      key: 'payroll', title: 'Connect payroll', required: false, where: null,
-      unavailable_reason: 'No connect surface yet — arrives with OH-17.',
+      key: 'no_surface_item', title: 'An item with no connect surface', required: false,
+      where: null, unavailable_reason: 'No connect surface yet.',
       ...over,
     })
   }
@@ -211,17 +220,17 @@ describe('ChecklistPage — dismissal', () => {
     // assertion is what pins the refetch rather than just the write.
     vi.mocked(getChecklist)
       .mockResolvedValueOnce({
-        items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+        items: [noSurfaceItem()], open_count: 1, error_count: 0, all_clear: false,
       })
       .mockResolvedValue({
-        items: [payroll({ status: 'dismissed' })], open_count: 0, error_count: 0, all_clear: true,
+        items: [noSurfaceItem({ status: 'dismissed' })], open_count: 0, error_count: 0, all_clear: true,
       })
     renderSetup()
 
-    await userEvent.click(await screen.findByRole('button', { name: /dismiss connect payroll/i }))
-    expect(dismissItem).toHaveBeenCalledWith('payroll')
+    await userEvent.click(await screen.findByRole('button', { name: /dismiss an item with no connect surface/i }))
+    expect(dismissItem).toHaveBeenCalledWith('no_surface_item')
     expect(
-      await screen.findByRole('button', { name: /restore connect payroll/i }),
+      await screen.findByRole('button', { name: /restore an item with no connect surface/i }),
     ).toBeInTheDocument()
   })
 
@@ -232,18 +241,18 @@ describe('ChecklistPage — dismissal', () => {
     vi.mocked(restoreItem).mockResolvedValue(undefined)
     vi.mocked(getChecklist)
       .mockResolvedValueOnce({
-        items: [payroll({ status: 'dismissed' })], open_count: 0, error_count: 0, all_clear: true,
+        items: [noSurfaceItem({ status: 'dismissed' })], open_count: 0, error_count: 0, all_clear: true,
       })
       .mockResolvedValue({
-        items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+        items: [noSurfaceItem()], open_count: 1, error_count: 0, all_clear: false,
       })
     renderSetup()
 
-    await userEvent.click(await screen.findByRole('button', { name: /restore connect payroll/i }))
-    expect(restoreItem).toHaveBeenCalledWith('payroll')
+    await userEvent.click(await screen.findByRole('button', { name: /restore an item with no connect surface/i }))
+    expect(restoreItem).toHaveBeenCalledWith('no_surface_item')
     expect(dismissItem).not.toHaveBeenCalled()
     expect(
-      await screen.findByRole('button', { name: /dismiss connect payroll/i }),
+      await screen.findByRole('button', { name: /dismiss an item with no connect surface/i }),
     ).toBeInTheDocument()
   })
 
@@ -266,12 +275,12 @@ describe('ChecklistPage — dismissal', () => {
   // server's 422 on a required item at least says something.
   it('offers no dismiss control on an item that is already done', async () => {
     vi.mocked(getChecklist).mockResolvedValue({
-      items: [payroll({ status: 'done' })], open_count: 0, error_count: 0, all_clear: true,
+      items: [noSurfaceItem({ status: 'done' })], open_count: 0, error_count: 0, all_clear: true,
     })
     renderSetup()
 
     const optional = await screen.findByRole('region', { name: /optional/i })
-    expect(within(optional).getByText(/connect payroll/i)).toBeInTheDocument()
+    expect(within(optional).getByText(/an item with no connect surface/i)).toBeInTheDocument()
     expect(within(optional).queryByRole('button', { name: /dismiss/i })).toBeNull()
   })
 
@@ -283,13 +292,13 @@ describe('ChecklistPage — dismissal', () => {
   // strand the operator on exactly the dead end D-B4.8 exists to kill.
   it('keeps the dismiss control on an item whose probe failed', async () => {
     vi.mocked(getChecklist).mockResolvedValue({
-      items: [payroll({ status: 'error', detail: 'OperationalError' })],
+      items: [noSurfaceItem({ status: 'error', detail: 'OperationalError' })],
       open_count: 0, error_count: 1, all_clear: false,
     })
     renderSetup()
 
     expect(
-      await screen.findByRole('button', { name: /dismiss connect payroll/i }),
+      await screen.findByRole('button', { name: /dismiss an item with no connect surface/i }),
     ).toBeInTheDocument()
   })
 
@@ -299,14 +308,14 @@ describe('ChecklistPage — dismissal', () => {
   it('offers no dismiss control to a non-admin', async () => {
     vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['property_gm'] })
     vi.mocked(getChecklist).mockResolvedValue({
-      items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+      items: [noSurfaceItem()], open_count: 1, error_count: 0, all_clear: false,
     })
     renderSetup()
 
     // Awaited first: queryByRole against a page that has not rendered yet
     // would pass for the wrong reason.
     const optional = await screen.findByRole('region', { name: /optional/i })
-    expect(within(optional).getByText(/connect payroll/i)).toBeInTheDocument()
+    expect(within(optional).getByText(/an item with no connect surface/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /dismiss/i })).toBeNull()
   })
 
@@ -315,12 +324,12 @@ describe('ChecklistPage — dismissal', () => {
   // and a registry edit could move a key across the required line.
   it('surfaces a refused dismissal instead of silently doing nothing', async () => {
     vi.mocked(getChecklist).mockResolvedValue({
-      items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+      items: [noSurfaceItem()], open_count: 1, error_count: 0, all_clear: false,
     })
     vi.mocked(dismissItem).mockRejectedValue(new ApiError(422, 'first_report is required'))
     renderSetup()
 
-    await userEvent.click(await screen.findByRole('button', { name: /dismiss connect payroll/i }))
+    await userEvent.click(await screen.findByRole('button', { name: /dismiss an item with no connect surface/i }))
     // Exact, not a loose regex: `ApiError.message` is "HTTP 422: first_report
     // is required", so an unanchored match would pass just as happily against
     // `error.message` and leave the house convention — an ApiError renders its
@@ -339,11 +348,11 @@ describe('ChecklistPage — dismissal', () => {
       }),
     )
     vi.mocked(getChecklist).mockResolvedValue({
-      items: [payroll()], open_count: 1, error_count: 0, all_clear: false,
+      items: [noSurfaceItem()], open_count: 1, error_count: 0, all_clear: false,
     })
     renderSetup()
 
-    const button = await screen.findByRole('button', { name: /dismiss connect payroll/i })
+    const button = await screen.findByRole('button', { name: /dismiss an item with no connect surface/i })
     await userEvent.click(button)
     expect(button).toBeDisabled()
     await userEvent.click(button)

@@ -11,9 +11,12 @@ Readers: `latest_demand` takes the NEWEST batch per stay-date (current
 demand); `demand_pace` pairs it with the previous batch's row (pace is a
 comparison of snapshots — the reason the table is append-only).
 
-Feature-off is PINNED here as a loud 503 naming the config switch (the
+Feature-off is PINNED here as a loud 503 naming the connect surface (the
 plan offered 404-the-router or refuse-loudly; a named refusal is the G1
-absence posture, and it cannot be confused with a typo'd path).
+absence posture, and it cannot be confused with a typo'd path). Since
+OH-17 the blocker it names is `/integrations`, not `USALI_CRM_PROVIDER`:
+the env var seeds org 1's credential row once and is never read at
+request time, so it is not a lever a tenant's operator can pull.
 """
 
 from datetime import date, datetime, timedelta
@@ -24,7 +27,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from tests.authkit import make_authkit
+from tests.credentials import plant_credential, unreadable_ciphertext
 from tests.grants import grant_role
+from tests.orgworld import set_demand_feed
 from usali.config import get_settings
 from usali.crm_feed import CrmCapabilities, CrmDemandDay, CrmFeedError, InMemoryCrmFeed
 from usali.crm_pull import demand_pace, latest_demand, store_pull
@@ -35,7 +40,6 @@ from usali.models import (
     CrmDemandSnapshot,
     CrmPullBatch,
     Organization,
-    OrgSettings,
     Property,
 )
 from usali.photo_store import InMemoryPhotoStore
@@ -47,12 +51,14 @@ def _seed(db_session):
     """HISJ carries a crm_ref; SSSJ deliberately has none (the refusal
     case). Same two-property shape as the schedule API tests."""
     db_session.add(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS, name="Org"))
-    db_session.flush()  # org row before its org_settings FK child
-    # L5: the provider is per-org now — org 1's org_settings row carries it,
+    db_session.flush()  # org row before its credential row's FK
+    # OH-17: the provider is per-org AND inseparable from its credentials —
+    # org 1's `org_integration_credential` demand_feed row carries both,
     # seeded from the env default exactly as ensure_default_org does (the
     # crm_on fixture sets USALI_CRM_PROVIDER=delphi; feature-off tests leave
-    # it empty). At runtime the crm router reads THIS row, not env.
-    db_session.add(OrgSettings(org_id=1, crm_provider=get_settings().crm_provider))
+    # it empty, which now means NO ROW rather than an empty sentinel). At
+    # runtime the crm router reads THIS row, not env.
+    set_demand_feed(db_session, get_settings().crm_provider)
     db_session.add_all([
         Property(property_id="HISJ", org_id=1, name="HISJ",
                  pms_source="OPERA", wage_jurisdiction="US-CA",
@@ -74,7 +80,13 @@ def _client(db_engine, tmp_path, verifier, feed):
         session_factory=make_session_factory(db_engine),
         token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
         photo_store=InMemoryPhotoStore(),
-        crm_feed_factory=lambda provider: feed if provider else None,
+        # OH-17: the seam takes the REQUEST'S org-bound session factory, not
+        # a provider name — the fake ignores it. Feature-off is no longer the
+        # factory's job to model (it used to return None for an empty
+        # provider): it is the ABSENCE of a credential row, which
+        # `_active_org_crm_provider` reads. Pass `feed=None` to model the
+        # divergent state (row present, factory yields nothing) instead.
+        crm_feed_factory=lambda _factory: feed,
     )
     return TestClient(app)
 
@@ -287,13 +299,25 @@ def test_a_property_without_crm_ref_refuses_by_name(
     assert refused.resource_id == "SSSJ"
 
 
-def test_feature_off_is_a_loud_503_naming_the_switch(
+def test_feature_off_is_a_loud_503_naming_the_integrations_page(
     db_engine, db_session, tmp_path, monkeypatch
 ):
     """THE feature-off pin (the plan offered two shapes; this is the one):
-    the router stays mounted and refuses loudly, naming the config switch
-    — an unconfigured feed can never read as a typo'd path or a silent
-    no-op. Nothing is written, and the refusal is audited."""
+    the router stays mounted and refuses loudly, naming the blocker — an
+    unconfigured feed can never read as a typo'd path or a silent no-op.
+    Nothing is written, and the refusal is audited.
+
+    OH-17 changed WHICH blocker it names. `USALI_CRM_PROVIDER` is no longer
+    the switch (it seeds org 1's credential row once and is never read at
+    request time), so naming it would send an operator to a lever that does
+    nothing for their tenant. ADR-010 wants a named blocker — it has to name
+    the RIGHT one, and that is the connect surface.
+
+    The audit assertion below is load-bearing, not decoration: it proves the
+    503 came from `refused()` inside the handler rather than from something
+    short-circuiting earlier (a 403 out of scope, a 404 unknown property),
+    which would leave this test green while the refusal it names never ran.
+    """
     monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
     _seed(db_session)
     verifier, mint = make_authkit()
@@ -309,7 +333,9 @@ def test_feature_off_is_a_loud_503_naming_the_switch(
     r = c.post("/api/crm/refresh", headers=_admin(mint),
                json={"property": "HISJ"})
     assert r.status_code == 503
-    assert "USALI_CRM_PROVIDER" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "/integrations" in detail
+    assert "USALI_CRM_PROVIDER" not in detail
     assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
     refused = db_session.execute(
         select(AuditEvent).where(AuditEvent.action == "crm_refresh_refused")
@@ -317,17 +343,49 @@ def test_feature_off_is_a_loud_503_naming_the_switch(
     assert refused.resource_id == "HISJ"
 
 
-def test_an_unknown_provider_name_fails_app_construction(
-    db_engine, tmp_path, monkeypatch
+
+def test_an_unreadable_credential_is_a_named_503_not_feature_off(
+    db_engine, db_session, tmp_path, monkeypatch
 ):
-    monkeypatch.setenv("USALI_CRM_PROVIDER", "hubspot")
-    with pytest.raises(RuntimeError, match="hubspot"):
-        create_app(
-            inbox_dir=tmp_path / "inbox",
-            processed_dir=tmp_path / "processed",
-            failed_dir=tmp_path / "failed",
-            session_factory=make_session_factory(db_engine),
-        )
+    """ADR-005 meets the pull. The demand feed IS connected — the row is
+    there — but `field_encryption_key` has been rotated, so its subscription
+    key cannot be decrypted.
+
+    It must NOT be reported as feature-off (the test above): that wording
+    tells an operator to connect a feed that is already connected, and hides
+    the rotation. And it must not be a 500 — the decrypt fails while the row
+    is loaded, on the FIRST read the handler does (`_active_org_crm_provider`,
+    before the seam is even called), so the refusal has to cover both reads.
+
+    The audit assertion is load-bearing for the same reason it is above: it
+    proves the 503 came from `refused()` inside the handler and not from an
+    exception handler somewhere upstream."""
+    monkeypatch.delenv("USALI_CRM_PROVIDER", raising=False)
+    _seed(db_session)  # no demand_feed row: the env is empty
+    plant_credential(db_session, "demand_feed", "delphi",
+                     subscription_key=unreadable_ciphertext("delphi-key"))
+    verifier, mint = make_authkit()
+    app = create_app(
+        inbox_dir=tmp_path / "inbox", processed_dir=tmp_path / "processed",
+        failed_dir=tmp_path / "failed",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+        photo_store=InMemoryPhotoStore(),
+    )
+    c = TestClient(app)
+
+    r = c.post("/api/crm/refresh", headers=_admin(mint),
+               json={"property": "HISJ"})
+    assert r.status_code == 503, r.text
+    detail = r.json()["detail"]
+    assert "demand_feed" in detail
+    assert "decrypted" in detail
+    assert "not connected" not in detail
+    assert "delphi-key" not in detail
+    assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
+    assert db_session.execute(
+        select(AuditEvent).where(AuditEvent.action == "crm_refresh_refused")
+    ).scalars().all()
 
 
 def test_a_provider_failure_is_502_audited_and_writes_nothing(

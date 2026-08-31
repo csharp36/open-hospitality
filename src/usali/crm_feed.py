@@ -44,12 +44,20 @@ SENSITIVE_FIELD_PATTERNS: tuple[str, ...] = (
 
 # The closed set of demand providers (Pillar J / L5, decision 5). The
 # EMPTY string is the OFF sentinel, NOT a provider — the full set config
-# may legally hold is ('',) + CRM_PROVIDERS. This constant is the ONE
-# source the app layer reads: `server` fail-fast + `_crm_feed_for_provider`
-# both reference it, so "add a provider" is a one-line change here. The
-# org_settings CHECK (models.OrgSettings and the l5a0orgsettings migration)
-# is the SCHEMA MIRROR of the same set — kept literal on purpose so the DB
-# refuses an unknown value independently of the app import.
+# may legally hold is ('',) + CRM_PROVIDERS. It is read by
+# `mapping.property_registry` (which validates the SEED value of
+# USALI_CRM_PROVIDER) and by the connect surfaces; OH-17 removed its two
+# former readers in `server` — the create_app fail-fast and
+# `_crm_feed_for_provider` — because the provider is no longer a
+# process-wide string but a column on the tenant's credential row.
+# `integrations.PROVIDERS` is now the app layer's working set, and it is
+# where "add a provider" starts. The
+# `ck_org_integration_credential_provider_fields` CHECK
+# (models.OrgIntegrationCredential and the b3a0integcred migration) is the
+# SCHEMA MIRROR of the same set — kept literal on purpose so the DB refuses
+# an unknown value independently of the app import. It mirrors more than the
+# names: OH-17 folded the demand provider into the credential row, so the
+# CHECK also pins WHICH secret column each provider must carry.
 CRM_PROVIDERS: tuple[str, ...] = ("delphi", "tripleseat")
 
 # Labels (block/event names) are bounded operator display text, the
@@ -163,6 +171,24 @@ class CrmDemandPull:
 class CrmFeed(Protocol):
     def capabilities(self) -> CrmCapabilities: ...
 
+    def verify(self, external_ref: str) -> None:
+        """Prove these credentials authenticate against one property's feed
+        (OH-17, D-OH17.8). Raises CrmFeedError on failure.
+
+        Exists because the connect endpoint must refuse a key that cannot
+        authenticate BEFORE storing it — otherwise a typo'd key becomes a
+        checklist item reading `done` over an integration that 502s on the
+        first pull. `capabilities()` cannot serve as that proof: it is a
+        purely local declaration that touches no network.
+
+        Needs a ref because every real CRM read is property-scoped — there is
+        no account-level ping to call instead, and a key that authenticates
+        against an account the tenant's property does not live in is still a
+        broken connection. Read-only BY CONTRACT (this port never writes at
+        all; the same posture as `fetch_demand`)."""
+        ...
+
+
     def fetch_demand(
         self, external_ref: str, start: date, end: date
     ) -> CrmDemandPull:
@@ -186,6 +212,12 @@ class InMemoryCrmFeed:
 
     def capabilities(self) -> CrmCapabilities:
         return self.feed_capabilities
+
+    def verify(self, external_ref: str) -> None:
+        # The fake authenticates against nothing, so there is nothing to
+        # prove — and deliberately NOT recorded in `calls`, which endpoint
+        # tests read as "what demand was pulled".
+        return None
 
     def fetch_demand(
         self, external_ref: str, start: date, end: date

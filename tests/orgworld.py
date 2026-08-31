@@ -11,13 +11,19 @@ world and mistake a fixture divergence for a leak.
 The two fixtures (`app_role_engine`, `two_tenant_world`) live in
 `tests/conftest.py` so any test file gets them without an import; the
 constants and the `rls_client` helper are imported from here.
+
+Since OH-17 this module also exports `set_demand_feed`, the one way any test
+connects or disconnects an org's demand feed. It lives here rather than in a
+file of its own because the two-org world was already its first caller, and
+one shared helper is what keeps six test files from open-coding six subtly
+different ideas of what "the feed is on" means in the schema.
 """
 
 from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
-from sqlalchemy import Engine, update
+from sqlalchemy import Engine, delete
 from sqlalchemy.orm import Session
 
 from tests.employees import make_employee
@@ -26,7 +32,7 @@ from tests.orgwall import app_role_url
 from usali.auth import TokenVerifier
 from usali.db import make_engine, make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali.models import OrgSettings, Property
+from usali.models import OrgIntegrationCredential, Property
 from usali.photo_store import InMemoryPhotoStore
 from usali.provisioning import provision_tenant
 from usali.tenancy import bind_org_context
@@ -38,19 +44,63 @@ ORG1_ADMIN = "org1-admin"
 ORG2_ADMIN_USERNAME = "org2-admin"
 
 
+# Which secret column each demand provider must carry, per
+# `ck_org_integration_credential_provider_fields`. A dict and not an
+# `if delphi else api_key` because that `else` would quietly hand a typo'd
+# provider Tripleseat's column and fail as a CHECK violation naming no
+# provider — the seed's `_seed_credential_fields` refuses the same way.
+_DEMAND_SECRET = {"delphi": "subscription_key", "tripleseat": "api_key"}
+
+
+def set_demand_feed(session: Session, provider: str, *, org_id: int = 1) -> None:
+    """Point one org's demand feed at `provider`, or disconnect it when
+    `provider` is ''. The OH-17 replacement for `update(OrgSettings)
+    .values(crm_provider=...)`: the credential row IS the connection, so
+    'off' is the ABSENCE of a row rather than an empty string.
+
+    DELETE-then-INSERT, not an upsert, and not by preference: the CHECK
+    requires the other provider's secret column to be NULL, so delphi ->
+    tripleseat structurally cannot be an UPDATE of `provider` alone. Any
+    "switch the provider" that is not also "clear the old secret" is a row
+    the database refuses — which is exactly the stale-credential leak
+    D-OH17.5 is there to prevent, so the helper models the real shape rather
+    than working around it.
+
+    The delete is unfiltered by provider on purpose: it scopes to (org,
+    demand_feed), the slot, so it clears whatever is connected there.
+    """
+    session.execute(
+        delete(OrgIntegrationCredential).where(
+            OrgIntegrationCredential.org_id == org_id,
+            OrgIntegrationCredential.integration == "demand_feed",
+        )
+    )
+    if provider:
+        if provider not in _DEMAND_SECRET:
+            raise ValueError(
+                f"unknown demand provider {provider!r} "
+                f"(expected {'|'.join(_DEMAND_SECRET)})"
+            )
+        session.add(OrgIntegrationCredential(
+            org_id=org_id, integration="demand_feed", provider=provider,
+            connected_by="test", **{_DEMAND_SECRET[provider]: "mock"},
+        ))
+    session.flush()
+
+
 def build_two_tenant_world(
     db_session: Session, app_role_engine: Engine
 ) -> SimpleNamespace:
     """Stand up the full two-org world on the OWNER session (`db_session`) with
     org 2 seeded through an org-2-bound APP-ROLE session; return the
     ids/subjects the tests assert against. The caller supplies a `founding_org`
-    (org 1 already exists with its `org_settings` row and the pilot alias)."""
+    (org 1 already exists with the pilot alias and the integration credential
+    rows `ensure_default_org` seeds from env)."""
     # ---- ORG 1 (the founding demo world) ----------------------------------
-    # Its provider is delphi (the L5 per-org config); one property, one
-    # employee, and an org-wide org_admin grant — the shape a real org 1 holds.
-    db_session.execute(
-        update(OrgSettings).where(OrgSettings.org_id == 1).values(crm_provider="delphi")
-    )
+    # Its demand feed is delphi (the OH-17 per-org credential row); one
+    # property, one employee, and an org-wide org_admin grant — the shape a
+    # real org 1 holds.
+    set_demand_feed(db_session, "delphi")
     db_session.add(Property(
         property_id="ONE1", org_id=1, name="Org One Grand", pms_source="opera"
     ))

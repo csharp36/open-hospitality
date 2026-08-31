@@ -112,6 +112,24 @@ AUTH_URL="$(gcloud run services describe usali-auth --project "${PROJECT}" \
 
 # Shared by the job and the service: same field key, same HPKE key,
 # same bucket — the job WRITES what the service must READ.
+#
+# NOTE, DELIBERATE (2026-08-31): `USALI_ENV` is NOT set here, so `Settings.env`
+# stays at its "dev" default and `config._refuse_dev_secrets_in_prod` — every
+# production fail-fast, including the committed-dev-key refusal and the
+# HTTPS-only check on credential URLs — does not run on this deployment.
+#
+# That is accepted while this is the demo: the guard would only refuse things
+# already accepted here (loopback mock endpoints, `USALI_CRM_PROVIDER=delphi`
+# with no key). It is safe TODAY only because the real
+# `USALI_FIELD_ENCRYPTION_KEY` is bound from Secret Manager below — drop that
+# binding and the app boots on the key committed to a public repo, from which
+# the OAuth state-signing key is derived, and NOTHING shouts.
+#
+# **When a real cert/staging/prod environment appears, set USALI_ENV=prod
+# there.** Absence looks exactly like a working dev deploy, so nothing will
+# remind you — this comment is the reminder. `is_production` treats any
+# unrecognised value as production, so a typo fails closed; only ABSENCE
+# fails open.
 COMMON_ENV="USALI_PII_HPKE_KEY_ID=cloud-demo-1"
 COMMON_ENV+=",CLOUDSQL_INSTANCE=${CLOUDSQL}"
 COMMON_ENV+=",USALI_PHOTO_STORE_GCS_BUCKET=${BUCKET}"

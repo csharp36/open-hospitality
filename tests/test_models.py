@@ -30,7 +30,7 @@ def test_tables_registered():
         "invite",
         "otp_challenge",
         "pms_interest_request",
-        "org_settings",
+        "org_integration_credential",
         "org_checklist_override",
         "property",
         "property_detection_alias",

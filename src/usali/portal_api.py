@@ -57,6 +57,11 @@ from usali.fiscal import (
     require_config,
     resolve_period,
 )
+from usali.integrations import (
+    ACCOUNTING,
+    CredentialUnreadable,
+    not_connected_detail,
+)
 from usali.inventory import InventoryInconsistent, InventoryNotConfigured
 from usali.models import Property, QboPushLedger
 from usali.performance import (
@@ -75,7 +80,7 @@ from usali.performance import (
     trends,
 )
 from usali.property_config_api import _adr_room_basis, _fiscal_config
-from usali.qbo_client import QboClient
+from usali.qbo_client import QboClient, QboUnreachable
 from usali.workforce import require_property_access, resolve_scope
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -96,18 +101,43 @@ SessionDep = Annotated[Session, Depends(_get_session)]
 
 
 def _get_qbo_client(request: Request) -> QboClient:
-    """The app's ONE shared QBO client (built lazily by `create_app`'s factory).
+    """THIS TENANT's QBO client, built from its own credential row (OH-17).
 
-    Refresh-token rotation lives in client memory (see the QboClient docstring),
-    so a per-request client would invalid_grant on the second push. `create_app`
-    wraps whatever factory it was given so this call always returns the same
-    instance for the app's lifetime.
+    No longer one shared instance for the app's lifetime. That memoizer
+    (`server._shared`) existed to protect the refresh-token rotation lineage,
+    which used to live in client memory; `integrations.DbTokenStore` moved the
+    lineage onto the row (D-OH17.7), so a per-request client is now correct —
+    and a shared one would be actively wrong the moment a second tenant
+    pushed, since it would be the FIRST tenant's connection.
+
+    Not connected is refused loudly and by name (ADR-010), never by falling
+    back to the process-wide `USALI_QBO_*` env: a process-wide credential is
+    not this tenant's connection.
+
+    Deliberately NOT wrapped in a `Depends`. It was one (`QboClientDep`) while
+    it could not fail; now that it can, a dependency would resolve BEFORE the
+    push endpoint's own property-scope check and turn an out-of-scope caller's
+    403 into a 503 about the tenant's integrations. Callers invoke it from the
+    handler body, after their refusals. Pinned by
+    tests/test_workforce_api.py::test_qbo_push_property_scope_enforced.
     """
-    client: QboClient = request.app.state.get_qbo_client()
+    try:
+        client: QboClient | None = request.app.state.get_qbo_client(
+            request_session_factory(request)
+        )
+    except CredentialUnreadable as exc:
+        # ADR-005: the row is there and the Intuit authorization is intact —
+        # only the ciphertext is unreadable, because `field_encryption_key`
+        # was rotated. Beside the `None` branch and NOT folded into it: this
+        # tenant must not be told to connect an accounting integration it
+        # already has. `str(exc)` names the integration and the likely cause
+        # and carries no credential material (see `CredentialUnreadable`).
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if client is None:
+        raise HTTPException(
+            status_code=503, detail=not_connected_detail(ACCOUNTING)
+        )
     return client
-
-
-QboClientDep = Annotated[QboClient, Depends(_get_qbo_client)]
 
 
 def _run(query: Callable[[], T]) -> T:
@@ -672,7 +702,10 @@ def _run_qbo(action: Callable[[], T]) -> T:
     message; transport failures reaching QBO (`httpx.HTTPError` — QBO down,
     DNS, refused connection) -> 502 with a clear detail instead of an unhandled
     500 traceback. HTTP-level rejections QBO itself sends are NOT transport
-    errors: `push_day` turns those (`QboError`) into a `failed` PushResult.
+    errors: `push_day` turns those (`QboError`) into a `failed` PushResult —
+    and `QboUnreachable`, the token grant's transport failure, is deliberately
+    NOT one of those: `push_day` re-raises it so it lands here, because an
+    unreachable endpoint is not a per-date outcome.
     """
     try:
         return action()
@@ -680,7 +713,13 @@ def _run_qbo(action: Callable[[], T]) -> T:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except qbo_push.UnmappedGlError as exc:
         raise HTTPException(status_code=422, detail=_unmapped_gl_detail(exc)) from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, QboUnreachable) as exc:
+        # Both types, same condition. `QboUnreachable` is what the TOKEN grant
+        # raises since 2026-08-31 — the client wraps transport failures there
+        # so the unauthenticated OAuth callback cannot 500 on them — while the
+        # API calls still surface bare httpx errors. Listing only the first
+        # would send a refused connection to the token endpoint out as a 500,
+        # which is the exact thing this handler exists to prevent.
         raise HTTPException(
             status_code=502, detail=f"cannot reach QBO: {exc}"
         ) from exc
@@ -1215,7 +1254,7 @@ def qbo_preview(
 @router.post("/qbo/push")
 def qbo_push_endpoint(
     session: SessionDep,
-    client: QboClientDep,
+    request: Request,
     body: QboPushRequest,
     principal: Principal = Depends(require_operator),
 ) -> PushResultModel:
@@ -1230,10 +1269,17 @@ def qbo_push_endpoint(
     query param, so the check lives here rather than in `require_property_access`
     (which reads `Query(alias="property")`). Enforced BEFORE the push so an
     out-of-scope caller 403s without ever touching QBO.
+
+    ORDER MATTERS, and is why the client is resolved in this body rather than
+    through a dependency (OH-17): `_get_qbo_client` 503s when the tenant has no
+    accounting credential, and as a `Depends` it would run before the scope
+    check above and answer an out-of-scope caller with the tenant's integration
+    state instead of the refusal they earned.
     """
     scope = resolve_scope(principal, session)
     if not scope.allows_property(body.property_id):
         raise HTTPException(status_code=403, detail="property out of scope")
+    client = _get_qbo_client(request)
     result = _run_qbo(
         lambda: qbo_push.push_day(
             session, client, property_id=body.property_id, business_date=body.business_date
