@@ -969,8 +969,11 @@ Append inside the `describe` block:
     renderPage()
 
     const token = await screen.findByLabelText('api_token')
-    // Secret fields are password inputs and start empty even when connected:
-    // the API never returns a value, and PUT is a full replace.
+    // Secret fields are password inputs and start empty even when connected.
+    // Two Python tests are what make that safe rather than optimistic:
+    // test_the_provider_block_carries_no_secret_values (no value ever comes
+    // back) and test_connect_nulls_the_previous_providers_fields (the
+    // write is total), both in tests/test_integrations_api.py.
     expect(token).toHaveAttribute('type', 'password')
     expect(token).toHaveValue('')
 
