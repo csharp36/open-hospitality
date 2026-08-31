@@ -44,12 +44,11 @@ describe('lastRoute restores only routes the SPA serves', () => {
   })
 
   it('falls back to HOME for a remembered route with no route to serve it', () => {
-    // The live case, not a hypothetical: the checklist's three integration
-    // items link to /integrations, whose page is a later plan. Without this
-    // guard one click from /setup pins Not Found onto every bare-origin load
-    // and every post-login return.
-    rememberRoute('/integrations')
-    expect(isServedPath('/integrations')).toBe(false)
+    // Without this guard, a remembered route that stops resolving (removed,
+    // renamed, or never registered) pins Not Found onto every bare-origin
+    // load and every post-login return.
+    rememberRoute('/not-a-real-route')
+    expect(isServedPath('/not-a-real-route')).toBe(false)
     expect(lastRoute(isServedPath)).toBe(HOME)
   })
 

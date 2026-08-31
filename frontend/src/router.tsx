@@ -23,6 +23,7 @@ import KioskDevicesPage from './pages/KioskDevicesPage'
 import KioskPage from './pages/KioskPage'
 import PropertyConfigPage from './pages/PropertyConfigPage'
 import ChecklistPage from './pages/ChecklistPage'
+import IntegrationsPage from './pages/IntegrationsPage'
 import PerformancePage from './pages/PerformancePage'
 import TimecardsPage from './pages/TimecardsPage'
 import PayRunsPage from './pages/PayRunsPage'
@@ -160,6 +161,29 @@ const employeesRoute = createRoute({
   component: EmployeesPage,
 })
 
+/**
+ * The QBO callback lands here with its result in the URL:
+ * `?connected=accounting` on success, `?error=…` on a refused or expired
+ * grant. `_CONNECTED_REDIRECT` and `_error_redirect` in
+ * src/usali/integrations_api.py are where those two URLs are built. Both
+ * params are cleared by the page once shown, so a reload does not
+ * re-announce a connection that happened minutes ago.
+ */
+export type IntegrationsSearch = {
+  connected?: string
+  error?: string
+}
+
+const integrationsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/integrations',
+  component: IntegrationsPage,
+  validateSearch: (search: Record<string, unknown>): IntegrationsSearch => ({
+    connected: optionalString(search.connected),
+    error: optionalString(search.error),
+  }),
+})
+
 const kioskRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/kiosk',
@@ -246,6 +270,7 @@ const childRoutes = [
   reportsRoute,
   qboRoute,
   employeesRoute,
+  integrationsRoute,
   kioskRoute,
   timecardsRoute,
   kioskDevicesRoute,
