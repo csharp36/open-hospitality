@@ -4,6 +4,7 @@
 
 import type {
   AdrRoomBasis,
+  AuthorizeUrl,
   Department,
   AvailabilityNote,
   CoverageReport,
@@ -21,6 +22,7 @@ import type {
   ForecastSaved,
   ForecastUpsertBody,
   IngestResult,
+  IntegrationsResponse,
   InventoryRow,
   JePlan,
   EnrolledKiosk,
@@ -1007,4 +1009,40 @@ export async function postPunch(
   })
   if (!res.ok) await raiseApiError(res)
   return res.json() as Promise<Punched>
+}
+
+// --- Integrations (OH-17) -----------------------------------------------------
+// The gate is server-side — `require_grants(ORG_ADMIN)` in
+// src/usali/integrations_api.py is where it is enforced, not here. The read
+// carries the provider specs, so this client holds no credential field list
+// of its own; `connect` sends whatever the spec named.
+
+export function getIntegrations(): Promise<IntegrationsResponse> {
+  return getJson('/api/integrations')
+}
+
+export async function connectIntegration(
+  integration: string,
+  body: { provider: string } & Record<string, string>,
+): Promise<void> {
+  const res = await fetch(`/api/integrations/${integration}`, {
+    method: 'PUT',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res) // 422 carries the refusal wording
+}
+
+export async function disconnectIntegration(integration: string): Promise<void> {
+  const res = await fetch(`/api/integrations/${integration}`, {
+    method: 'DELETE',
+    headers: await authHeaders(),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+}
+
+export function getAuthorizeUrl(): Promise<AuthorizeUrl> {
+  return getJson('/api/integrations/accounting/authorize')
 }
