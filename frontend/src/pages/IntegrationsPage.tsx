@@ -22,9 +22,15 @@ function IntegrationCard({ item }: { item: Integration }) {
   return (
     <Card>
       <h2 className="text-sm font-semibold">{title}</h2>
-      {item.connected && connected !== undefined ? (
+      {item.connected ? (
         <div className="mt-2 space-y-1 text-sm">
-          <p>{connected.label}</p>
+          {/* `item.connected` alone decides this branch. The spec lookup can
+              miss — `providers` comes from the current PROVIDERS registry while
+              `provider` comes from the stored row — and when it does, the raw
+              key is a worse label but a true one. Saying "Not connected" for a
+              live credential would be the same kind of lie the 503 branch
+              above refuses to tell. */}
+          <p>{connected?.label ?? item.provider}</p>
           {Object.entries(item.identifiers).map(([name, value]) => (
             <p key={name} className="text-ink-muted">
               {name}: <span className="tabular-nums">{value}</span>

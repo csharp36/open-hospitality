@@ -89,6 +89,24 @@ describe('IntegrationsPage', () => {
     renderPage()
     expect(await screen.findByText('QuickBooks Online')).toBeInTheDocument()
     expect(screen.getByText('4620816365')).toBeInTheDocument()
+    expect(screen.getByText(/^realm_id:/)).toBeInTheDocument()
+  })
+
+  it('still reads as connected when its provider is not in the spec list', async () => {
+    // A provider retired from PROVIDERS while a tenant's row still names it.
+    // The label degrades to the raw key; the card must not claim the tenant
+    // has nothing connected.
+    vi.mocked(getIntegrations).mockResolvedValue({
+      items: [qbo({
+        connected: true,
+        provider: 'some_retired_provider',
+        identifiers: { realm_id: '4620816365' },
+        connected_at: '2026-08-31T10:00:00',
+      })],
+    })
+    renderPage()
+    expect(await screen.findByText('some_retired_provider')).toBeInTheDocument()
+    expect(screen.queryByText('Not connected')).not.toBeInTheDocument()
   })
 
   it('shows an unconnected integration as not connected', async () => {
