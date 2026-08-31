@@ -199,7 +199,7 @@ each see only their own language:
   `/integrations`, `/employees`), failing in both directions, as
   `test_demand_feed_is_the_one_item_without_a_surface` already does for the
   null half.
-- `frontend/src/router.test.ts::test_every_checklist_route_exists` — asserts
+- `frontend/src/router.test.ts`, `checklist routes > are all served by the SPA` — asserts
   each of those paths resolves in the route tree, naming its Python
   counterpart in a comment so the pair is greppable from either side.
 
