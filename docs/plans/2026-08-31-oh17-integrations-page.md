@@ -342,7 +342,7 @@ def test_a_refused_grant_redirects_with_intuits_own_words(oauth_client, monkeypa
     about another tenant — and it is the difference between "you declined" and
     "that code is already spent", which an operator needs."""
     def _refuse(code):
-        raise QboError("access_denied: the user declined")
+        raise QboError(400, "access_denied: the user declined")
     oauth_client.app.state.exchange_qbo_code = _refuse
 
     resp = oauth_client.get(_CALLBACK, params={
@@ -423,6 +423,14 @@ In `callback`, replace each failure `raise` with the matching return:
 ```
 
 Leave the `spec is None` branch as an `HTTPException` — it is a server misconfiguration, not an operator-facing outcome, and it is already `pragma: no cover`. Keep the long comment above the `QboError` branch where it is; only its final statement changes.
+
+**Also update the four pre-existing tests in the same file that assert `400` on
+these paths** — `test_a_forged_state_cannot_bind_a_credential_to_another_tenants_org`,
+`test_an_expired_state_cannot_bind_a_credential`, `test_a_refused_grant_stores_nothing`,
+and `test_the_callback_is_mounted_outside_the_operator_gates` (whose docstring also
+names "400, your state did not verify"). Change the status number and **nothing
+else**: what those tests actually pin — no row written, the code spent once, the
+gate structure — is unchanged by this task and must stay asserted.
 
 - [ ] **Step 6: Run them and watch them pass**
 
