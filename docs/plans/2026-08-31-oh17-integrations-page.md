@@ -882,7 +882,7 @@ function IntegrationCard({ item }: { item: Integration }) {
       <h2 className="text-sm font-semibold">{title}</h2>
       {item.connected && connected !== undefined ? (
         <div className="mt-2 space-y-1 text-sm">
-          <p>{connected.label}</p>
+          <p>{connected?.label ?? item.provider}</p>
           {Object.entries(item.identifiers).map(([name, value]) => (
             <p key={name} className="text-ink-muted">
               {name}: <span className="tabular-nums">{value}</span>
@@ -1093,7 +1093,10 @@ function IntegrationCard({ item, onDone }: { item: Integration; onDone: () => vo
   return (
     <Card>
       <h2 className="text-sm font-semibold">{title}</h2>
-      {item.connected && connected !== undefined ? (
+      {/* `item.connected` ALONE decides this branch — see the Task 8 note
+          below. The spec lookup may miss; that degrades the label, never the
+          connected/disconnected answer. */}
+      {item.connected ? (
         <div className="mt-2 space-y-1 text-sm">
           <p>{connected.label}</p>
           {Object.entries(item.identifiers).map(([name, value]) => (
@@ -1128,6 +1131,13 @@ and in the page body, pass the invalidation down:
 ```
 
 with `<IntegrationCard key={item.integration} item={item} onDone={onDone} />`.
+
+**Task 8 note.** An earlier draft of this snippet guarded the connected branch
+with `item.connected && connected !== undefined`. That shipped in Task 8 and was
+removed in `8df9e02`: it rendered "Not connected" for a live credential whose
+provider had dropped out of `PROVIDERS`, the mirror image of the lie the 503
+branch refuses to tell. `still reads as connected when its provider is not in
+the spec list` fails if it returns.
 
 - [ ] **Step 4: Run them and watch them pass**
 
