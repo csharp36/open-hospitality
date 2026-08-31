@@ -114,6 +114,19 @@ rule stated at `integrations_api.py:604`.
 An operator whose state expired while they were at Intuit lands back on the
 page rather than on JSON, which is the main reason bad states redirect at all.
 
+Two residuals, both accepted and both recorded because they are the kind of
+thing a later reader would otherwise rediscover as a surprise:
+
+- **The detail is truncated at 200 characters** (`_MAX_ERROR_DETAIL`).
+  `qbo_client._error_message` bounds only its unparseable fallback, so a
+  structured fault body can be arbitrarily long, and a `Location` header past
+  a proxy's size limit turns this redirect into the 502 it exists to avoid.
+- **`QboError.status` reaches nobody.** The operator-facing text uses
+  `exc.message`, dropping the `QBO 400: ` prefix, and `integrations_api` has
+  no logger — so the upstream status is not recorded anywhere. That is a real
+  observability gap, not a claim that support has it elsewhere. Instrumenting
+  that branch is the fix if it ever matters.
+
 ## 5. The page
 
 **Route.** `/integrations`, search params `connected?: string` and
