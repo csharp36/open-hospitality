@@ -56,12 +56,10 @@ Append to `tests/test_integrations.py`:
 
 ```python
 def test_only_qbo_is_an_oauth_provider():
-    """The page branches on this flag instead of comparing against the string
-    "qbo" in TypeScript. An EXACT set, so a second OAuth provider has to come
-    here and be considered rather than silently rendering a credential form."""
-    from usali.integrations import PROVIDERS
-
-    assert [s.provider for s in PROVIDERS if s.oauth] == ["qbo"]
+    """An EXACT set: a second OAuth provider must be added here deliberately,
+    rather than falling through and being offered as an ordinary credential
+    form. The flag's only consumer today is this test."""
+    assert [s.provider for s in integ.PROVIDERS if s.oauth] == ["qbo"]
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -75,10 +73,10 @@ In `src/usali/integrations.py`, add to `ProviderSpec` after `plain_fields`:
 
 ```python
     plain_fields: tuple[str, ...]
-    # True when the credential is obtained by redirect rather than typed in.
-    # The read endpoint serves this so the page renders a Connect button and
-    # no inputs; without it the frontend would compare against "qbo", which
-    # is the closed set restated in another language.
+    # True when the credential is obtained by redirect rather than typed in,
+    # so a caller offering a form has to offer a redirect instead of inputs.
+    # PROVIDERS below is where the set of such providers is closed, and
+    # test_only_qbo_is_an_oauth_provider is what keeps it closed.
     oauth: bool = False
 ```
 
@@ -215,21 +213,11 @@ def test_each_served_field_is_flagged_secret_exactly_as_the_spec_says(
         assert secret == set(spec.secret_fields)
         assert plain == set(spec.plain_fields)
 
-
-def test_the_provider_block_carries_no_secret_values(integrations_client, db_session):
-    """The spec names the secret FIELDS; it must never carry their VALUES.
-    Planted first so the assertion has something real to miss."""
-    plant_credential(
-        db_session, "payroll", "gusto",
-        api_token="tok-do-not-leak", company_id="c-1",
-    )
-    raw = integrations_client.get("/api/integrations").text
-    assert "tok-do-not-leak" not in raw
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
 
-Run: `pytest tests/test_integrations_api.py -k "provider_specs or flagged_secret or no_secret_values" -v`
+Run: `pytest tests/test_integrations_api.py -k "provider_specs or flagged_secret" -v`
 Expected: FAIL — `KeyError: 'providers'`
 
 - [ ] **Step 3: Add the models**
@@ -293,7 +281,7 @@ Import `PROVIDERS` and `product_name` from `usali.integrations` alongside the ex
 
 - [ ] **Step 5: Run them and watch them pass**
 
-Run: `pytest tests/test_integrations_api.py -k "provider_specs or flagged_secret or no_secret_values" -v`
+Run: `pytest tests/test_integrations_api.py -k "provider_specs or flagged_secret" -v`
 Expected: PASS
 
 - [ ] **Step 6: Run the whole API suite — `extra="forbid"` makes a typo a 500, not a warning**
@@ -499,7 +487,7 @@ Append to `frontend/src/api/types.ts`:
 
 ```ts
 /** One credential field a provider needs. A `secret` field is write-only:
- * `tests/test_integrations_api.py::test_the_provider_block_carries_no_secret_values`
+ * `tests/test_integrations_api.py::test_no_secret_is_ever_on_the_wire`
  * is what holds the API to never returning its value, which is why an input
  * for one starts blank. */
 export type ProviderField = {
@@ -971,8 +959,7 @@ Append inside the `describe` block:
     const token = await screen.findByLabelText('api_token')
     // Secret fields are password inputs and start empty even when connected.
     // Two Python tests are what make that safe rather than optimistic:
-    // test_the_provider_block_carries_no_secret_values (no value ever comes
-    // back) and test_connect_nulls_the_previous_providers_fields (the
+    // test_no_secret_is_ever_on_the_wire (no value ever comes back) and test_connect_nulls_the_previous_providers_fields (the
     // write is total), both in tests/test_integrations_api.py.
     expect(token).toHaveAttribute('type', 'password')
     expect(token).toHaveValue('')
