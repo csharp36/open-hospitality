@@ -1136,8 +1136,9 @@ export interface Checklist {
 }
 
 // --- Integrations (OH-17) -----------------------------------------------------
-// Mirrors ProviderFieldModel/ProviderModel/IntegrationModel/IntegrationsModel/
-// AuthorizeUrlModel in src/usali/integrations_api.py field-for-field.
+// Shapes for the routes in src/usali/integrations_api.py: GET /api/integrations,
+// PUT/DELETE /api/integrations/{integration}, and
+// GET /api/integrations/accounting/authorize.
 
 /** One credential field a provider needs. A `secret` field is write-only:
  * `tests/test_integrations_api.py::test_no_secret_is_ever_on_the_wire`
