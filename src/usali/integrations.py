@@ -66,10 +66,10 @@ class ProviderSpec:
     provider: str
     secret_fields: tuple[str, ...]
     plain_fields: tuple[str, ...]
-    # True when the credential is obtained by redirect rather than typed in.
-    # The read endpoint serves this so the page renders a Connect button and
-    # no inputs; without it the frontend would compare against "qbo", which
-    # is the closed set restated in another language.
+    # True when the credential is obtained by redirect rather than typed in,
+    # so a caller offering a form has to offer a redirect instead of inputs.
+    # PROVIDERS below is where the set of such providers is closed, and
+    # test_only_qbo_is_an_oauth_provider is what keeps it closed.
     oauth: bool = False
 
     @property

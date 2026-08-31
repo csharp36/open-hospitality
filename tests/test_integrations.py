@@ -792,9 +792,7 @@ def test_the_orm_wall_alone_confines_credential_reads(db_engine, two_tenant_worl
 
 
 def test_only_qbo_is_an_oauth_provider():
-    """The page branches on this flag instead of comparing against the string
-    "qbo" in TypeScript. An EXACT set, so a second OAuth provider has to come
-    here and be considered rather than silently rendering a credential form."""
-    from usali.integrations import PROVIDERS
-
-    assert [s.provider for s in PROVIDERS if s.oauth] == ["qbo"]
+    """An EXACT set: a second OAuth provider must be added here deliberately,
+    rather than falling through and being offered as an ordinary credential
+    form. The flag's only consumer today is this test."""
+    assert [s.provider for s in integ.PROVIDERS if s.oauth] == ["qbo"]
