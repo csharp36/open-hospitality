@@ -146,6 +146,26 @@ describe('app shell', () => {
     expect(screen.queryByRole('link', { name: 'Weekly Schedule' })).not.toBeInTheDocument()
   })
 
+  it('shows Integrations link for org_admin', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['org_admin'] })
+    renderApp()
+    expect(await screen.findByRole('link', { name: 'Integrations' })).toBeInTheDocument()
+  })
+
+  it('hides Integrations link from a property_gm', async () => {
+    // The strongest non-admin the system has, and still not an org_admin:
+    // connecting a tenant's payroll is not a GM's call, and a nav entry is a
+    // promise about what this account can do.
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['property_gm'] })
+    renderApp()
+    // Waiting on SOS alone is vacuous: it renders before the role query
+    // settles, so the Integrations check below would pass even ungated.
+    // Weekly Schedule only appears once /api/me has resolved, so waiting on
+    // it first is what actually pins the assertion to post-resolution state.
+    await screen.findByRole('link', { name: 'Weekly Schedule' })
+    expect(screen.queryByRole('link', { name: 'Integrations' })).not.toBeInTheDocument()
+  })
+
   // A coming-soon entry is still a promise about what this account can do.
   // Payroll & Compensation is payroll_admin work, so a GM must not see it
   // waiting for them.
