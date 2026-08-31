@@ -14,7 +14,7 @@ vi.mock('../api/client', async (importOriginal) => ({
   getAuthorizeUrl: vi.fn(),
   getMe: vi.fn(),
 }))
-import { ApiError, connectIntegration, getIntegrations, getMe } from '../api/client'
+import { ApiError, connectIntegration, getAuthorizeUrl, getIntegrations, getMe } from '../api/client'
 import type { Integration } from '../api/types'
 
 function gusto(overrides: Partial<Integration> = {}): Integration {
@@ -67,9 +67,11 @@ function renderPage(entry = '/integrations') {
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
-  // Returned so a test can drive a refetch via invalidateQueries rather than
-  // re-rendering — see App.test.tsx's renderApp for the same pattern.
-  return qc
+  // qc is returned so a test can drive a refetch via invalidateQueries
+  // rather than re-rendering — see App.test.tsx's renderApp for the same
+  // pattern. router is returned so a test can assert on its own location:
+  // this is a memory history, so window.location never moves.
+  return { qc, router }
 }
 
 describe('IntegrationsPage', () => {
@@ -128,7 +130,7 @@ describe('IntegrationsPage', () => {
         connected_at: '2026-08-31T10:00:00',
       })],
     })
-    const qc = renderPage()
+    const { qc } = renderPage()
     expect(await screen.findByText('QuickBooks Online')).toBeInTheDocument()
 
     vi.mocked(getIntegrations).mockRejectedValue(
@@ -193,5 +195,43 @@ describe('IntegrationsPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Connect Delphi' }))
 
     expect(await screen.findByText(/has a crm_ref/)).toBeInTheDocument()
+  })
+
+  it('sends an oauth provider to the consent URL and renders no inputs', async () => {
+    vi.mocked(getIntegrations).mockResolvedValue({ items: [qbo()] })
+    vi.mocked(getAuthorizeUrl).mockResolvedValue({ url: 'https://intuit.test/consent' })
+    const assign = vi.fn()
+    vi.stubGlobal('location', { ...window.location, assign })
+    renderPage()
+
+    expect(await screen.findByRole('button', { name: 'Connect QuickBooks Online' }))
+      .toBeInTheDocument()
+    // No credential inputs: the tokens come back from Intuit, not the operator.
+    expect(screen.queryByLabelText('refresh_token')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect QuickBooks Online' }))
+    await waitFor(() => {
+      expect(assign).toHaveBeenCalledWith('https://intuit.test/consent')
+    })
+    vi.unstubAllGlobals()
+  })
+
+  it('announces a completed grant and clears the param', async () => {
+    vi.mocked(getIntegrations).mockResolvedValue({ items: [qbo()] })
+    const { router } = renderPage('/integrations?connected=accounting')
+    expect(await screen.findByText(/QuickBooks Online is connected/)).toBeInTheDocument()
+    // renderPage uses a memory history, so window.location.search never
+    // reflects the router's state — asserting on it would test nothing.
+    // The router's own location is what the app actually navigates, so
+    // that is what proves the param was cleared.
+    await waitFor(() => {
+      expect(router.state.location.search).not.toHaveProperty('connected')
+    })
+  })
+
+  it('renders a failed grant on the accounting card', async () => {
+    vi.mocked(getIntegrations).mockResolvedValue({ items: [qbo()] })
+    renderPage('/integrations?error=QuickBooks+refused+the+grant%3A+access_denied')
+    expect(await screen.findByText(/access_denied/)).toBeInTheDocument()
   })
 })

@@ -4,12 +4,17 @@
 // PROVIDERS with nothing checking it (design doc, section 3).
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { getRouteApi } from '@tanstack/react-router'
+import { useEffect, useRef, useState } from 'react'
 
-import { ApiError, connectIntegration, getIntegrations } from '../api/client'
+import { ApiError, connectIntegration, getAuthorizeUrl, getIntegrations } from '../api/client'
 import type { Integration, IntegrationProvider } from '../api/types'
 import { Card, PageHeader, controlClass } from '../components/ui'
 import { errorMessage } from '../lib/errors'
+
+// getRouteApi avoids the router.tsx <-> IntegrationsPage.tsx circular value
+// import — see QboPage.tsx for the same pattern.
+const route = getRouteApi('/integrations')
 
 const TITLES: Record<string, string> = {
   payroll: 'Payroll',
@@ -57,12 +62,42 @@ function ProviderForm({
   )
 }
 
-function IntegrationCard({ item, onDone }: { item: Integration; onDone: () => void }) {
+function OauthConnect({ spec }: { spec: IntegrationProvider }) {
+  // A top-level navigation. The authorize endpoint hands back a URL instead
+  // of a 302 so that this, and not the fetch seam in api/client.ts, is what
+  // leaves the origin — its docstring in src/usali/integrations_api.py is
+  // where that reasoning lives.
+  const start = useMutation({
+    mutationFn: getAuthorizeUrl,
+    onSuccess: (res) => { window.location.assign(res.url) },
+  })
+  return (
+    <div className="mt-2 space-y-2">
+      <button type="button" className={controlClass} onClick={() => start.mutate()}>
+        {`Connect ${spec.label}`}
+      </button>
+      {start.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(start.error)}</p>
+      )}
+    </div>
+  )
+}
+
+function IntegrationCard({
+  item, onDone, note, error,
+}: {
+  item: Integration
+  onDone: () => void
+  note?: string
+  error?: string
+}) {
   const title = TITLES[item.integration] ?? item.integration
   const connected = item.providers.find((p) => p.provider === item.provider)
   return (
     <Card>
       <h2 className="text-sm font-semibold">{title}</h2>
+      {note !== undefined && <p className="mt-2 text-sm">{note}</p>}
+      {error !== undefined && <p className="mt-2 text-sm text-danger-red">{error}</p>}
       {item.connected ? (
         <div className="mt-2 space-y-1 text-sm">
           {/* `item.connected` alone decides this branch. The spec lookup can
@@ -89,6 +124,9 @@ function IntegrationCard({ item, onDone }: { item: Integration; onDone: () => vo
               onDone={onDone}
             />
           ))}
+          {item.providers.filter((p) => p.oauth).map((spec) => (
+            <OauthConnect key={spec.provider} spec={spec} />
+          ))}
         </>
       )}
     </Card>
@@ -102,6 +140,19 @@ export default function IntegrationsPage() {
     queryKey: ['integrations'],
     queryFn: getIntegrations,
   })
+
+  const search = route.useSearch()
+  const navigate = route.useNavigate()
+  // Captured on first render: the effect below empties `search`, and reading
+  // the note from `search` afterwards would blank it the instant it appeared.
+  const landed = useRef({ connected: search.connected, error: search.error })
+  useEffect(() => {
+    // Shown once. Cleared with `replace` so a reload does not re-announce a
+    // grant that completed minutes ago, and so Back does not walk into it.
+    if (search.connected !== undefined || search.error !== undefined) {
+      void navigate({ search: {}, replace: true })
+    }
+  }, [search.connected, search.error, navigate])
 
   // A 503 here is CredentialUnreadable, raised by `get_integrations` in
   // src/usali/integrations_api.py — that is where the whole read is refused
@@ -129,7 +180,19 @@ export default function IntegrationsPage() {
       )}
       <div className="space-y-3">
         {(integrations.data?.items ?? []).map((item) => (
-          <IntegrationCard key={item.integration} item={item} onDone={onDone} />
+          <IntegrationCard
+            key={item.integration}
+            item={item}
+            onDone={onDone}
+            note={landed.current.connected === item.integration
+              ? `${item.providers[0]?.label ?? item.integration} is connected.`
+              : undefined}
+            // The callback that sets `error` is accounting's only —
+            // `_error_redirect` in src/usali/integrations_api.py is reached
+            // solely from the QBO callback — so the accounting card is the
+            // one place this param can ever belong.
+            error={item.integration === 'accounting' ? landed.current.error : undefined}
+          />
         ))}
       </div>
     </>
