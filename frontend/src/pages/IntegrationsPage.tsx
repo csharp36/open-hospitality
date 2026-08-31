@@ -49,8 +49,8 @@ export default function IntegrationsPage() {
   // rather than an undecryptable row being reported as disconnected. This
   // branch is the frontend half of that refusal: rendering the readable
   // cards beside the message would restore the lie the API declined to
-  // tell. Pinned by 'refuses the whole page when a credential cannot be
-  // decrypted' in this file's test.
+  // tell. Pinned by 'refuses the whole page when a refetch finds a
+  // credential cannot be decrypted' in this file's test.
   if (integrations.error instanceof ApiError && integrations.error.status === 503) {
     return (
       <>
