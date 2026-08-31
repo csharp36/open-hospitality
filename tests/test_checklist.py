@@ -224,13 +224,16 @@ def test_demand_feed_is_the_one_item_without_a_surface():
 
 
 def test_every_item_route_is_pinned():
-    """The Python half of the dead-link pair. Its counterpart is
-    `frontend/src/router.test.ts`, which asserts every path here is served by
-    the SPA — neither test can see the other's language, so the set is pinned
-    in both and a new `where` fails here until both move together.
+    """The Python half of the dead-link pair; `frontend/src/router.test.ts`
+    is meant to hold the other half, asserting that each of these paths
+    resolves to a real SPA route. Neither side can see the other's language,
+    so the set is pinned in both and a new `where` fails here first.
 
-    /integrations was in this list before it was a route, which is how the
-    setup checklist shipped two links into nothing."""
+    If that file is absent or has stopped pinning this same list, the pair is
+    broken and this test is on its own — which is the state that let
+    "/integrations" sit in this list while no such route existed, shipping two
+    dead links on the setup checklist.
+    """
     assert sorted({i.where for i in ITEMS if i.where is not None}) == [
         "/employees",
         "/integrations",
