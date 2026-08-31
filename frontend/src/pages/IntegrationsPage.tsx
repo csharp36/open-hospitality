@@ -3,11 +3,12 @@
 // file must never grow one of its own, or it becomes a second copy of
 // PROVIDERS with nothing checking it (design doc, section 3).
 
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useState } from 'react'
 
-import { ApiError, getIntegrations } from '../api/client'
-import type { Integration } from '../api/types'
-import { Card, PageHeader } from '../components/ui'
+import { ApiError, connectIntegration, getIntegrations } from '../api/client'
+import type { Integration, IntegrationProvider } from '../api/types'
+import { Card, PageHeader, controlClass } from '../components/ui'
 import { errorMessage } from '../lib/errors'
 
 const TITLES: Record<string, string> = {
@@ -16,7 +17,47 @@ const TITLES: Record<string, string> = {
   demand_feed: 'Demand feed',
 }
 
-function IntegrationCard({ item }: { item: Integration }) {
+/** Renders whatever fields the spec named. It has no list of its own — that
+ * is the point of serving the specs. `aria-label` rather than a wrapping
+ * <label>, because the accessible name is what the tests query by:
+ * 'renders an input per spec field and sends what it collected' in
+ * IntegrationsPage.test.tsx is where that name is exercised. */
+function ProviderForm({
+  integration, spec, onDone,
+}: {
+  integration: string
+  spec: IntegrationProvider
+  onDone: () => void
+}) {
+  const [values, setValues] = useState<Record<string, string>>({})
+  const connect = useMutation({
+    mutationFn: () => connectIntegration(integration, { provider: spec.provider, ...values }),
+    onSuccess: onDone,
+  })
+  return (
+    <form
+      className="mt-2 space-y-2"
+      onSubmit={(e) => { e.preventDefault(); connect.mutate() }}
+    >
+      {spec.fields.map((field) => (
+        <input
+          key={field.name}
+          aria-label={field.name}
+          type={field.secret ? 'password' : 'text'}
+          className={controlClass}
+          value={values[field.name] ?? ''}
+          onChange={(e) => setValues((v) => ({ ...v, [field.name]: e.target.value }))}
+        />
+      ))}
+      <button type="submit" className={controlClass}>{`Connect ${spec.label}`}</button>
+      {connect.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(connect.error)}</p>
+      )}
+    </form>
+  )
+}
+
+function IntegrationCard({ item, onDone }: { item: Integration; onDone: () => void }) {
   const title = TITLES[item.integration] ?? item.integration
   const connected = item.providers.find((p) => p.provider === item.provider)
   return (
@@ -38,13 +79,25 @@ function IntegrationCard({ item }: { item: Integration }) {
           ))}
         </div>
       ) : (
-        <p className="mt-2 text-sm text-ink-muted">Not connected</p>
+        <>
+          <p className="mt-2 text-sm text-ink-muted">Not connected</p>
+          {item.providers.filter((p) => !p.oauth).map((spec) => (
+            <ProviderForm
+              key={spec.provider}
+              integration={item.integration}
+              spec={spec}
+              onDone={onDone}
+            />
+          ))}
+        </>
       )}
     </Card>
   )
 }
 
 export default function IntegrationsPage() {
+  const qc = useQueryClient()
+  const onDone = () => { void qc.invalidateQueries({ queryKey: ['integrations'] }) }
   const integrations = useQuery({
     queryKey: ['integrations'],
     queryFn: getIntegrations,
@@ -76,7 +129,7 @@ export default function IntegrationsPage() {
       )}
       <div className="space-y-3">
         {(integrations.data?.items ?? []).map((item) => (
-          <IntegrationCard key={item.integration} item={item} />
+          <IntegrationCard key={item.integration} item={item} onDone={onDone} />
         ))}
       </div>
     </>

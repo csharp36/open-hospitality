@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT } from '../test/fixtures'
@@ -14,7 +14,7 @@ vi.mock('../api/client', async (importOriginal) => ({
   getAuthorizeUrl: vi.fn(),
   getMe: vi.fn(),
 }))
-import { ApiError, getIntegrations, getMe } from '../api/client'
+import { ApiError, connectIntegration, getIntegrations, getMe } from '../api/client'
 import type { Integration } from '../api/types'
 
 function gusto(overrides: Partial<Integration> = {}): Integration {
@@ -144,5 +144,54 @@ describe('IntegrationsPage', () => {
     // error path, or the previously-visible card would render beside the
     // refusal message — the lie CredentialUnreadable exists to prevent.
     expect(screen.queryByText('QuickBooks Online')).not.toBeInTheDocument()
+  })
+
+  it('renders an input per spec field and sends what it collected', async () => {
+    vi.mocked(getIntegrations).mockResolvedValue({ items: [gusto()] })
+    vi.mocked(connectIntegration).mockResolvedValue(undefined)
+    renderPage()
+
+    const token = await screen.findByLabelText('api_token')
+    // Secret fields are password inputs and start empty even when connected.
+    // Two Python tests are what make that safe rather than optimistic, both
+    // in tests/test_integrations_api.py: test_no_secret_is_ever_on_the_wire
+    // (no value ever comes back) and
+    // test_connect_nulls_the_previous_providers_fields (the write is total).
+    expect(token).toHaveAttribute('type', 'password')
+    expect(token).toHaveValue('')
+
+    fireEvent.change(token, { target: { value: 'tok-1' } })
+    fireEvent.change(screen.getByLabelText('company_id'), {
+      target: { value: 'c-1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Gusto' }))
+
+    await waitFor(() => {
+      expect(connectIntegration).toHaveBeenCalledWith('payroll', {
+        provider: 'gusto', api_token: 'tok-1', company_id: 'c-1',
+      })
+    })
+  })
+
+  it('shows the backend refusal verbatim', async () => {
+    // The demand feed's crm_ref rule lives in verify_credentials and is NOT
+    // restated here: this asserts the page relays it, not that it knows it.
+    vi.mocked(getIntegrations).mockResolvedValue({
+      items: [gusto({ integration: 'demand_feed', providers: [{
+        provider: 'delphi', label: 'Delphi', oauth: false,
+        fields: [{ name: 'subscription_key', secret: true }],
+      }] })],
+    })
+    vi.mocked(connectIntegration).mockRejectedValue(new ApiError(
+      422, 'no property in this workspace has a crm_ref, so the demand feed cannot be verified',
+    ))
+    renderPage()
+
+    fireEvent.change(await screen.findByLabelText('subscription_key'), {
+      target: { value: 'k-1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Delphi' }))
+
+    expect(await screen.findByText(/has a crm_ref/)).toBeInTheDocument()
   })
 })
