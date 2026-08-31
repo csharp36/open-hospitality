@@ -438,9 +438,31 @@ def test_a_refused_grant_redirects_with_intuits_own_words(oauth_client, monkeypa
     assert "access_denied" in resp.headers["location"]
 
 
+def test_an_oversized_fault_message_does_not_blow_out_the_header(oauth_client):
+    """A misbehaving proxy or WAF emitting Intuit-shaped JSON can hand
+    `_error_message` a `Message`/`Detail` pair of unbounded length — it has no
+    cap of its own, unlike `_unparseable`'s fixed stand-in. `_error_redirect`
+    is where that gets bounded, so assert on LENGTH: the exact truncation
+    point is an implementation detail, the header staying small is not."""
+    def _refuse(code):
+        raise QboError(400, "x" * 5000)
+
+    oauth_client.app.state.exchange_qbo_code = _refuse
+    resp = oauth_client.get(_CALLBACK, params={
+        "code": "good", "realmId": "r1",
+        "state": sign_state(org_id=1, subject="s"),
+    })
+    assert resp.status_code == 307
+    location = resp.headers["location"]
+    assert len(location) < 300
+    assert "x" * 5000 not in location
+
+
 def test_no_redirect_carries_the_code_or_the_state(oauth_client):
     """The rule at the success redirect, applied to the failures: these travel
-    through history and every proxy between here and the browser."""
+    through history and every proxy between here and the browser. Both
+    failure shapes are checked — missing code/state, and a refused grant —
+    since either one could carry the code or state forward on its own."""
     state = sign_state(org_id=1, subject="s")
     resp = oauth_client.get(_CALLBACK, params={
         "realmId": "r1", "state": state,          # no code -> failure branch
@@ -448,6 +470,19 @@ def test_no_redirect_carries_the_code_or_the_state(oauth_client):
     assert resp.status_code == 307
     location = resp.headers["location"]
     assert state not in location
+    assert "code=" not in location
+
+    def _refuse(code):
+        raise QboError(400, "access_denied: the user declined")
+
+    oauth_client.app.state.exchange_qbo_code = _refuse
+    refused_state = sign_state(org_id=1, subject="s")
+    resp = oauth_client.get(_CALLBACK, params={
+        "code": "good", "realmId": "r1", "state": refused_state,
+    })
+    assert resp.status_code == 307
+    location = resp.headers["location"]
+    assert refused_state not in location
     assert "code=" not in location
 
 
@@ -626,3 +661,5 @@ def test_the_callback_is_mounted_outside_the_operator_gates(oauth_client):
     assert oauth_client.get(_CALLBACK).status_code == 307
     assert oauth_client.get(_AUTHORIZE).status_code == 401
     assert oauth_client.get("/api/integrations").status_code == 401
+
+

@@ -438,14 +438,32 @@ _CONNECTED_REDIRECT = f"{_INTEGRATIONS_PATH}?connected=accounting"
 # detail here is fixed and never names which check failed.
 _BAD_STATE_DETAIL = "invalid authorization state"
 
+# The detail rides in a Location header, and `qbo_client._error_message` reads
+# Intuit's fault text out of a structured body without bounding it — only the
+# unparseable fallback is capped, over in `_unparseable`. A header long enough
+# to trip a proxy's size limit turns this redirect into a 502, which is the
+# failure this redirect exists to avoid. Bounded here, at the one place every
+# failure path goes through.
+_MAX_ERROR_DETAIL = 200
+
 
 def _error_redirect(detail: str) -> RedirectResponse:
     """A failed grant, returned as a redirect rather than raised, so the
     browser that followed Intuit's redirect lands on `_INTEGRATIONS_PATH`
     instead of on a JSON body. Carries neither `code` nor `state`, for the
-    reason the success redirect above gives."""
+    reason the success redirect above gives.
+
+    `detail` is truncated to `_MAX_ERROR_DETAIL`: everything else about this
+    function is deliberate about what a query string may carry, and an
+    unbounded upstream fault message is the one thing that was still able to
+    grow this header without limit."""
     return RedirectResponse(
-        url=f"{_INTEGRATIONS_PATH}?{urlencode({'error': detail})}",
+        url=f"{_INTEGRATIONS_PATH}?{urlencode({'error': detail[:_MAX_ERROR_DETAIL]})}",
+        # 307, matching the success redirect below — not because 307 is more
+        # correct here (this route is GET-only, so 307 and 303 behave
+        # identically to the browser; 303 See Other is the more conventional
+        # code for a process-then-redirect). Keep both paths on the same code:
+        # "fixing" one to 303 without the other is worse than leaving both.
         status_code=307,
     )
 
@@ -633,7 +651,17 @@ def callback(
         # Until 2026-08-31 this comment asserted the property while
         # `_error_message` fell back to `resp.text[:200]`, so a proxy or WAF
         # error page was echoed here verbatim.
-        return _error_redirect(f"QuickBooks refused the grant: {exc}")
+        #
+        # `exc.message`, not `str(exc)`: `QboError.__init__` already bakes
+        # `f"QBO {status}: {message}"` into `str(exc)`, and `_error_message`
+        # (via `exchange_authorization_code`) bakes a THIRD prefix into
+        # `message` itself. Interpolating `exc` here would show the operator
+        # "QuickBooks refused the grant: QBO 400: authorization-code grant
+        # failed: access_denied" — three redundant prefixes stacked on one
+        # fact. `exc.status` is dropped from this message, not lost: it is
+        # still an attribute on the caught exception for whoever instruments
+        # this branch.
+        return _error_redirect(f"QuickBooks refused the grant: {exc.message}")
 
     # The spec, never a literal field list: `_store_credential` nulls every
     # column this provider does not use, which is what stops a previous
