@@ -136,13 +136,20 @@ def not_connected_detail(integration: str) -> str:
     must never appear here is which one THIS tenant chose, or any part of a
     credential.
 
-    `/integrations` is a FORWARD REFERENCE: OH-17 shipped the backend for it
-    (the router in task 10, the OAuth pair in task 11), but the SPA page is a
-    SEPARATE frontend plan that has not shipped, so today this path resolves
-    to nothing an operator can use. That is deliberate — a named blocker an
-    operator can act on soon beats a refusal naming an env var they cannot act
-    on at all (ADR-010, and the reason `USALI_CRM_PROVIDER` came out of these
-    strings). When the page ships, this is the one string to revisit."""
+    `/integrations` has SHIPPED: it is a registered route with a nav entry,
+    and `IntegrationsPage.tsx` renders a real connect form for Gusto and ADP,
+    an OAuth button for QuickBooks, and working disconnect/replace. So for
+    PAYROLL and ACCOUNTING, naming it below is no longer a forward reference
+    (ADR-010, and the reason `USALI_CRM_PROVIDER` came out of these strings) —
+    it is where the operator actually finishes the job.
+
+    DEMAND_FEED does not get that sentence: `verify_credentials` refuses
+    Delphi and Tripleseat without a property `crm_ref`, and nothing in the app
+    can set one (only the repo's YAML seed writes it, first-insert-only).
+    Telling this operator to "connect X on /integrations" would be the same
+    false promise `checklist.py`'s `demand_feed` item was built to avoid
+    (D-OH17.16, its `unavailable_reason`) — so this function names the same
+    true blocker instead of the generic one."""
     label = _INTEGRATION_LABELS.get(integration, integration)
     products = [
         product_name(spec.provider)
@@ -150,6 +157,12 @@ def not_connected_detail(integration: str) -> str:
         if spec.integration == integration
     ]
     choices = " or ".join(products)
+    if integration == DEMAND_FEED:
+        return (
+            f"{label} is not connected for this tenant — connecting "
+            f"{choices} needs a property crm_ref, which nothing in the app "
+            "can set yet; contact us to have one added"
+        )
     return (
         f"{label} is not connected for this tenant — "
         f"connect {choices} on /integrations"
