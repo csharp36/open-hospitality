@@ -43,8 +43,15 @@ _PREDICATE = f"org_id = NULLIF(current_setting('{RLS_ORG_VAR}', true), '')::int"
 # what an old revision claims to have created, and `alembic upgrade` would then
 # build a different table than the one this file documents. The model's
 # docstring points here and this comment points back: EDIT BOTH OR NEITHER —
-# `tests/test_l1_org_wall_migration.py`'s `compare_metadata` parity check is
-# what fails if you edit one.
+# `tests/test_integrations.py::test_the_models_check_is_byte_identical_to_the_migrations`
+# is what fails if you edit one.
+#
+# It says `compare_metadata` until 2026-08-31, and that was wrong: alembic
+# does not diff CHECK constraints in this configuration (measured — replacing
+# the model's constraint outright produced zero diffs). Nothing read the
+# model's literal at all, because conftest builds the test DB with
+# `alembic upgrade head` and `create_all` appears nowhere in this repo. The
+# named test above closes that by comparing the two strings directly.
 _CHECK = (
     "(integration = 'payroll' AND provider = 'gusto'"
     "  AND api_token IS NOT NULL AND company_id IS NOT NULL"

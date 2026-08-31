@@ -266,9 +266,26 @@ def fetch_results(
         # answering it with a 503 about payroll connectivity would be a worse
         # reply to a worse question. Pinned by
         # `test_an_unknown_run_404s_before_the_connectivity_check`.
-        lines = fetch_pay_run_results(
-            session, run, provider=_provider(request).adapter
-        )
+        resolved = _provider(request)
+        if resolved.provider_name != run.provider:
+            # The run was submitted to a DIFFERENT provider than the one this
+            # tenant is connected to now — they reconnected payroll between
+            # submit and fetch. `provider_run_id` belongs to the OLD provider's
+            # namespace and the ref map below is keyed on `run.provider`, so
+            # asking the new provider for it is at best a confusing
+            # ProviderError and at worst a lookup against a colliding id.
+            #
+            # This is exactly what `ResolvedPayroll` carries a name FOR, and
+            # this call site dropped it until 2026-08-31 — see `_provider`.
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"pay run {pay_run_id} was submitted to {run.provider}, but "
+                    f"this tenant is now connected to {resolved.provider_name}; "
+                    f"reconnect {run.provider} to fetch its results"
+                ),
+            )
+        lines = fetch_pay_run_results(session, run, provider=resolved.adapter)
         session.add(AuditEvent(
             actor_subject=principal.subject, action="fetch_pay_run_results",
             resource_type="pay_run", resource_id=str(run.pay_run_id),

@@ -601,3 +601,44 @@ def test_verify_touches_only_read_only_wire_calls() -> None:
     # creates nothing in the tenant's payroll account — it mints a bearer.
     # No /hr/ or /payroll/ resource is touched.
     assert adp_wire.calls == [("POST", "/auth/oauth/v2/token")]
+
+
+class _CountingTransport(httpx.BaseTransport):
+    """Wraps the ADP mock and counts token-grant requests."""
+
+    def __init__(self, inner: httpx.BaseTransport) -> None:
+        self._inner = inner
+        self.token_grants = 0
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/oauth/v2/token"):
+            self.token_grants += 1
+        return self._inner.handle_request(request)
+
+
+def test_adp_verify_authenticates_even_on_an_adapter_that_already_has_a_bearer():
+    """`AdpAdapter.verify()` clears the cached bearer before minting one, and
+    NOTHING pinned that until 2026-08-31.
+
+    Every other ADP test builds a fresh adapter, which has no cached token, so
+    `verify()` reaches the wire whether or not the clear is there. Deleting
+    `self._access_token = None` — restoring the exact silent no-op the method's
+    own docstring says it exists to prevent — left all eleven ADP tests green.
+    Found by mutation testing in review.
+
+    So this test does the one thing the others cannot: it REUSES an adapter
+    that has already authenticated. The other three adapters need no
+    equivalent — they call the wire unconditionally, with no cache to skip."""
+    counting = _CountingTransport(SyncASGITransport(create_mock_adp()))
+    adapter = AdpAdapter(base_url="http://mock-adp", client_id="mock",
+                         client_secret="mock", transport=counting)
+
+    adapter.verify()
+    assert counting.token_grants == 1
+    first = adapter._access_token
+    assert first is not None  # the adapter is now in the CACHED state
+
+    adapter.verify()
+    # The assertion that dies without the cache clear: a second grant, not a
+    # cheap return off the cached bearer.
+    assert counting.token_grants == 2

@@ -8,8 +8,10 @@ protection is defined here, once.
 """
 
 import base64
+import binascii
 import os
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
@@ -57,10 +59,41 @@ def encrypt_str(plaintext: str) -> str:
     return base64.b64encode(nonce + ct).decode("ascii")
 
 
+class MalformedCiphertext(ValueError):
+    """A stored value is not something this module ever wrote.
+
+    Exists to be DISTINGUISHABLE from `_key()`'s ValueError, which the
+    callers must never swallow: a misconfigured key is a deployment fault
+    affecting every tenant and every column, and reporting it to one tenant
+    as "reconnect your integration" would send them chasing a problem they
+    cannot fix. Both used to be bare ValueError, so `integrations._UNREADABLE`
+    could only catch the subset that happened to fail base64 first — a long
+    plaintext raised binascii.Error and was named, a SHORT one ('mock', '',
+    'abcd') raised ValueError from the nonce split and escaped as a 500.
+    Found in review 2026-08-31; the coverage was accidental, not designed.
+    """
+
+
 def decrypt_str(token: str) -> str:
-    raw = base64.b64decode(token)
-    nonce, ct = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
-    return AESGCM(_key()).decrypt(nonce, ct, None).decode("utf-8")
+    """Decrypt a value written by `encrypt_str`.
+
+    Raises `MalformedCiphertext` for anything this module did not write —
+    a hand-edited row, a half-restored backup, a column populated before
+    ADR-005. Raises `InvalidTag` for a real ciphertext under the wrong key.
+    Lets `_key()`'s own ValueError through untouched: see above."""
+    key = _key()  # OUTSIDE the guard — a bad key is not a bad ciphertext.
+    try:
+        raw = base64.b64decode(token)
+        nonce, ct = raw[:_NONCE_BYTES], raw[_NONCE_BYTES:]
+        return AESGCM(key).decrypt(nonce, ct, None).decode("utf-8")
+    except InvalidTag:
+        raise
+    except (ValueError, binascii.Error) as exc:
+        # binascii.Error IS a ValueError, named for the reader. The nonce
+        # length check inside AESGCM raises plain ValueError, as does a
+        # non-ASCII argument to b64decode and a ct that is not valid UTF-8
+        # after a (vanishingly unlikely) successful decrypt.
+        raise MalformedCiphertext(str(exc)) from exc
 
 
 def encrypt_bytes(data: bytes) -> bytes:

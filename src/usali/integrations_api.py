@@ -223,6 +223,13 @@ def _store_credential(
     to `integration` alone: a Core UPDATE carries no org_id of its own, and
     `tenancy._stamp_wall` covers ORM INSERTs only, so it would be confined by
     RLS and nothing else (which a superuser connection bypasses).
+
+    This IS a Core `pg_insert`, and that is safe for ADR-005: Core
+    insert()/update() apply `EncryptedString`'s bind processor, on the
+    `on_conflict_do_update` set-arm as well as the VALUES clause (measured
+    2026-08-31, after a comment here claimed otherwise). Only raw `text()`
+    bypasses it — which is exactly what `tests/credentials.plant_credential`
+    relies on to plant an unreadable row.
     """
     now = datetime.now(timezone.utc)
     values: dict[str, Any] = dict.fromkeys(ALL_CREDENTIAL_FIELDS, None)
@@ -552,10 +559,15 @@ def callback(
     try:
         refresh_token: str = request.app.state.exchange_qbo_code(code)
     except QboError as exc:
-        # The client never puts a response body in a QboError, so this cannot
-        # leak Intuit's payload; the status and Intuit's own fault message are
-        # what an operator needs to tell "you declined" from "that code is
-        # already spent".
+        # This detail reaches an UNAUTHENTICATED caller, so what goes into a
+        # QboError is a security property of `qbo_client`, not a formatting
+        # choice there. It holds Intuit's own structured fault text (which an
+        # operator needs to tell "you declined" from "that code is already
+        # spent") and, for anything unparseable, a fixed stand-in — never the
+        # upstream body. `_unparseable` is where that is enforced and why.
+        # Until 2026-08-31 this comment asserted the property while
+        # `_error_message` fell back to `resp.text[:200]`, so a proxy or WAF
+        # error page was echoed here verbatim.
         raise HTTPException(
             status_code=400, detail=f"QuickBooks refused the grant: {exc}"
         ) from exc

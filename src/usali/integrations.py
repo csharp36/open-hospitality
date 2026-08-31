@@ -22,7 +22,6 @@ since D-OH17.6 removed the shared-client memoizer, not within one either. That
 is a decision rather than an omission.
 """
 
-from binascii import Error as Base64Error
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,6 +34,7 @@ from sqlalchemy.orm import Session
 from usali.adp_adapter import AdpAdapter
 from usali.config import get_settings
 from usali.crm_feed import CrmFeed
+from usali.crypto import MalformedCiphertext
 from usali.delphi_adapter import DelphiAdapter
 from usali.gusto_adapter import GustoAdapter
 from usali.models import OrgIntegrationCredential
@@ -187,19 +187,26 @@ class CredentialUnreadable(Exception):
 
 # What a failed decrypt actually raises. `EncryptedString.process_result_value`
 # calls `crypto.decrypt_str`, which fails two ways and only two:
-#   * InvalidTag   — structurally perfect ciphertext, wrong key. THE ADR-005
-#                    rotation case, and the only one the design names.
-#   * binascii.Error — the column does not even decode as base64: a
-#                    hand-edited row, a half-restored backup, a value written
-#                    by something that never encrypted. Named here too because
-#                    a refusal that covered only the first would let this one
-#                    through as a raw 500 in the middle of a push, which is
-#                    the failure mode this whole exception exists to end.
-# NOT bare ValueError, though binascii.Error is one: `crypto._key()` raises
-# ValueError for a MISCONFIGURED key ("must decode to 32 bytes"), and that is
-# a deployment fault affecting every tenant and every column — it must stay a
+#   * InvalidTag  — structurally perfect ciphertext, wrong key. THE ADR-005
+#                   rotation case, and the only one the design names.
+#   * MalformedCiphertext — the column holds something this app never wrote:
+#                   a hand-edited row, a half-restored backup, a value from
+#                   before ADR-005. Named here too because a refusal covering
+#                   only the first would let this one through as a raw 500 in
+#                   the middle of a push, which is what this exception exists
+#                   to end.
+# Still NOT bare ValueError, even though MalformedCiphertext is one:
+# `crypto._key()` raises ValueError for a MISCONFIGURED key, and that is a
+# deployment fault affecting every tenant and every column — it must stay a
 # loud 500 rather than be reported to one tenant as "reconnect your feed".
-_UNREADABLE: tuple[type[Exception], ...] = (InvalidTag, Base64Error)
+#
+# Until 2026-08-31 this named `binascii.Error` instead, which caught only the
+# malformed values that happen to fail base64 FIRST. A short one — 'mock',
+# '', 'abcd' — decodes fine and died on the nonce split with a bare
+# ValueError, so it escaped as the exact 500 the comment above promised to
+# prevent. `MalformedCiphertext` exists so the set is closed by construction
+# rather than by which literal a test happened to pick.
+_UNREADABLE: tuple[type[Exception], ...] = (InvalidTag, MalformedCiphertext)
 
 
 @contextmanager
@@ -475,9 +482,14 @@ class DbTokenStore:
     def store(self, refresh_token: str) -> None:
         # Through the MAPPED ATTRIBUTE, not a Core `update()` and never a
         # `text()` UPDATE, for two reasons that both fail silently:
-        # (1) ADR-005 — the EncryptedString bind processor runs on the ORM
-        #     attribute; a raw UPDATE would write the rotated token to disk in
-        #     plaintext while every other test still passed.
+        # (1) ADR-005 — `text()` carries no type information, so the
+        #     EncryptedString bind processor never runs and the rotated token
+        #     lands on disk in PLAINTEXT while every other test still passes.
+        #     (This said "a Core update() would" until 2026-08-31. It would
+        #     not: Core insert()/update() DO apply the bind processor —
+        #     measured. Only raw SQL bypasses it. The scoping reason below is
+        #     the one that rules out a Core update here, and it is sufficient
+        #     on its own.)
         # (2) The unit of work emits `WHERE org_id = ? AND integration = ?`
         #     from the composite PK, so the write is org-scoped by the key
         #     itself. A bare `update(...).where(integration == ACCOUNTING)`

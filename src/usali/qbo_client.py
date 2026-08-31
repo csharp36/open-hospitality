@@ -26,6 +26,7 @@ background tasks; request/response bodies are fully buffered on both sides.
 
 import asyncio
 import base64
+import logging
 import threading
 import time
 from typing import Any, Protocol
@@ -39,6 +40,9 @@ _TOKEN_PATH = "/oauth2/v1/tokens/bearer"
 _sleep = time.sleep
 
 
+logger = logging.getLogger("usali.qbo")
+
+
 class QboError(Exception):
     """A QBO call failed after the client's retry budget was exhausted."""
 
@@ -46,6 +50,21 @@ class QboError(Exception):
         super().__init__(f"QBO {status}: {message}")
         self.status = status
         self.message = message
+
+
+class QboUnreachable(QboError):
+    """We never got an answer from Intuit — DNS, TCP, TLS, or a timeout.
+
+    A subclass, so every existing `except QboError` still covers it (the
+    unauthenticated OAuth callback wants exactly that: any refusal becomes a
+    400, never a 500). It is a distinct type because ONE caller must tell it
+    apart: `qbo_push.push_day` turns a QboError into a per-date `failed`
+    ledger row, and an unreachable endpoint is not a per-date outcome — it
+    fails identically for every date in the run, so recording N failed rows
+    for one network blip is wrong. That caller re-raises this and lets the
+    CLI abort the whole push, which is what happened naturally while these
+    were bare httpx errors.
+    """
 
 
 class SyncASGITransport(httpx.BaseTransport):
@@ -85,14 +104,56 @@ def _retry_after_seconds(resp: httpx.Response) -> float:
         return 1.0
 
 
-def _error_message(resp: httpx.Response) -> str:
-    """Extract a human-readable message from either Intuit fault shape."""
+def _unparseable(resp: httpx.Response) -> str:
+    """The safe stand-in for a body we could not read as an Intuit fault.
+
+    NEVER returns the body itself. This string reaches an UNAUTHENTICATED
+    caller — `integrations_api.callback` interpolates the QboError into its
+    400 — and the body on this path is whatever sits between us and Intuit: a
+    proxy error page, a WAF block, a load-balancer 502. Those carry internal
+    hostnames, upstream addresses and sometimes a reflected authorization
+    code. Echoing 200 bytes of it was a real leak (found in review,
+    2026-08-31); the operator-useful half is the STRUCTURED fault below,
+    which is Intuit's own text and is safe to surface.
+
+    The body is not lost — it is logged at WARNING, where an operator with
+    log access can read it and an anonymous caller cannot."""
+    logger.warning(
+        "unparseable QBO token-endpoint response: status=%s content_type=%s body=%r",
+        resp.status_code, resp.headers.get("content-type"), resp.text[:500],
+    )
+    return f"unparseable {resp.status_code} response from the QBO token endpoint"
+
+
+def _json_body(resp: httpx.Response, what: str) -> dict[str, Any]:
+    """The response's JSON object, or a QboError.
+
+    A 200 carrying a non-JSON body is not a programming error — it is a
+    captive portal, a proxy interstitial, or Intuit serving HTML during an
+    incident. Left bare, `resp.json()` raises JSONDecodeError, which on the
+    unauthenticated callback route is a 500. Every caller here already knows
+    how to turn a QboError into an ordinary refusal."""
     try:
         payload = resp.json()
     except ValueError:
-        return resp.text[:200]
+        raise QboError(resp.status_code, f"{what}: {_unparseable(resp)}") from None
     if not isinstance(payload, dict):
-        return resp.text[:200]
+        raise QboError(resp.status_code, f"{what}: {_unparseable(resp)}")
+    return payload
+
+
+def _error_message(resp: httpx.Response) -> str:
+    """Extract a human-readable message from either Intuit fault shape.
+
+    The return value is safe to put in an HTTP response body — see
+    `_unparseable` for why that is a load-bearing property and not a
+    stylistic one."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        return _unparseable(resp)
+    if not isinstance(payload, dict):
+        return _unparseable(resp)
     fault = payload.get("Fault") or payload.get("fault")
     if isinstance(fault, dict):
         errors = fault.get("Error") or fault.get("error")
@@ -106,7 +167,7 @@ def _error_message(resp: httpx.Response) -> str:
                 return message or detail
     if isinstance(payload.get("error"), str):
         return str(payload["error"])
-    return resp.text[:200]
+    return _unparseable(resp)
 
 
 def exchange_authorization_code(
@@ -149,7 +210,9 @@ def exchange_authorization_code(
     after the URL looked fine. One expression feeds both call sites
     (`integrations_api.qbo_redirect_uri`).
 
-    Raises `QboError` on any non-200 or a response carrying no refresh token,
+    Raises `QboError` on any non-200, on a body that is not JSON, on a
+    network failure reaching Intuit, or on a response carrying no refresh
+    token,
     so a spent or bogus code is an ordinary refusal the router turns into a
     400 rather than a 500.
     """
@@ -157,22 +220,33 @@ def exchange_authorization_code(
     with httpx.Client(
         base_url=base_url, transport=transport, headers={"Accept": "application/json"}
     ) as http:
-        resp = http.post(
-            _TOKEN_PATH,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect_uri,
-            },
-            headers={"Authorization": f"Basic {basic}"},
-        )
+        try:
+            resp = http.post(
+                _TOKEN_PATH,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={"Authorization": f"Basic {basic}"},
+            )
+        except httpx.HTTPError as exc:
+            # "Intuit is unreachable" is a ROUTINE operational condition, not a
+            # bug: a DNS blip, a timeout, an egress rule. Unhandled it became a
+            # 500 on the one route in the app that is unauthenticated. The
+            # message names the exception TYPE only — the exception's own text
+            # carries the resolved upstream address (found in review,
+            # 2026-08-31).
+            raise QboUnreachable(
+                502, f"could not reach the QBO token endpoint: {type(exc).__name__}"
+            ) from exc
         if resp.status_code != 200:
             raise QboError(
                 resp.status_code,
                 f"authorization-code grant failed: {_error_message(resp)}",
             )
-        payload = resp.json()
-    token = payload.get("refresh_token") if isinstance(payload, dict) else None
+        payload = _json_body(resp, "authorization-code grant")
+    token = payload.get("refresh_token")
     if not isinstance(token, str) or not token:
         # A 200 with no refresh token would otherwise become a KeyError 500,
         # or — worse — an empty string stored as this tenant's credential,
@@ -280,15 +354,33 @@ class QboClient:
 
     def _refresh(self) -> None:
         """Mint a fresh access token via the refresh grant (lazily, and on 401)."""
-        resp = self._http.post(
-            _TOKEN_PATH,
-            data={"grant_type": "refresh_token", "refresh_token": self._tokens.load()},
-            headers={"Authorization": self._basic_auth},
-        )
+        try:
+            resp = self._http.post(
+                _TOKEN_PATH,
+                data={
+                    "grant_type": "refresh_token",
+                    "refresh_token": self._tokens.load(),
+                },
+                headers={"Authorization": self._basic_auth},
+            )
+        except httpx.HTTPError as exc:
+            raise QboUnreachable(
+                502, f"could not reach the QBO token endpoint: {type(exc).__name__}"
+            ) from exc
         if resp.status_code != 200:
             raise QboError(resp.status_code, f"token refresh failed: {_error_message(resp)}")
-        payload = resp.json()
-        self._access_token = payload["access_token"]
+        payload = _json_body(resp, "token refresh")
+        access = payload.get("access_token")
+        rotated = payload.get("refresh_token")
+        # A 200 missing either field was a KeyError -> 500. Both are refusals:
+        # without `access_token` there is nothing to call with, and without
+        # `refresh_token` the rotation below would store None and kill the
+        # tenant's connection on the next call.
+        if not isinstance(access, str) or not access:
+            raise QboError(200, "token refresh returned no access_token")
+        if not isinstance(rotated, str) or not rotated:
+            raise QboError(200, "token refresh returned no refresh_token")
+        self._access_token = access
         # Intuit rotates the refresh token on every grant; persist the new one
         # or the NEXT refresh fails with invalid_grant. Through the store, so
         # the token has a durable home and the lineage CAN outlive this
@@ -308,7 +400,7 @@ class QboClient:
         # pushes for one tenant can therefore both spend the same token; the
         # loser gets invalid_grant here and its push fails visibly, while the
         # winner's rotated token is in the row, so a retry succeeds.
-        self._tokens.store(payload["refresh_token"])
+        self._tokens.store(rotated)
 
     def post_journal_entry(self, je: dict[str, Any], request_id: str) -> str:
         """POST one journal entry; returns the QBO JournalEntry Id.

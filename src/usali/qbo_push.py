@@ -42,7 +42,7 @@ from sqlalchemy.orm import Session
 
 from usali.models import QboPushLedger, UsaliFinancialFact
 from usali.invariants import require_not_none
-from usali.qbo_client import QboClient, QboError
+from usali.qbo_client import QboClient, QboError, QboUnreachable
 # month_bounds lives in usali.reporting (the CPA pack shares it); re-exported here
 # so existing `qbo_push.month_bounds` callers keep working.
 from usali.reporting import SETTLEMENTS_MAJOR, TAXES_MAJOR, NoFactsError, month_bounds
@@ -338,6 +338,13 @@ def push_day(
         je_id = client.post_journal_entry(
             journal_entry_body(plan), request_id=plan.request_hash[:_REQUESTID_MAX]
         )
+    except QboUnreachable:
+        # Not a per-date outcome: the endpoint is down, so every remaining
+        # date in this run would record an identical `failed` row for one
+        # network blip. Let it escape to the caller, which aborts the push —
+        # the behaviour that held while this was a bare httpx error, kept
+        # explicit now that the client wraps transport failures (2026-08-31).
+        raise
     except QboError as exc:
         row.status = "failed"
         row.qbo_je_id = None

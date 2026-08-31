@@ -1164,7 +1164,12 @@ git commit -m "feat(oh17): TokenStore port so QBO rotation can outlive the proce
 >    UPDATEs ride the DB wall alone. On an RLS-bypassing connection (the
 >    superuser the entire test suite runs as) that statement rewrites **every
 >    org's** accounting refresh token.
-> 2. A Core/`text()` UPDATE bypasses the `EncryptedString` bind processor, so
+> 2. **CORRECTED 2026-08-31:** a raw `text()` UPDATE bypasses the
+> `EncryptedString` bind processor (a Core `update()`/`insert()` does NOT —
+> measured; it applies the processor, including on an
+> `on_conflict_do_update` set-arm). The scoping reason in point 1 is what
+> rules out a Core update here, and it stands on its own. Original text: a
+> Core/`text()` UPDATE bypasses the `EncryptedString` bind processor, so
 >    the rotated token lands on disk in **plaintext** — an ADR-005 violation no
 >    test in the plan would have caught.
 >

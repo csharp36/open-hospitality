@@ -80,7 +80,7 @@ from usali.performance import (
     trends,
 )
 from usali.property_config_api import _adr_room_basis, _fiscal_config
-from usali.qbo_client import QboClient
+from usali.qbo_client import QboClient, QboUnreachable
 from usali.workforce import require_property_access, resolve_scope
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -702,7 +702,10 @@ def _run_qbo(action: Callable[[], T]) -> T:
     message; transport failures reaching QBO (`httpx.HTTPError` — QBO down,
     DNS, refused connection) -> 502 with a clear detail instead of an unhandled
     500 traceback. HTTP-level rejections QBO itself sends are NOT transport
-    errors: `push_day` turns those (`QboError`) into a `failed` PushResult.
+    errors: `push_day` turns those (`QboError`) into a `failed` PushResult —
+    and `QboUnreachable`, the token grant's transport failure, is deliberately
+    NOT one of those: `push_day` re-raises it so it lands here, because an
+    unreachable endpoint is not a per-date outcome.
     """
     try:
         return action()
@@ -710,7 +713,13 @@ def _run_qbo(action: Callable[[], T]) -> T:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except qbo_push.UnmappedGlError as exc:
         raise HTTPException(status_code=422, detail=_unmapped_gl_detail(exc)) from exc
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, QboUnreachable) as exc:
+        # Both types, same condition. `QboUnreachable` is what the TOKEN grant
+        # raises since 2026-08-31 — the client wraps transport failures there
+        # so the unauthenticated OAuth callback cannot 500 on them — while the
+        # API calls still surface bare httpx errors. Listing only the first
+        # would send a refused connection to the token endpoint out as a 500,
+        # which is the exact thing this handler exists to prevent.
         raise HTTPException(
             status_code=502, detail=f"cannot reach QBO: {exc}"
         ) from exc

@@ -16,6 +16,13 @@ _DEV_DEFAULT_FIELD_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE
 _CREDENTIAL_URL_FIELDS = (
     "qbo_base_url",
     "qbo_authorize_url",
+    # The MIRROR of qbo_authorize_url, and it was missing until 2026-08-31.
+    # The browser carries the signed `state` OUT to the authorize URL and the
+    # authorization CODE back to this one (it is what `qbo_redirect_uri` is
+    # built from), so a cleartext value here registers a cleartext redirect
+    # URI with Intuit and puts the code on the wire. Guarding one direction
+    # and not the other was an asymmetry, not a decision.
+    "public_base_url",
     "gusto_base_url",
     "adp_base_url",
     "delphi_base_url",

@@ -47,7 +47,7 @@ from tests.test_payroll_run import (
 )
 
 
-def _client(db_engine, tmp_path, verifier, provider):
+def _client(db_engine, tmp_path, verifier, provider, provider_name="gusto"):
     app = create_app(
         inbox_dir=tmp_path / "in", processed_dir=tmp_path / "p", failed_dir=tmp_path / "f",
         session_factory=make_session_factory(db_engine),
@@ -58,7 +58,7 @@ def _client(db_engine, tmp_path, verifier, provider):
         # fake ignores it — see `test_the_seam_is_handed_the_requests_org_
         # bound_factory` for the pin that it is the REQUEST's factory and not
         # the app's unbound base one.
-        payroll_provider_factory=lambda _factory: ResolvedPayroll("gusto", provider),
+        payroll_provider_factory=lambda _factory: ResolvedPayroll(provider_name, provider),
     )
     return TestClient(app)
 
@@ -525,3 +525,46 @@ def test_an_unknown_run_404s_before_the_connectivity_check(
     r = c.post("/api/payroll/runs/9999/fetch-results", headers=pa)
     assert r.status_code == 404, r.text
     assert r.json()["detail"] == "pay run not found"
+
+
+def test_fetching_results_refuses_when_the_tenant_reconnected_a_different_provider(
+    db_engine, db_session, tmp_path
+):
+    """OH-17: `provider_run_id` lives in the SUBMITTING provider's namespace,
+    and `fetch_pay_run_results` keys its employee-ref map on `run.provider`.
+    Asking whoever is connected NOW for that id is a category error — it
+    reaches the wrong provider's API with the wrong id, and the ref lookup
+    misses every line.
+
+    Reachable only because OH-17 made the provider a per-tenant runtime
+    choice: before it, changing provider meant a redeploy. Found in review
+    2026-08-31 — the handler took `_provider(request).adapter` and dropped the
+    name, three lines below the docstring saying an adapter separated from its
+    name is a mis-pay waiting to happen."""
+    _two_employees_16h_each(db_session)
+    provider = InMemoryPayrollProvider()
+    verifier, mint = make_authkit()
+    pa = {"Authorization": f"Bearer {mint(roles=['payroll_admin'], sub='pa')}"}
+
+    submitted = _client(db_engine, tmp_path, verifier, provider).post(
+        "/api/payroll/runs", headers=pa, json=_BODY
+    )
+    assert submitted.status_code == 201
+    run_id = submitted.json()["pay_run_id"]
+    assert submitted.json()["provider"] == "gusto"
+
+    # Same run, same adapter instance — only the tenant's CONNECTED provider
+    # name differs, which is precisely the state a reconnect leaves behind.
+    switched = _client(db_engine, tmp_path, verifier, provider, provider_name="adp")
+    refused = switched.post(f"/api/payroll/runs/{run_id}/fetch-results", headers=pa)
+    assert refused.status_code == 409
+    detail = refused.json()["detail"]
+    assert "gusto" in detail and "adp" in detail
+
+    # And the refusal is specific to the mismatch, not a broken fetch path:
+    # the still-connected provider fetches the same run fine.
+    ok = _client(db_engine, tmp_path, verifier, provider).post(
+        f"/api/payroll/runs/{run_id}/fetch-results", headers=pa
+    )
+    assert ok.status_code == 200
+    assert ok.json() == {"status": "processed", "lines": 2}
