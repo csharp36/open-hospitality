@@ -381,7 +381,7 @@ def test_a_forged_state_cannot_bind_a_credential_to_another_tenants_org(
     resp = oauth_client.get(_CALLBACK, params={
         "code": "attacker-code", "realmId": "attacker-realm", "state": forged,
     })
-    assert resp.status_code == 400
+    assert resp.status_code == 307
     assert _rows(db_session) == []
     assert exchange_spy.codes == []
 
@@ -393,7 +393,7 @@ def test_an_expired_state_cannot_bind_a_credential(oauth_client, db_session):
     stale = sign_state(org_id=1, subject="s", now=time.time() - 3600)
     assert oauth_client.get(_CALLBACK, params={
         "code": "good", "realmId": "r1", "state": stale,
-    }).status_code == 400
+    }).status_code == 307
     assert _rows(db_session) == []
 
 
@@ -402,19 +402,53 @@ def test_every_bad_state_is_refused_the_exact_same_way(oauth_client):
     The difference between them is an oracle about other tenants' in-flight
     grants — and "missing" is the one that slips: declared as a required query
     parameter it would be FastAPI's 422 naming the field, which no other
-    failure mode produces."""
+    failure mode produces.
+
+    Compared on the redirect now rather than on a 400 body: the refusal moved
+    to a Location header so an operator whose state expired at Intuit lands
+    back on the page. The property is unchanged and so is what would break it
+    — a per-variant message."""
     def _refusal(params):
         resp = oauth_client.get(_CALLBACK, params=params)
-        return resp.status_code, resp.text
+        return resp.status_code, resp.headers["location"]
 
     base = {"code": "good", "realmId": "r1"}
     forged = _refusal({**base, "state": "1:s:9999999999:" + "de" * 32})
-    assert forged == (400, '{"detail":"invalid authorization state"}')
+    assert forged == (307, "/integrations?error=invalid+authorization+state")
     assert _refusal({**base, "state": "garbage"}) == forged
     assert _refusal({**base, "state": ""}) == forged
     assert _refusal(base) == forged                              # missing
     assert _refusal({**base, "state": sign_state(
         org_id=1, subject="s", now=time.time() - 3600)}) == forged   # expired
+
+
+def test_a_refused_grant_redirects_with_intuits_own_words(oauth_client, monkeypatch):
+    """Reachable only with a VALID signature, so the detail discloses nothing
+    about another tenant — and it is the difference between "you declined" and
+    "that code is already spent", which an operator needs."""
+    def _refuse(code):
+        raise QboError(400, "access_denied: the user declined")
+    oauth_client.app.state.exchange_qbo_code = _refuse
+
+    resp = oauth_client.get(_CALLBACK, params={
+        "code": "good", "realmId": "r1",
+        "state": sign_state(org_id=1, subject="s"),
+    })
+    assert resp.status_code == 307
+    assert "access_denied" in resp.headers["location"]
+
+
+def test_no_redirect_carries_the_code_or_the_state(oauth_client):
+    """The rule at the success redirect, applied to the failures: these travel
+    through history and every proxy between here and the browser."""
+    state = sign_state(org_id=1, subject="s")
+    resp = oauth_client.get(_CALLBACK, params={
+        "realmId": "r1", "state": state,          # no code -> failure branch
+    })
+    assert resp.status_code == 307
+    location = resp.headers["location"]
+    assert state not in location
+    assert "code=" not in location
 
 
 def test_the_org_comes_from_the_signature_not_a_query_parameter(
@@ -475,7 +509,7 @@ def test_a_refused_grant_stores_nothing(oauth_client, db_session, exchange_spy):
         "code": "already-spent", "realmId": "r1",
         "state": sign_state(org_id=1, subject="s"),
     })
-    assert resp.status_code == 400
+    assert resp.status_code == 307
     assert _rows(db_session) == []
 
 
@@ -585,10 +619,10 @@ def test_the_callback_is_mounted_outside_the_operator_gates(oauth_client):
     401 to every real Intuit navigation — and the tempting fix for THAT is to
     weaken the gates for everything.
 
-    The pair is the assertion. The callback must reach its OWN refusal (400,
-    "your state did not verify"), and the two gated surfaces beside it must
-    still refuse an anonymous caller — so this cannot pass by the gates having
-    been dropped across the board."""
-    assert oauth_client.get(_CALLBACK).status_code == 400
+    The pair is the assertion. The callback must reach its OWN refusal (a 307
+    back to `_INTEGRATIONS_PATH`, its state having failed to verify), and the
+    two gated surfaces beside it must still refuse an anonymous caller — so
+    this cannot pass by the gates having been dropped across the board."""
+    assert oauth_client.get(_CALLBACK).status_code == 307
     assert oauth_client.get(_AUTHORIZE).status_code == 401
     assert oauth_client.get("/api/integrations").status_code == 401

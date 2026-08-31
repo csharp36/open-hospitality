@@ -426,10 +426,28 @@ _QBO = "qbo"
 # session lifetime: nothing legitimate holds one of these across a coffee.
 _STATE_TTL_SECONDS = 600
 
-# Where the callback lands the operator when the grant completes. A SPA route,
-# so the browser that followed Intuit's redirect ends up back in the connect
-# UI with the result visible rather than looking at a JSON body.
-_CONNECTED_REDIRECT = "/integrations?connected=accounting"
+# Where the callback lands the operator, win or lose. A SPA route, so the
+# browser that followed Intuit's redirect ends up back in the connect UI with
+# the result visible rather than looking at a JSON body.
+_INTEGRATIONS_PATH = "/integrations"
+_CONNECTED_REDIRECT = f"{_INTEGRATIONS_PATH}?connected=accounting"
+
+# One string for every bad state. Forged, tampered, expired, malformed and
+# absent must be indistinguishable — the property
+# `test_every_bad_state_is_refused_the_exact_same_way` exists to hold — so the
+# detail here is fixed and never names which check failed.
+_BAD_STATE_DETAIL = "invalid authorization state"
+
+
+def _error_redirect(detail: str) -> RedirectResponse:
+    """A failed grant, returned as a redirect rather than raised, so the
+    browser that followed Intuit's redirect lands on `_INTEGRATIONS_PATH`
+    instead of on a JSON body. Carries neither `code` nor `state`, for the
+    reason the success redirect above gives."""
+    return RedirectResponse(
+        url=f"{_INTEGRATIONS_PATH}?{urlencode({'error': detail})}",
+        status_code=307,
+    )
 
 
 def qbo_redirect_uri(settings: Settings) -> str:
@@ -596,15 +614,13 @@ def callback(
     """
     verified = verify_state(state or "")
     if verified is None:
-        raise HTTPException(status_code=400, detail="invalid authorization state")
+        return _error_redirect(_BAD_STATE_DETAIL)
     org_id, subject = verified
     if not code or not realm_id:
         # Only reachable by a caller holding a VALID state, so naming what is
         # missing discloses nothing. Real Intuit sends `error=access_denied`
         # here when the operator declines consent.
-        raise HTTPException(
-            status_code=400, detail="QuickBooks returned no authorization code"
-        )
+        return _error_redirect("QuickBooks returned no authorization code")
     try:
         refresh_token: str = request.app.state.exchange_qbo_code(code)
     except QboError as exc:
@@ -617,9 +633,7 @@ def callback(
         # Until 2026-08-31 this comment asserted the property while
         # `_error_message` fell back to `resp.text[:200]`, so a proxy or WAF
         # error page was echoed here verbatim.
-        raise HTTPException(
-            status_code=400, detail=f"QuickBooks refused the grant: {exc}"
-        ) from exc
+        return _error_redirect(f"QuickBooks refused the grant: {exc}")
 
     # The spec, never a literal field list: `_store_credential` nulls every
     # column this provider does not use, which is what stops a previous
