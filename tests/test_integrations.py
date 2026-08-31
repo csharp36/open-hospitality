@@ -796,3 +796,12 @@ def test_only_qbo_is_an_oauth_provider():
     rather than falling through and being offered as an ordinary credential
     form. The flag's only consumer today is this test."""
     assert [s.provider for s in integ.PROVIDERS if s.oauth] == ["qbo"]
+
+
+def test_every_provider_has_an_operator_facing_name():
+    """An exact pairing over PROVIDERS. A provider with no product name falls
+    back to its own key — the cosmetic failure `product_name`'s docstring
+    describes — so a sixth provider fails here rather than reaching an
+    operator as "adp2"."""
+    for spec in integ.PROVIDERS:
+        assert integ.product_name(spec.provider) != spec.provider

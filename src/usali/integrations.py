@@ -94,8 +94,8 @@ ALL_CREDENTIAL_FIELDS: tuple[str, ...] = tuple(
 )
 
 
-# Operator-facing names, for refusal messages only. The row stores "qbo"; a
-# hotel controller reads "QuickBooks Online". Never used as a key.
+# Operator-facing names, reached through `product_name` below. The row stores
+# "qbo"; a hotel controller reads "QuickBooks Online". Never used as a key.
 _PRODUCT_NAMES: dict[str, str] = {
     "gusto": "Gusto",
     "adp": "ADP",
@@ -103,6 +103,17 @@ _PRODUCT_NAMES: dict[str, str] = {
     "delphi": "Delphi",
     "tripleseat": "Tripleseat",
 }
+
+
+def product_name(provider: str) -> str:
+    """The operator-facing name for a provider key.
+
+    Falls back to the key itself rather than raising: a missing name is a
+    cosmetic defect on one card, not a reason to refuse the page. The
+    fallback is what `test_every_provider_has_an_operator_facing_name`
+    refuses to let ship."""
+    return _PRODUCT_NAMES.get(provider, provider)
+
 
 _INTEGRATION_LABELS: dict[str, str] = {
     PAYROLL: "payroll",
