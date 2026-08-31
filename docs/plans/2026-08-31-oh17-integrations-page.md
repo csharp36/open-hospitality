@@ -938,6 +938,20 @@ export default function IntegrationsPage() {
 
 `PageHeader` takes `title: string` and `Card` takes `children`, both confirmed against `frontend/src/components/ui.tsx:19-56`.
 
+**Two corrections found while implementing this task:**
+
+- `tsconfig.app.json` sets `noUnusedLocals: true`, so the `gusto()` fixture
+  cannot sit unused waiting for Task 9 — it is a hard `tsc` error, not a lint
+  warning, and it turns the whole typecheck red. Task 8 therefore also carries
+  a not-connected-card test that uses it, which the read surface wanted anyway.
+- The 503 test as first written could not fail. When the FIRST fetch rejects,
+  `useQuery` leaves `data` undefined, so no cards render whichever error branch
+  runs — the assertion passed with the 503 special-case deleted. The branch is
+  only load-bearing when a REFETCH fails and react-query keeps the last good
+  `data`: the generic path would then render the message beside stale cards,
+  which is the lie the whole-page refusal exists to prevent. The test seeds a
+  successful load, invalidates, and asserts the card is gone.
+
 - [ ] **Step 4: Run them and watch them pass**
 
 Run: `cd frontend && npx vitest run src/pages/IntegrationsPage.test.tsx`
