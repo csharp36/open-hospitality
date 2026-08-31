@@ -495,8 +495,10 @@ git commit -m "test(oh17): pin the full set of checklist routes"
 Append to `frontend/src/api/types.ts`:
 
 ```ts
-/** One credential field a provider needs. `secret` fields are write-only —
- * the API never returns their values, so an input for one is always blank. */
+/** One credential field a provider needs. A `secret` field is write-only:
+ * `tests/test_integrations_api.py::test_the_provider_block_carries_no_secret_values`
+ * is what holds the API to never returning its value, which is why an input
+ * for one starts blank. */
 export type ProviderField = {
   name: string
   secret: boolean
@@ -505,8 +507,10 @@ export type ProviderField = {
 export type IntegrationProvider = {
   provider: string
   label: string
-  /** Obtained by redirect, not typed in: the card renders a Connect button
-   * and no inputs. Only QuickBooks Online today. */
+  /** Obtained by redirect, not typed in — the card offers a button, not
+   * inputs. Which providers those are is closed in Python;
+   * `tests/test_integrations.py::test_only_qbo_is_an_oauth_provider` pins
+   * the set. */
   oauth: boolean
   fields: ProviderField[]
 }
@@ -536,8 +540,10 @@ Append to `frontend/src/api/client.ts`:
 
 ```ts
 // --- Integrations (OH-17) -----------------------------------------------------
-// org_admin-gated. The read carries the provider specs, so this client holds
-// no credential field list of its own; `connect` sends whatever the spec named.
+// The gate is server-side — `require_grants(ORG_ADMIN)` in
+// src/usali/integrations_api.py is where it is enforced, not here. The read
+// carries the provider specs, so this client holds no credential field list
+// of its own; `connect` sends whatever the spec named.
 
 export function getIntegrations(): Promise<IntegrationsResponse> {
   return getJson('/api/integrations')
@@ -645,7 +651,9 @@ Add the search type near `CoverageSearch`:
 /**
  * The QBO callback lands here with its result in the URL:
  * `?connected=accounting` on success, `?error=…` on a refused or expired
- * grant. Both are cleared by the page once shown, so a reload does not
+ * grant. `_CONNECTED_REDIRECT` and `_error_redirect` in
+ * src/usali/integrations_api.py are where those two URLs are built. Both
+ * params are cleared by the page once shown, so a reload does not
  * re-announce a connection that happened minutes ago.
  */
 export type IntegrationsSearch = {
@@ -892,12 +900,13 @@ export default function IntegrationsPage() {
     queryFn: getIntegrations,
   })
 
-  // A 503 is CredentialUnreadable: a rotated field_encryption_key makes one
-  // row undecryptable, and the API refuses the WHOLE read rather than
-  // reporting that integration as disconnected. Rendering the readable cards
-  // here would tell exactly the lie it refused to tell. The remedy its
-  // message names still works while this refuses, because connect upserts
-  // without reading the old row.
+  // A 503 here is CredentialUnreadable, raised by `get_integrations` in
+  // src/usali/integrations_api.py — that is where the whole read is refused
+  // rather than an undecryptable row being reported as disconnected. This
+  // branch is the frontend half of that refusal: rendering the readable
+  // cards beside the message would restore the lie the API declined to
+  // tell. Pinned by 'refuses the whole page when a credential cannot be
+  // decrypted' in this file's test.
   if (integrations.error instanceof ApiError && integrations.error.status === 503) {
     return (
       <>
@@ -1018,8 +1027,9 @@ import { controlClass } from '../components/ui'
 
 /** Renders whatever fields the spec named. It has no list of its own — that
  * is the point of serving the specs. `aria-label` rather than a wrapping
- * <label>: the accessible name has to hold up under jsdom, which computes it
- * differently from a browser. */
+ * <label>, because the accessible name is what the tests query by:
+ * 'renders an input per spec field' in IntegrationsPage.test.tsx is where
+ * that name is exercised. */
 function ProviderForm({
   integration, spec, onDone,
 }: {
@@ -1178,9 +1188,10 @@ Add an OAuth branch in `IntegrationCard`'s not-connected path — for a spec wit
 
 ```tsx
 function OauthConnect({ spec }: { spec: IntegrationProvider }) {
-  // A top-level navigation, which is why the endpoint returns a URL rather
-  // than a 302: the fetch seam in api/client.ts and its one-shot
-  // redirectToLogin latch are never asked to follow a cross-origin redirect.
+  // A top-level navigation. The authorize endpoint hands back a URL instead
+  // of a 302 so that this, and not the fetch seam in api/client.ts, is what
+  // leaves the origin — its docstring in src/usali/integrations_api.py is
+  // where that reasoning lives.
   const start = useMutation({
     mutationFn: getAuthorizeUrl,
     onSuccess: (res) => { window.location.assign(res.url) },
@@ -1324,8 +1335,10 @@ function ConnectedActions({
               onClick={() => setReplacing((r) => !r)}>
         Replace credentials
       </button>
-      {/* PUT is a full replace, so re-connecting is the identical call the
-          disconnected card makes — no second code path. */}
+      {/* Re-connecting is the identical call the disconnected card makes —
+          no second code path. `_store_credential` in
+          src/usali/integrations_api.py is where the replace is made total,
+          nulling every column the chosen provider does not use. */}
       {replacing && (spec.oauth
         ? <OauthConnect spec={spec} />
         : <ProviderForm integration={item.integration} spec={spec} onDone={onDone} />)}
