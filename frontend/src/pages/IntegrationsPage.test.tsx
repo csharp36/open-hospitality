@@ -271,4 +271,32 @@ describe('IntegrationsPage', () => {
       expect(disconnectIntegration).toHaveBeenCalledWith('accounting')
     })
   })
+
+  it('closes the replace form once the new credential is accepted', async () => {
+    vi.mocked(getIntegrations).mockResolvedValue({
+      items: [gusto({
+        connected: true, provider: 'gusto',
+        identifiers: { company_id: 'c-1' },
+        connected_at: '2026-08-31T10:00:00',
+      })],
+    })
+    vi.mocked(connectIntegration).mockResolvedValue(undefined)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Replace credentials' }))
+    fireEvent.change(screen.getByLabelText('api_token'), { target: { value: 'tok-2' } })
+    fireEvent.change(screen.getByLabelText('company_id'), { target: { value: 'c-1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Gusto' }))
+
+    await waitFor(() => {
+      expect(connectIntegration).toHaveBeenCalledWith('payroll', {
+        provider: 'gusto', api_token: 'tok-2', company_id: 'c-1',
+      })
+    })
+    // The form closes on success: leaving it open leaves the submitted secret
+    // rendered in the input and invites a second, accidental resubmit.
+    await waitFor(() => {
+      expect(screen.queryByLabelText('api_token')).not.toBeInTheDocument()
+    })
+  })
 })

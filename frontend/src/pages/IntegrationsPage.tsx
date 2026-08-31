@@ -125,7 +125,13 @@ function ConnectedActions({
               total, nulling every column the chosen provider does not use. */}
           {replacing && (spec.oauth
             ? <OauthConnect spec={spec} />
-            : <ProviderForm integration={item.integration} spec={spec} onDone={onDone} />)}
+            : (
+              <ProviderForm
+                integration={item.integration}
+                spec={spec}
+                onDone={() => { setReplacing(false); onDone() }}
+              />
+            ))}
         </>
       )}
       {confirming ? (
