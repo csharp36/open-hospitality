@@ -58,7 +58,7 @@ a **trigger** and an **action**.
 ## 2. The invariant
 
 **Trigger.** A comment (or docstring) asserting a fact beyond the function it
-sits in: another module's behaviour, a library's behaviour, what a test covers,
+sits in: another module's behavior, a library's behavior, what a test covers,
 or what callers do. The test is mechanical — *could I be wrong about something I
 cannot see from here?*
 
@@ -66,7 +66,7 @@ cannot see from here?*
 
 ### 2.1 Rephrase to something local — the default
 
-Most cross-boundary claims are load-bearing as *pointers*, not as assertions.
+Most cross-boundary claims earn their place as *pointers*, not as assertions.
 Name the enforcement point instead of asserting the outcome:
 
 > ~~"The client never puts a response body in a QboError, so this cannot leak."~~
@@ -79,7 +79,7 @@ where to look, which the assertion did not.
 
 ### 2.2 Relocate — when the claim is really about another module
 
-A claim about module B's behaviour belongs in **B's own tests**. "The client
+A claim about module B's behavior belongs in **B's own tests**. "The client
 never leaks a body" was an intention in `integrations_api` and false in
 `qbo_client`; as a test in `qbo_client`'s file it became true and stays true.
 The comment then cites the test rather than restating the guarantee.
@@ -144,11 +144,11 @@ cited a real file and a property that never existed.
 
 ## 5. How we would know it is not working
 
-Honest failure modes, since this governs behaviour rather than code:
+Honest failure modes, since this governs behavior rather than code:
 
 1. **Collapse into rephrase-only.** If every trigger discharges as §2.1 and
    §2.3 never fires, the verification habit is gone and only the prose improved.
-   Signal: no "Measured:" lines appear in work that touches library behaviour.
+   Signal: no "Measured:" lines appear in work that touches library behavior.
 2. **Dilution.** If `CLAUDE.md` accretes unrelated rules, this one stops being
    read. Signal: cross-boundary claims reappear unverified.
 3. **Over-application.** If ordinary local rationale starts carrying ceremony,
@@ -157,30 +157,37 @@ Honest failure modes, since this governs behaviour rather than code:
 The direct check is the next review of comparable scope: were any confirmed
 findings false comments?
 
-## 6. Proposed `~/.claude/CLAUDE.md` entry
+## 6. The installed `~/.claude/CLAUDE.md` entry
+
+Reproduced verbatim from the live file. If the two ever disagree, the file
+is the artifact and this section is the stale copy.
 
 ```markdown
 ## Comments that claim things
 
 Before writing a comment or docstring that asserts a fact beyond the function
-it sits in — another module's behaviour, a library's behaviour, what a test
+it sits in — another module's behavior, a library's behavior, what a test
 covers, what callers do — ask: could I be wrong about something I cannot see
 from here? If yes, discharge it one of three ways:
 
-1. **Rephrase to something local.** Name the enforcement point instead of
-   asserting the outcome ("X is where this is enforced"), not the guarantee
-   ("this cannot happen"). Usually the best option: it cannot rot, and it
-   tells the reader where to look.
-2. **Relocate.** A claim about another module's behaviour belongs in that
-   module's tests. Cite the test BY NAME — a name is greppable and its
-   absence is detectable; "there is a test for this" is not.
+1. **Rephrase to something local.** Name the enforcement point ("X is where
+   this is enforced"), not the guarantee ("this cannot happen"). Usually the
+   best option: it cannot rot, and it tells the reader where to look.
+2. **Relocate.** A claim about another module's behavior belongs in that
+   module's tests. Cite the test BY NAME — a name is greppable and its absence
+   is detectable; "there is a test for this" is not.
 3. **Verify.** Run the thing that proves it and record the command in the
    comment. Reserve for claims carrying a correctness or security guarantee.
 
-Where a comment enumerates a closed set ("fails two ways and only two"),
-prefer making the set closed in code instead.
+Where a comment enumerates a closed set ("fails two ways and only two"), prefer
+making the set closed in code instead.
 
 Do NOT respond to this by writing fewer or vaguer comments. Hedged prose is
 weaker without being truer. The rule is about assertions you have not checked,
 not about density.
+
+*Origin: an eleven-defect review of the OH-17 branch in open-hospitality,
+2026-08-31, where five findings were false comments and every one of them was a
+cross-boundary claim. No purely local comment was wrong. Evidence and rejected
+alternatives: `open-hospitality:docs/design/2026-08-31-comment-claims-invariant-design.md`.*
 ```
