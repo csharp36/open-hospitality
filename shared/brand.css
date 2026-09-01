@@ -1,0 +1,24 @@
+/* shared/brand.css
+ *
+ * The marketing skin: a warm hospitality identity, deliberately separate from
+ * the app's indigo so the product palette is untouched. Serif display,
+ * terracotta accent, monospace numbers. Resolved in Track A §7.
+ *
+ * Imported by BOTH frontend/src/index.css (for the public /try page) and
+ * marketing/src/styles/global.css. One definition with two readers, so the
+ * public front door and the marketing site cannot drift apart.
+ *
+ * A second @theme block is how Tailwind v4 merges tokens from another file;
+ * `npm run build` in either package emits --color-brand-canvas and the
+ * .bg-brand-canvas utility from this file.
+ */
+@theme {
+  --font-display: Georgia, "Times New Roman", serif;
+  --color-brand-canvas: oklch(96.6% 0.012 79);
+  --color-brand-surface: oklch(98.6% 0.008 79);
+  --color-brand-ink: oklch(31% 0.03 47);
+  --color-brand-ink-muted: oklch(52% 0.03 60);
+  --color-brand-line: oklch(89% 0.02 74);
+  --color-brand-accent: oklch(58% 0.13 42);
+  --color-brand-accent-soft: oklch(94% 0.03 55);
+}
