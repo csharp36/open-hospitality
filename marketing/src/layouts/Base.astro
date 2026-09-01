@@ -37,6 +37,12 @@ const ogImage = new URL('/og.png', Astro.site).href
     })} />
   </head>
   <body class="bg-brand-canvas text-brand-ink font-sans antialiased">
+    <a
+      href="#main"
+      class="sr-only focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-50 focus:rounded-lg focus:border focus:border-brand-line focus:bg-brand-surface focus:px-4 focus:py-2 focus:text-brand-ink"
+    >
+      Skip to main content
+    </a>
     <header class="flex items-center justify-between px-6 py-4 border-b border-brand-line">
       <a href="/" class="font-display text-lg">Open Hospitality</a>
       <nav class="flex items-center gap-5 text-sm text-brand-ink-muted">
@@ -49,7 +55,7 @@ const ogImage = new URL('/og.png', Astro.site).href
       </nav>
     </header>
 
-    <main><slot /></main>
+    <main id="main"><slot /></main>
 
     <footer class="mt-20 border-t border-brand-line px-6 py-10 text-sm text-brand-ink-muted">
       <div class="flex flex-wrap items-center justify-between gap-4">

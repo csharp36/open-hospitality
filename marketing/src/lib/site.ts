@@ -4,8 +4,8 @@
  */
 export const APP_ORIGIN = import.meta.env.APP_ORIGIN ?? 'https://demo.mandati.ai'
 
-/** The /try path at APP_ORIGIN — the app's public preview. */
+/** The /try path at APP_ORIGIN. */
 export const TRY_URL = `${APP_ORIGIN}/try`
 
-/** The login link in the nav. */
+/** APP_ORIGIN with no path — the app root. */
 export const LOGIN_URL = APP_ORIGIN
