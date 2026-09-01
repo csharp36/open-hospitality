@@ -1409,7 +1409,38 @@ not how we ingest."
 ## Task 12: The CTA smoke test
 
 **Files:**
-- Create: `marketing/playwright.config.ts`, `marketing/e2e/cta.spec.ts`
+- Create: `marketing/playwright.config.ts`, `marketing/e2e/cta.spec.ts`,
+  `marketing/vitest.config.ts`
+- Modify: `marketing/.gitignore`
+
+**Two things this task needs that are easy to miss.**
+
+*Vitest will collect the Playwright spec and fail.* Vitest's default include
+glob is `**/*.{test,spec}.*`, so `e2e/cta.spec.ts` gets picked up and dies with
+`Playwright Test did not expect test() to be called here`. Adding the e2e file
+therefore BREAKS `npm test` unless vitest is told to skip that directory.
+`frontend/vite.config.ts` already carries this exclusion for the identical
+reason — mirror it:
+
+```ts
+// marketing/vitest.config.ts
+import { configDefaults, defineConfig } from 'vitest/config'
+
+// e2e/ holds Playwright specs. Vitest's default glob matches *.spec.* and would
+// collect them, where Playwright's test() cannot run. frontend/vite.config.ts
+// excludes its own e2e directory for the same reason.
+export default defineConfig({
+  test: { exclude: [...configDefaults.exclude, 'e2e/**'] },
+})
+```
+
+*`astro preview` may detach itself and break Playwright's `webServer`.* Astro
+detects an agent-like parent process and forces background mode, so the process
+Playwright spawns exits immediately and it reports `Process from
+config.webServer exited early`. Set Astro's own escape hatch in the `webServer`
+block: `env: { ...process.env, ASTRO_PREVIEW_BACKGROUND: '1' }`. This does not
+fire in CI, and CI does not run Playwright — but without it nobody can run these
+tests from an agent session.
 
 - [ ] **Step 1: `marketing/playwright.config.ts`**
 
