@@ -1,0 +1,67 @@
+---
+import '../styles/global.css'
+import { LOGIN_URL, TRY_URL } from '../lib/site'
+
+interface Props {
+  title: string
+  description: string
+}
+
+const { title, description } = Astro.props
+const canonical = new URL(Astro.url.pathname, Astro.site).href
+const ogImage = new URL('/og.png', Astro.site).href
+---
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:image" content={ogImage} />
+    <meta name="twitter:card" content="summary_large_image" />
+
+    <script type="application/ld+json" set:html={JSON.stringify({
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareApplication',
+      name: 'Open Hospitality',
+      applicationCategory: 'BusinessApplication',
+      description,
+      url: Astro.site?.href,
+    })} />
+  </head>
+  <body class="bg-brand-canvas text-brand-ink font-sans antialiased">
+    <header class="flex items-center justify-between px-6 py-4 border-b border-brand-line">
+      <a href="/" class="font-display text-lg">Open Hospitality</a>
+      <nav class="flex items-center gap-5 text-sm text-brand-ink-muted">
+        <a href="/#platform" class="hover:text-brand-ink">Platform</a>
+        <a href="/pricing" class="hover:text-brand-ink">Pricing</a>
+        <a href="/your-data" class="hover:text-brand-ink">Your data</a>
+        <a href={LOGIN_URL} class="rounded-lg border border-brand-line px-3 py-1.5 text-brand-ink hover:bg-brand-surface">
+          Log in
+        </a>
+      </nav>
+    </header>
+
+    <main><slot /></main>
+
+    <footer class="mt-20 border-t border-brand-line px-6 py-10 text-sm text-brand-ink-muted">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <span>Open Hospitality — the open financial and labor engine for hotels.</span>
+        <div class="flex gap-5">
+          <a href="/pricing" class="hover:text-brand-ink">Pricing</a>
+          <a href="/your-data" class="hover:text-brand-ink">Your data</a>
+          <a href="https://github.com/csharp36/open-hospitality" class="hover:text-brand-ink">GitHub</a>
+          <a href={TRY_URL} class="hover:text-brand-ink">Try it</a>
+        </div>
+      </div>
+      <p class="mt-6 text-xs">Apache-2.0 licensed and self-hostable.</p>
+    </footer>
+  </body>
+</html>
