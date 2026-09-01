@@ -66,6 +66,26 @@ jobs:
       - name: Tests
         run: npm test
 
+  marketing:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: marketing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: marketing/package-lock.json
+      - run: npm ci
+      # Build first: astro build runs the roadmap guard (Forward.astro's
+      # frontmatter calls featuredEntries(), which throws if a featured id in
+      # .github/roadmap.yml has shipped or vanished), and tests/build.test.ts
+      # asserts against dist/, which npm test alone would not have built.
+      - run: npm run build
+      - run: npm test
+
   image:
     runs-on: ubuntu-latest
     steps:
