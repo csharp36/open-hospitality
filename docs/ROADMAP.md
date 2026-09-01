@@ -408,7 +408,7 @@ user-facing capability because the bot matches on `summary`:
 | id | Capability | Status | §ref |
 |---|---|---|---|
 | **OH-16** | Public marketing front door | `planned` | §1.1 |
-| **OH-17** | Connect your own accounting and payroll accounts | `planned` | §2.1 |
+| **OH-17** | Connect your own accounting and payroll accounts | `shipped` | §2.1 |
 | **OH-18** | Onboarding checklist of open setup items | `shipped` | §2.2 |
 | **OH-19** | Subscription plans and billing | `planned` | §4 |
 | **OH-20** | Review and correct USALI transaction-code mapping | `considering` | §4.1 |

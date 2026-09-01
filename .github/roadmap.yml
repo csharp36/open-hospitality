@@ -252,3 +252,12 @@ roadmap:
       a figure of its own.
     status: considering
     tags: [reporting, ai]
+
+  - id: OH-22
+    title: Direct PMS integrations
+    summary: >
+      Pull data directly from a property management system rather than
+      ingesting an exported report. Distinct from OH-2, which extends the
+      existing file-based path to more report shapes.
+    status: planned
+    tags: [ingestion, pms, integrations]
