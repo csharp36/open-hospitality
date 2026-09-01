@@ -1,0 +1,44 @@
+---
+const rows = [
+  ['Rooms revenue', '142,880'],
+  ['Food & beverage', '18,204'],
+  ['Other operated', '4,116'],
+  ['Total revenue', '165,200'],
+  ['Rooms expense', '(38,410)'],
+  ['Departmental profit', '117,550'],
+]
+const bold = new Set(['Total revenue', 'Departmental profit'])
+---
+<section class="border-t border-brand-line px-6 py-16">
+  <h2 class="text-center font-display text-3xl">This becomes this.</h2>
+  <p class="mx-auto mt-3 max-w-[52ch] text-center text-brand-ink-muted">
+    The report your property management system produces every night, sorted into a real
+    operating statement. No setup, no integration, no account.
+  </p>
+
+  <div class="mx-auto mt-10 grid max-w-4xl items-center gap-4 sm:grid-cols-[1fr_auto_1fr]">
+    <figure class="rounded-lg border border-brand-line bg-brand-surface p-4">
+      <figcaption class="mb-3 text-[10px] uppercase tracking-widest text-brand-ink-muted">
+        Opera · Trial Balance
+      </figcaption>
+      <img src="/before-trial-balance.webp" alt="An unsorted property management system trial balance"
+           width="480" height="320" class="w-full rounded" loading="lazy" />
+    </figure>
+
+    <div aria-hidden="true" class="text-center text-2xl text-brand-accent">→</div>
+
+    <div class="rounded-lg border border-brand-line bg-brand-surface p-4">
+      <p class="mb-3 text-[10px] uppercase tracking-widest text-brand-ink-muted">
+        Summary Operating Statement
+      </p>
+      <dl>
+        {rows.map(([label, value]) => (
+          <div class={`flex justify-between border-b border-brand-line py-1.5 text-sm last:border-0 ${bold.has(label) ? 'font-semibold' : ''}`}>
+            <dt>{label}</dt>
+            <dd class="font-mono tabular-nums">{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  </div>
+</section>

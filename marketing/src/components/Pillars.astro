@@ -1,0 +1,31 @@
+---
+const pillars = [
+  {
+    name: 'Financials',
+    body: 'A USALI operating statement with drill-through to the transaction row behind any line. QuickBooks and CPA pack export.',
+  },
+  {
+    name: 'Labor',
+    body: 'Schedule 14/15 cost and hours by department, target hours against rooms actually sold, overtime and productivity.',
+  },
+  {
+    name: 'Workforce',
+    body: 'Employees, scheduling, and an iPad time clock with server-enforced punch order. Pay runs when the period closes.',
+  },
+  {
+    name: 'Connections',
+    body: 'Opera, AutoClerk and SkyTouch in. Your own accounting and payroll accounts connected out.',
+  },
+]
+---
+<section id="platform" class="border-t border-brand-line px-6 py-16">
+  <h2 class="text-center font-display text-3xl">What it runs</h2>
+  <div class="mx-auto mt-10 grid max-w-5xl gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {pillars.map((p) => (
+      <div class="rounded-lg border border-brand-line bg-brand-surface p-5">
+        <h3 class="font-medium">{p.name}</h3>
+        <p class="mt-2 text-sm text-brand-ink-muted">{p.body}</p>
+      </div>
+    ))}
+  </div>
+</section>
