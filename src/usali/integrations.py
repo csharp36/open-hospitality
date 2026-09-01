@@ -66,6 +66,11 @@ class ProviderSpec:
     provider: str
     secret_fields: tuple[str, ...]
     plain_fields: tuple[str, ...]
+    # True when the credential is obtained by redirect rather than typed in,
+    # so a caller offering a form has to offer a redirect instead of inputs.
+    # PROVIDERS below is where the set of such providers is closed, and
+    # test_only_qbo_is_an_oauth_provider is what keeps it closed.
+    oauth: bool = False
 
     @property
     def fields(self) -> tuple[str, ...]:
@@ -75,7 +80,7 @@ class ProviderSpec:
 PROVIDERS: tuple[ProviderSpec, ...] = (
     ProviderSpec(PAYROLL, "gusto", ("api_token",), ("company_id",)),
     ProviderSpec(PAYROLL, "adp", ("client_secret",), ("client_id",)),
-    ProviderSpec(ACCOUNTING, "qbo", ("refresh_token",), ("realm_id",)),
+    ProviderSpec(ACCOUNTING, "qbo", ("refresh_token",), ("realm_id",), oauth=True),
     ProviderSpec(DEMAND_FEED, "delphi", ("subscription_key",), ()),
     ProviderSpec(DEMAND_FEED, "tripleseat", ("api_key",), ()),
 )
@@ -89,8 +94,8 @@ ALL_CREDENTIAL_FIELDS: tuple[str, ...] = tuple(
 )
 
 
-# Operator-facing names, for refusal messages only. The row stores "qbo"; a
-# hotel controller reads "QuickBooks Online". Never used as a key.
+# Operator-facing names, reached through `product_name` below. The row stores
+# "qbo"; a hotel controller reads "QuickBooks Online". Never used as a key.
 _PRODUCT_NAMES: dict[str, str] = {
     "gusto": "Gusto",
     "adp": "ADP",
@@ -98,6 +103,47 @@ _PRODUCT_NAMES: dict[str, str] = {
     "delphi": "Delphi",
     "tripleseat": "Tripleseat",
 }
+
+
+def product_name(provider: str) -> str:
+    """The operator-facing name for a provider key.
+
+    Falls back to the key itself rather than raising: a missing name is a
+    cosmetic defect on one card, not a reason to refuse the page. The
+    fallback is what `test_every_provider_has_an_operator_facing_name`
+    refuses to let ship."""
+    return _PRODUCT_NAMES.get(provider, provider)
+
+
+# Operator-facing names for credential FIELDS, reached through `field_label`
+# below. The row stores "api_token"; a hotel controller reads "API token".
+# Never used as a key. `frontend/src/pages/IntegrationsPage.tsx`'s
+# `ProviderForm` is where this is meant to reach an operator, rather than a
+# humanizing transform living in TypeScript (design doc, section 3) —
+# 'the label an operator sees is what names the input' in that file's test
+# is what fails if it ever stops.
+_FIELD_LABELS: dict[str, str] = {
+    "api_token": "API token",
+    "company_id": "Company ID",
+    "client_secret": "Client secret",
+    "client_id": "Client ID",
+    "refresh_token": "Refresh token",
+    "realm_id": "Realm ID (QuickBooks company)",
+    "subscription_key": "Subscription key",
+    "api_key": "API key",
+}
+
+
+def field_label(field: str) -> str:
+    """The operator-facing name for a credential field key.
+
+    Falls back to the key itself rather than raising, the same posture as
+    `product_name` just above: a missing label is a cosmetic defect on one
+    input, not a reason to refuse the page. The fallback is what
+    `test_every_provider_field_has_an_operator_facing_label` refuses to let
+    ship."""
+    return _FIELD_LABELS.get(field, field)
+
 
 _INTEGRATION_LABELS: dict[str, str] = {
     PAYROLL: "payroll",
@@ -120,20 +166,33 @@ def not_connected_detail(integration: str) -> str:
     must never appear here is which one THIS tenant chose, or any part of a
     credential.
 
-    `/integrations` is a FORWARD REFERENCE: OH-17 shipped the backend for it
-    (the router in task 10, the OAuth pair in task 11), but the SPA page is a
-    SEPARATE frontend plan that has not shipped, so today this path resolves
-    to nothing an operator can use. That is deliberate — a named blocker an
-    operator can act on soon beats a refusal naming an env var they cannot act
-    on at all (ADR-010, and the reason `USALI_CRM_PROVIDER` came out of these
-    strings). When the page ships, this is the one string to revisit."""
+    `/integrations` has SHIPPED: it is a registered route with a nav entry,
+    and `IntegrationsPage.tsx` renders a real connect form for Gusto and ADP,
+    an OAuth button for QuickBooks, and working disconnect/replace. So for
+    PAYROLL and ACCOUNTING, naming it below is no longer a forward reference
+    (ADR-010, and the reason `USALI_CRM_PROVIDER` came out of these strings) —
+    it is where the operator actually finishes the job.
+
+    DEMAND_FEED does not get that sentence: `verify_credentials` refuses
+    Delphi and Tripleseat without a property `crm_ref`, and nothing in the app
+    can set one (only the repo's YAML seed writes it, first-insert-only).
+    Telling this operator to "connect X on /integrations" would be the same
+    false promise `checklist.py`'s `demand_feed` item was built to avoid
+    (D-OH17.16, its `unavailable_reason`) — so this function names the same
+    true blocker instead of the generic one."""
     label = _INTEGRATION_LABELS.get(integration, integration)
     products = [
-        _PRODUCT_NAMES.get(spec.provider, spec.provider)
+        product_name(spec.provider)
         for spec in PROVIDERS
         if spec.integration == integration
     ]
     choices = " or ".join(products)
+    if integration == DEMAND_FEED:
+        return (
+            f"{label} is not connected for this tenant — connecting "
+            f"{choices} needs a property crm_ref, which nothing in the app "
+            "can set yet; contact us to have one added"
+        )
     return (
         f"{label} is not connected for this tenant — "
         f"connect {choices} on /integrations"

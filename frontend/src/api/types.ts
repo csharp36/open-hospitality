@@ -1134,3 +1134,53 @@ export interface Checklist {
    *  goes to zero on a total probe failure. */
   all_clear: boolean
 }
+
+// --- Integrations (OH-17) -----------------------------------------------------
+// Shapes for the routes in src/usali/integrations_api.py: GET /api/integrations,
+// PUT/DELETE /api/integrations/{integration}, and
+// GET /api/integrations/accounting/authorize.
+
+/** One credential field a provider needs. A `secret` field is write-only:
+ * `tests/test_integrations_api.py::test_no_secret_is_ever_on_the_wire`
+ * is what holds the API to never returning its value, which is why an input
+ * for one starts blank.
+ *
+ * `label` is the visible text a form must draw beside the input — e.g.
+ * "Company ID" for `company_id`. It comes from `field_label` in
+ * src/usali/integrations.py, the same place `IntegrationProvider.label`
+ * below comes from `product_name`: this file holds no humanizing transform
+ * of its own (design doc, section 3). */
+export type ProviderField = {
+  name: string
+  secret: boolean
+  label: string
+}
+
+export type IntegrationProvider = {
+  provider: string
+  label: string
+  /** Obtained by redirect, not typed in — the card offers a button, not
+   * inputs. Which providers those are is closed in Python;
+   * `tests/test_integrations.py::test_only_qbo_is_an_oauth_provider` pins
+   * the set. */
+  oauth: boolean
+  fields: ProviderField[]
+}
+
+export type Integration = {
+  integration: string
+  connected: boolean
+  provider: string | null
+  /** Non-secret identifiers — a QBO realm, a Gusto company id. */
+  identifiers: Record<string, string>
+  connected_at: string | null
+  providers: IntegrationProvider[]
+}
+
+export type IntegrationsResponse = {
+  items: Integration[]
+}
+
+export type AuthorizeUrl = {
+  url: string
+}

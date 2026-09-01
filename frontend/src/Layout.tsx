@@ -82,6 +82,9 @@ type NavSection = {
 
 const isScheduler = (me: Me | undefined) => hasRole(me, 'org_admin', 'property_gm')
 const isPayroll = (me: Me | undefined) => hasRole(me, 'payroll_admin')
+// org_admin ONLY: the API is require_grants(ORG_ADMIN), stricter than
+// isScheduler, and a nav entry is a promise about what this account can do.
+const isOrgAdmin = (me: Me | undefined) => hasRole(me, 'org_admin')
 
 const SECTIONS: NavSection[] = [
   {
@@ -124,6 +127,7 @@ const SECTIONS: NavSection[] = [
       { to: '/reports', label: 'Reports', icon: ReportsIcon },
       { to: '/performance', label: 'Performance', icon: GaugeIcon },
       { to: '/qbo', label: 'QBO', icon: SyncIcon },
+      { to: '/integrations', label: 'Integrations', icon: SyncIcon, show: isOrgAdmin },
       { to: '/coverage', label: 'Coverage', icon: CoverageIcon },
       { label: 'Daily Reports', icon: FileIcon, soon: true },
       { label: 'Night Audit', icon: MoonIcon, soon: true },

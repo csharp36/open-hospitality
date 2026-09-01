@@ -1,0 +1,297 @@
+// Per-tenant integration config (OH-17). One query for the page; the cards
+// below are presentational. The provider field lists come from the API — this
+// file must never grow one of its own, or it becomes a second copy of
+// PROVIDERS with nothing checking it (design doc, section 3).
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { getRouteApi } from '@tanstack/react-router'
+import { useEffect, useRef, useState } from 'react'
+
+import {
+  ApiError, connectIntegration, disconnectIntegration, getAuthorizeUrl, getIntegrations,
+} from '../api/client'
+import type { Integration, IntegrationProvider } from '../api/types'
+import { Card, PageHeader, controlClass } from '../components/ui'
+import { errorMessage } from '../lib/errors'
+
+// getRouteApi avoids the router.tsx <-> IntegrationsPage.tsx circular value
+// import — see QboPage.tsx for the same pattern.
+const route = getRouteApi('/integrations')
+
+const TITLES: Record<string, string> = {
+  payroll: 'Payroll',
+  accounting: 'Accounting',
+  demand_feed: 'Demand feed',
+}
+
+/** Renders whatever fields the spec named. It has no list of its own — that
+ * is the point of serving the specs.
+ *
+ * Each input gets a real `<label htmlFor>`, not `aria-label`: an aria-label
+ * gives an accessible name with nothing drawn on screen, which is the exact
+ * defect this component shipped with — every test queried `getByLabelText`
+ * and passed while the page showed anonymous boxes next to "Connect Gusto".
+ * 'the label an operator sees is what names the input' in
+ * IntegrationsPage.test.tsx is what now checks the label is actually
+ * rendered, not just present as an accessible name.
+ *
+ * The id is `${integration}-${spec.provider}-${field.name}` rather than just
+ * `field.name`: a card can show two disconnected `ProviderForm`s at once
+ * (payroll offers both Gusto and ADP), so `field.name` alone is not unique
+ * across the page the moment two providers on one card share a field name —
+ * PROVIDERS is free to grow one that does, and nothing here would notice.
+ * Keying on the (integration, provider, field) triple closes that off by
+ * construction rather than by current PROVIDERS content. Checked by
+ * 'never renders two forms with the same input id' in the same file, which
+ * renders Gusto and ADP together and asserts the DOM has no duplicate id. */
+function ProviderForm({
+  integration, spec, onDone,
+}: {
+  integration: string
+  spec: IntegrationProvider
+  onDone: () => void
+}) {
+  const [values, setValues] = useState<Record<string, string>>({})
+  const connect = useMutation({
+    mutationFn: () => connectIntegration(integration, { provider: spec.provider, ...values }),
+    onSuccess: onDone,
+  })
+  return (
+    <form
+      className="mt-2 space-y-2"
+      onSubmit={(e) => { e.preventDefault(); connect.mutate() }}
+    >
+      {spec.fields.map((field) => {
+        const id = `${integration}-${spec.provider}-${field.name}`
+        return (
+          <label key={field.name} className="flex flex-col gap-1 text-sm" htmlFor={id}>
+            <span className="text-xs font-medium text-ink-muted">{field.label}</span>
+            <input
+              id={id}
+              type={field.secret ? 'password' : 'text'}
+              className={controlClass}
+              value={values[field.name] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [field.name]: e.target.value }))}
+            />
+          </label>
+        )
+      })}
+      <button type="submit" className={controlClass}>{`Connect ${spec.label}`}</button>
+      {connect.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(connect.error)}</p>
+      )}
+    </form>
+  )
+}
+
+function OauthConnect({ spec }: { spec: IntegrationProvider }) {
+  // A top-level navigation. The authorize endpoint hands back a URL instead
+  // of a 302 so that this, and not the fetch seam in api/client.ts, is what
+  // leaves the origin — its docstring in src/usali/integrations_api.py is
+  // where that reasoning lives.
+  const start = useMutation({
+    mutationFn: getAuthorizeUrl,
+    onSuccess: (res) => { window.location.assign(res.url) },
+  })
+  return (
+    <div className="mt-2 space-y-2">
+      <button type="button" className={controlClass} onClick={() => start.mutate()}>
+        {`Connect ${spec.label}`}
+      </button>
+      {start.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(start.error)}</p>
+      )}
+    </div>
+  )
+}
+
+/** The connected card's own controls: disconnect (behind a same-card confirm,
+ * never `window.confirm`) and replace-credentials. `spec` is the entry this
+ * integration's `provider` has in the served PROVIDERS list, which can be
+ * `undefined` for a live row whose provider has since been retired — see the
+ * comment on the connected branch in IntegrationCard. Disconnect only needs
+ * `item.integration`, so it works either way; Replace needs the spec's field
+ * list, so it is withheld when there is none. */
+function ConnectedActions({
+  item, spec, onDone,
+}: {
+  item: Integration
+  spec: IntegrationProvider | undefined
+  onDone: () => void
+}) {
+  const [confirming, setConfirming] = useState(false)
+  const [replacing, setReplacing] = useState(false)
+  const drop = useMutation({
+    mutationFn: () => disconnectIntegration(item.integration),
+    onSuccess: () => { setConfirming(false); onDone() },
+  })
+  const identifiers = Object.values(item.identifiers).join(', ')
+  const label = spec?.label ?? item.provider ?? item.integration
+  return (
+    <div className="mt-3 space-y-2">
+      {/* Replace needs a spec to know which fields to ask for. A connected
+          row whose provider has left PROVIDERS has none, so it can still be
+          disconnected but not re-entered here — the honest surface for a
+          state nothing in the app can rebuild. */}
+      {spec !== undefined && (
+        <>
+          <button type="button" className={controlClass}
+                  onClick={() => setReplacing((r) => !r)}>
+            Replace credentials
+          </button>
+          {/* PUT is a full replace, so re-connecting is the identical call the
+              disconnected card makes — no second code path. `_store_credential`
+              in src/usali/integrations_api.py is where the replace is made
+              total, nulling every column the chosen provider does not use. */}
+          {replacing && (spec.oauth
+            ? <OauthConnect spec={spec} />
+            : (
+              <ProviderForm
+                integration={item.integration}
+                spec={spec}
+                onDone={() => { setReplacing(false); onDone() }}
+              />
+            ))}
+        </>
+      )}
+      {confirming ? (
+        <div className="space-y-2">
+          <p className="text-sm">
+            {`Disconnect ${label}${identifiers === '' ? '' : ` (${identifiers})`}?`}
+          </p>
+          <button type="button" className={controlClass} onClick={() => drop.mutate()}>
+            Yes, disconnect
+          </button>
+          <button type="button" className={controlClass}
+                  onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+          {drop.error !== null && (
+            <p className="text-sm text-danger-red">{errorMessage(drop.error)}</p>
+          )}
+        </div>
+      ) : (
+        <button type="button" className={controlClass} onClick={() => setConfirming(true)}>
+          Disconnect
+        </button>
+      )}
+    </div>
+  )
+}
+
+function IntegrationCard({
+  item, onDone, note, error,
+}: {
+  item: Integration
+  onDone: () => void
+  note?: string
+  error?: string
+}) {
+  const title = TITLES[item.integration] ?? item.integration
+  const connected = item.providers.find((p) => p.provider === item.provider)
+  return (
+    <Card>
+      <h2 className="text-sm font-semibold">{title}</h2>
+      {note !== undefined && <p className="mt-2 text-sm">{note}</p>}
+      {error !== undefined && <p className="mt-2 text-sm text-danger-red">{error}</p>}
+      {item.connected ? (
+        <div className="mt-2 space-y-1 text-sm">
+          {/* `item.connected` alone decides this branch. The spec lookup can
+              miss — `providers` comes from the current PROVIDERS registry while
+              `provider` comes from the stored row — and when it does, the raw
+              key is a worse label but a true one. Saying "Not connected" for a
+              live credential would be the same kind of lie the 503 branch
+              above refuses to tell. */}
+          <p>{connected?.label ?? item.provider}</p>
+          {Object.entries(item.identifiers).map(([name, value]) => (
+            <p key={name} className="text-ink-muted">
+              {name}: <span className="tabular-nums">{value}</span>
+            </p>
+          ))}
+          <ConnectedActions item={item} spec={connected} onDone={onDone} />
+        </div>
+      ) : (
+        <>
+          <p className="mt-2 text-sm text-ink-muted">Not connected</p>
+          {item.providers.filter((p) => !p.oauth).map((spec) => (
+            <ProviderForm
+              key={spec.provider}
+              integration={item.integration}
+              spec={spec}
+              onDone={onDone}
+            />
+          ))}
+          {item.providers.filter((p) => p.oauth).map((spec) => (
+            <OauthConnect key={spec.provider} spec={spec} />
+          ))}
+        </>
+      )}
+    </Card>
+  )
+}
+
+export default function IntegrationsPage() {
+  const qc = useQueryClient()
+  const onDone = () => { void qc.invalidateQueries({ queryKey: ['integrations'] }) }
+  const integrations = useQuery({
+    queryKey: ['integrations'],
+    queryFn: getIntegrations,
+  })
+
+  const search = route.useSearch()
+  const navigate = route.useNavigate()
+  // Captured on first render: the effect below empties `search`, and reading
+  // the note from `search` afterwards would blank it the instant it appeared.
+  const landed = useRef({ connected: search.connected, error: search.error })
+  useEffect(() => {
+    // Shown once. Cleared with `replace` so a reload does not re-announce a
+    // grant that completed minutes ago, and so Back does not walk into it.
+    if (search.connected !== undefined || search.error !== undefined) {
+      void navigate({ search: {}, replace: true })
+    }
+  }, [search.connected, search.error, navigate])
+
+  // A 503 here is CredentialUnreadable, raised by `get_integrations` in
+  // src/usali/integrations_api.py — that is where the whole read is refused
+  // rather than an undecryptable row being reported as disconnected. This
+  // branch is the frontend half of that refusal: rendering the readable
+  // cards beside the message would restore the lie the API declined to
+  // tell. Pinned by 'refuses the whole page when a refetch finds a
+  // credential cannot be decrypted' in this file's test.
+  if (integrations.error instanceof ApiError && integrations.error.status === 503) {
+    return (
+      <>
+        <PageHeader title="Integrations" />
+        <Card>
+          <p className="text-sm">{integrations.error.detail}</p>
+        </Card>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <PageHeader title="Integrations" />
+      {integrations.error !== null && integrations.error !== undefined && (
+        <Card><p className="text-sm">{errorMessage(integrations.error)}</p></Card>
+      )}
+      <div className="space-y-3">
+        {(integrations.data?.items ?? []).map((item) => (
+          <IntegrationCard
+            key={item.integration}
+            item={item}
+            onDone={onDone}
+            note={landed.current.connected === item.integration
+              ? `${item.providers[0]?.label ?? item.integration} is connected.`
+              : undefined}
+            // The callback that sets `error` is accounting's only —
+            // `_error_redirect` in src/usali/integrations_api.py is reached
+            // solely from the QBO callback — so the accounting card is the
+            // one place this param can ever belong.
+            error={item.integration === 'accounting' ? landed.current.error : undefined}
+          />
+        ))}
+      </div>
+    </>
+  )
+}

@@ -52,9 +52,12 @@ from usali.integrations import (
     ACCOUNTING,
     ALL_CREDENTIAL_FIELDS,
     INTEGRATIONS,
+    PROVIDERS,
     CannotVerify,
     CredentialUnreadable,
     credential_for,
+    field_label,
+    product_name,
     spec_for,
 )
 from usali.models import AuditEvent, OrgIntegrationCredential, Property
@@ -83,6 +86,28 @@ def _session(request: Request) -> Session:
     return request_session_factory(request)()
 
 
+class ProviderFieldModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    secret: bool
+    # The visible text a form must draw beside the input — `field_label` in
+    # usali/integrations.py, never a frontend transform of `name`. Without
+    # this, a caller has only the raw column name to show an operator, which
+    # is the defect this field exists to close (see IntegrationsPage.tsx's
+    # `ProviderForm`).
+    label: str
+
+
+class ProviderModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    label: str
+    oauth: bool
+    fields: list[ProviderFieldModel]
+
+
 class IntegrationModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -91,6 +116,12 @@ class IntegrationModel(BaseModel):
     provider: str | None
     identifiers: dict[str, str]
     connected_at: str | None
+    # Every provider this integration accepts, so a caller can offer a form
+    # without carrying a field list of its own. Built inline per read rather
+    # than hoisted to a module constant: the set is three integrations by at
+    # most two providers, so there is nothing to save, and a fresh list per
+    # response means no pydantic model instance is shared between requests.
+    providers: list[ProviderModel]
 
 
 class IntegrationsModel(BaseModel):
@@ -106,13 +137,40 @@ def _integration_or_404(integration: str) -> str:
     return integration
 
 
+def _providers_for(integration: str) -> list[ProviderModel]:
+    """The provider specs this endpoint serves, straight off PROVIDERS.
+
+    `secret` is membership in `secret_fields`, not a second list: the two
+    halves of `fields` are what the spec already distinguishes, and deriving
+    the flag here is what stops a field being described as plain on the wire
+    while sitting on an EncryptedString column."""
+    return [
+        ProviderModel(
+            provider=spec.provider,
+            label=product_name(spec.provider),
+            oauth=spec.oauth,
+            fields=[
+                ProviderFieldModel(
+                    name=name,
+                    secret=name in spec.secret_fields,
+                    label=field_label(name),
+                )
+                for name in spec.fields
+            ],
+        )
+        for spec in PROVIDERS
+        if spec.integration == integration
+    ]
+
+
 @router.get("")
 def get_integrations(
     request: Request,
     principal: Principal = Depends(require_integration_admin),
 ) -> IntegrationsModel:
-    """Every integration, connected or not, with its provider and non-secret
-    identifiers. Never a secret — see this module's docstring."""
+    """Every integration, connected or not, with its provider, non-secret
+    identifiers, and the providers block listing every provider it accepts.
+    Never a secret — see this module's docstring."""
     del principal  # the gate is the point; the read is not attributed
     items: list[IntegrationModel] = []
     with _session(request) as session:
@@ -139,6 +197,7 @@ def get_integrations(
                 items.append(IntegrationModel(
                     integration=integration, connected=False, provider=None,
                     identifiers={}, connected_at=None,
+                    providers=_providers_for(integration),
                 ))
                 continue
             spec = spec_for(integration, row.provider)
@@ -154,6 +213,7 @@ def get_integrations(
                     if (value := getattr(row, field)) is not None
                 },
                 connected_at=row.connected_at.isoformat(),
+                providers=_providers_for(integration),
             ))
     return IntegrationsModel(items=items)
 
@@ -377,10 +437,46 @@ _QBO = "qbo"
 # session lifetime: nothing legitimate holds one of these across a coffee.
 _STATE_TTL_SECONDS = 600
 
-# Where the callback lands the operator when the grant completes. A SPA route,
-# so the browser that followed Intuit's redirect ends up back in the connect
-# UI with the result visible rather than looking at a JSON body.
-_CONNECTED_REDIRECT = "/integrations?connected=accounting"
+# Where the callback lands the operator, win or lose. A SPA route, so the
+# browser that followed Intuit's redirect ends up back in the connect UI with
+# the result visible rather than looking at a JSON body.
+_INTEGRATIONS_PATH = "/integrations"
+_CONNECTED_REDIRECT = f"{_INTEGRATIONS_PATH}?connected=accounting"
+
+# One string for every bad state. Forged, tampered, expired, malformed and
+# absent must be indistinguishable — the property
+# `test_every_bad_state_is_refused_the_exact_same_way` exists to hold — so the
+# detail here is fixed and never names which check failed.
+_BAD_STATE_DETAIL = "invalid authorization state"
+
+# The detail rides in a Location header, and `qbo_client._error_message` reads
+# Intuit's fault text out of a structured body without bounding it — only the
+# unparseable fallback is capped, over in `_unparseable`. A header long enough
+# to trip a proxy's size limit turns this redirect into a 502, which is the
+# failure this redirect exists to avoid. Bounded here, at the one place every
+# failure path goes through.
+_MAX_ERROR_DETAIL = 200
+
+
+def _error_redirect(detail: str) -> RedirectResponse:
+    """A failed grant, returned as a redirect rather than raised, so the
+    browser that followed Intuit's redirect lands on `_INTEGRATIONS_PATH`
+    instead of on a JSON body. Carries neither `code` nor `state`, for the
+    reason the success redirect above gives.
+
+    `detail` is truncated to `_MAX_ERROR_DETAIL`: everything else about this
+    function is deliberate about what a query string may carry, and an
+    unbounded upstream fault message is the one thing that was still able to
+    grow this header without limit."""
+    return RedirectResponse(
+        url=f"{_INTEGRATIONS_PATH}?{urlencode({'error': detail[:_MAX_ERROR_DETAIL]})}",
+        # 307, matching the success redirect below — not because 307 is more
+        # correct here (this route is GET-only, so 307 and 303 behave
+        # identically to the browser; 303 See Other is the more conventional
+        # code for a process-then-redirect). Keep both paths on the same code:
+        # "fixing" one to 303 without the other is worse than leaving both.
+        status_code=307,
+    )
 
 
 def qbo_redirect_uri(settings: Settings) -> str:
@@ -547,15 +643,13 @@ def callback(
     """
     verified = verify_state(state or "")
     if verified is None:
-        raise HTTPException(status_code=400, detail="invalid authorization state")
+        return _error_redirect(_BAD_STATE_DETAIL)
     org_id, subject = verified
     if not code or not realm_id:
         # Only reachable by a caller holding a VALID state, so naming what is
         # missing discloses nothing. Real Intuit sends `error=access_denied`
         # here when the operator declines consent.
-        raise HTTPException(
-            status_code=400, detail="QuickBooks returned no authorization code"
-        )
+        return _error_redirect("QuickBooks returned no authorization code")
     try:
         refresh_token: str = request.app.state.exchange_qbo_code(code)
     except QboError as exc:
@@ -568,9 +662,17 @@ def callback(
         # Until 2026-08-31 this comment asserted the property while
         # `_error_message` fell back to `resp.text[:200]`, so a proxy or WAF
         # error page was echoed here verbatim.
-        raise HTTPException(
-            status_code=400, detail=f"QuickBooks refused the grant: {exc}"
-        ) from exc
+        #
+        # `exc.message`, not `str(exc)`: `QboError.__init__` already bakes
+        # `f"QBO {status}: {message}"` into `str(exc)`, and `_error_message`
+        # (via `exchange_authorization_code`) bakes a THIRD prefix into
+        # `message` itself. Interpolating `exc` here would show the operator
+        # "QuickBooks refused the grant: QBO 400: authorization-code grant
+        # failed: access_denied" — three redundant prefixes stacked on one
+        # fact. `exc.status` is dropped from this message, not lost: it is
+        # still an attribute on the caught exception for whoever instruments
+        # this branch.
+        return _error_redirect(f"QuickBooks refused the grant: {exc.message}")
 
     # The spec, never a literal field list: `_store_credential` nulls every
     # column this provider does not use, which is what stops a previous

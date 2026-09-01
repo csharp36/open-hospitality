@@ -11,12 +11,16 @@ Readers: `latest_demand` takes the NEWEST batch per stay-date (current
 demand); `demand_pace` pairs it with the previous batch's row (pace is a
 comparison of snapshots — the reason the table is append-only).
 
-Feature-off is PINNED here as a loud 503 naming the connect surface (the
+Feature-off is PINNED here as a loud 503 naming the real blocker (the
 plan offered 404-the-router or refuse-loudly; a named refusal is the G1
 absence posture, and it cannot be confused with a typo'd path). Since
-OH-17 the blocker it names is `/integrations`, not `USALI_CRM_PROVIDER`:
-the env var seeds org 1's credential row once and is never read at
-request time, so it is not a lever a tenant's operator can pull.
+OH-17 the blocker it names is the `crm_ref` requirement, not
+`USALI_CRM_PROVIDER`: the env var seeds org 1's credential row once and is
+never read at request time, so it is not a lever a tenant's operator can
+pull. It is also not `/integrations` — the SPA page has shipped, but
+`not_connected_detail` deliberately withholds it for demand_feed, the same
+call `checklist.py`'s `demand_feed` item makes (D-OH17.16): a form nobody
+can finish without a `crm_ref` is not a real connect surface.
 """
 
 from datetime import date, datetime, timedelta
@@ -299,7 +303,7 @@ def test_a_property_without_crm_ref_refuses_by_name(
     assert refused.resource_id == "SSSJ"
 
 
-def test_feature_off_is_a_loud_503_naming_the_integrations_page(
+def test_feature_off_is_a_loud_503_naming_the_crm_ref_requirement(
     db_engine, db_session, tmp_path, monkeypatch
 ):
     """THE feature-off pin (the plan offered two shapes; this is the one):
@@ -311,7 +315,12 @@ def test_feature_off_is_a_loud_503_naming_the_integrations_page(
     the switch (it seeds org 1's credential row once and is never read at
     request time), so naming it would send an operator to a lever that does
     nothing for their tenant. ADR-010 wants a named blocker — it has to name
-    the RIGHT one, and that is the connect surface.
+    the RIGHT one, and that is not `/integrations` either: the SPA page has
+    shipped, but `verify_credentials` refuses Delphi and Tripleseat without a
+    property `crm_ref` that nothing in the app can set, so sending this
+    operator to that form would be the same false promise `checklist.py`'s
+    `demand_feed` item declines to make (D-OH17.16). The `crm_ref` need is
+    the one true blocker, and `not_connected_detail` names it instead.
 
     The audit assertion below is load-bearing, not decoration: it proves the
     503 came from `refused()` inside the handler rather than from something
@@ -334,7 +343,8 @@ def test_feature_off_is_a_loud_503_naming_the_integrations_page(
                json={"property": "HISJ"})
     assert r.status_code == 503
     detail = r.json()["detail"]
-    assert "/integrations" in detail
+    assert "crm_ref" in detail
+    assert "/integrations" not in detail
     assert "USALI_CRM_PROVIDER" not in detail
     assert db_session.execute(select(CrmPullBatch)).scalars().all() == []
     refused = db_session.execute(
