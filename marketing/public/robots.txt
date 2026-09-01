@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://oh.mandati.ai/sitemap-index.xml
