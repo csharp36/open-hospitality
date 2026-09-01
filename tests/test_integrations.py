@@ -805,3 +805,15 @@ def test_every_provider_has_an_operator_facing_name():
     operator as "adp2"."""
     for spec in integ.PROVIDERS:
         assert integ.product_name(spec.provider) != spec.provider
+
+
+def test_every_provider_field_has_an_operator_facing_label():
+    """The same both-directions guard `test_every_provider_has_an_operator_facing_name`
+    gives providers, over every field PROVIDERS actually asks for
+    (`ALL_CREDENTIAL_FIELDS`, so a field used by only one provider is not
+    missed). A field with no label falls back to its own key — the cosmetic
+    failure `field_label`'s docstring describes — so an unlabeled field
+    reaches an operator as "company_id" instead of "Company ID", and fails
+    here rather than on a screenshot."""
+    for field in integ.ALL_CREDENTIAL_FIELDS:
+        assert integ.field_label(field) != field

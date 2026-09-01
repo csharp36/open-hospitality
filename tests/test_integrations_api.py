@@ -634,3 +634,10 @@ def test_each_served_field_is_flagged_secret_exactly_as_the_spec_says(
         plain = {f["name"] for f in served["fields"] if not f["secret"]}
         assert secret == set(spec.secret_fields)
         assert plain == set(spec.plain_fields)
+        # Each field's served label is checked against the accessor, not
+        # hard-coded here — a hand-written second copy is exactly the drift
+        # `field_label` (usali/integrations.py) exists to prevent, and
+        # `test_every_provider_field_has_an_operator_facing_label` is what
+        # keeps that accessor itself honest.
+        for served_field in served["fields"]:
+            assert served_field["label"] == integrations.field_label(served_field["name"])

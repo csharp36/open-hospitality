@@ -115,6 +115,36 @@ def product_name(provider: str) -> str:
     return _PRODUCT_NAMES.get(provider, provider)
 
 
+# Operator-facing names for credential FIELDS, reached through `field_label`
+# below. The row stores "api_token"; a hotel controller reads "API token".
+# Never used as a key. `frontend/src/pages/IntegrationsPage.tsx`'s
+# `ProviderForm` is where this is meant to reach an operator, rather than a
+# humanizing transform living in TypeScript (design doc, section 3) —
+# 'the label an operator sees is what names the input' in that file's test
+# is what fails if it ever stops.
+_FIELD_LABELS: dict[str, str] = {
+    "api_token": "API token",
+    "company_id": "Company ID",
+    "client_secret": "Client secret",
+    "client_id": "Client ID",
+    "refresh_token": "Refresh token",
+    "realm_id": "Realm ID (QuickBooks company)",
+    "subscription_key": "Subscription key",
+    "api_key": "API key",
+}
+
+
+def field_label(field: str) -> str:
+    """The operator-facing name for a credential field key.
+
+    Falls back to the key itself rather than raising, the same posture as
+    `product_name` just above: a missing label is a cosmetic defect on one
+    input, not a reason to refuse the page. The fallback is what
+    `test_every_provider_field_has_an_operator_facing_label` refuses to let
+    ship."""
+    return _FIELD_LABELS.get(field, field)
+
+
 _INTEGRATION_LABELS: dict[str, str] = {
     PAYROLL: "payroll",
     ACCOUNTING: "accounting",

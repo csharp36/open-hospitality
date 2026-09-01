@@ -56,6 +56,7 @@ from usali.integrations import (
     CannotVerify,
     CredentialUnreadable,
     credential_for,
+    field_label,
     product_name,
     spec_for,
 )
@@ -90,6 +91,12 @@ class ProviderFieldModel(BaseModel):
 
     name: str
     secret: bool
+    # The visible text a form must draw beside the input — `field_label` in
+    # usali/integrations.py, never a frontend transform of `name`. Without
+    # this, a caller has only the raw column name to show an operator, which
+    # is the defect this field exists to close (see IntegrationsPage.tsx's
+    # `ProviderForm`).
+    label: str
 
 
 class ProviderModel(BaseModel):
@@ -143,7 +150,11 @@ def _providers_for(integration: str) -> list[ProviderModel]:
             label=product_name(spec.provider),
             oauth=spec.oauth,
             fields=[
-                ProviderFieldModel(name=name, secret=name in spec.secret_fields)
+                ProviderFieldModel(
+                    name=name,
+                    secret=name in spec.secret_fields,
+                    label=field_label(name),
+                )
                 for name in spec.fields
             ],
         )

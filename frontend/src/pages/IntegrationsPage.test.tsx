@@ -31,8 +31,8 @@ function gusto(overrides: Partial<Integration> = {}): Integration {
       label: 'Gusto',
       oauth: false,
       fields: [
-        { name: 'api_token', secret: true },
-        { name: 'company_id', secret: false },
+        { name: 'api_token', secret: true, label: 'API token' },
+        { name: 'company_id', secret: false, label: 'Company ID' },
       ],
     }],
     ...overrides,
@@ -51,8 +51,8 @@ function qbo(overrides: Partial<Integration> = {}): Integration {
       label: 'QuickBooks Online',
       oauth: true,
       fields: [
-        { name: 'refresh_token', secret: true },
-        { name: 'realm_id', secret: false },
+        { name: 'refresh_token', secret: true, label: 'Refresh token' },
+        { name: 'realm_id', secret: false, label: 'Realm ID (QuickBooks company)' },
       ],
     }],
     ...overrides,
@@ -161,7 +161,7 @@ describe('IntegrationsPage', () => {
     vi.mocked(connectIntegration).mockResolvedValue(undefined)
     renderPage()
 
-    const token = await screen.findByLabelText('api_token')
+    const token = await screen.findByLabelText('API token')
     // Secret fields are password inputs and start empty even when connected.
     // Two Python tests are what make that safe rather than optimistic, both
     // in tests/test_integrations_api.py: test_no_secret_is_ever_on_the_wire
@@ -171,7 +171,7 @@ describe('IntegrationsPage', () => {
     expect(token).toHaveValue('')
 
     fireEvent.change(token, { target: { value: 'tok-1' } })
-    fireEvent.change(screen.getByLabelText('company_id'), {
+    fireEvent.change(screen.getByLabelText('Company ID'), {
       target: { value: 'c-1' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Connect Gusto' }))
@@ -189,7 +189,7 @@ describe('IntegrationsPage', () => {
     vi.mocked(getIntegrations).mockResolvedValue({
       items: [gusto({ integration: 'demand_feed', providers: [{
         provider: 'delphi', label: 'Delphi', oauth: false,
-        fields: [{ name: 'subscription_key', secret: true }],
+        fields: [{ name: 'subscription_key', secret: true, label: 'Subscription key' }],
       }] })],
     })
     vi.mocked(connectIntegration).mockRejectedValue(new ApiError(
@@ -197,7 +197,7 @@ describe('IntegrationsPage', () => {
     ))
     renderPage()
 
-    fireEvent.change(await screen.findByLabelText('subscription_key'), {
+    fireEvent.change(await screen.findByLabelText('Subscription key'), {
       target: { value: 'k-1' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Connect Delphi' }))
@@ -215,7 +215,7 @@ describe('IntegrationsPage', () => {
     expect(await screen.findByRole('button', { name: 'Connect QuickBooks Online' }))
       .toBeInTheDocument()
     // No credential inputs: the tokens come back from Intuit, not the operator.
-    expect(screen.queryByLabelText('refresh_token')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Refresh token')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect QuickBooks Online' }))
     await waitFor(() => {
@@ -284,8 +284,8 @@ describe('IntegrationsPage', () => {
     renderPage()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Replace credentials' }))
-    fireEvent.change(screen.getByLabelText('api_token'), { target: { value: 'tok-2' } })
-    fireEvent.change(screen.getByLabelText('company_id'), { target: { value: 'c-1' } })
+    fireEvent.change(screen.getByLabelText('API token'), { target: { value: 'tok-2' } })
+    fireEvent.change(screen.getByLabelText('Company ID'), { target: { value: 'c-1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Connect Gusto' }))
 
     await waitFor(() => {
@@ -296,7 +296,58 @@ describe('IntegrationsPage', () => {
     // The form closes on success: leaving it open leaves the submitted secret
     // rendered in the input and invites a second, accidental resubmit.
     await waitFor(() => {
-      expect(screen.queryByLabelText('api_token')).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('API token')).not.toBeInTheDocument()
     })
+  })
+
+  it('the label an operator sees is what names the input', async () => {
+    // getByLabelText alone cannot catch the original defect: an aria-label
+    // with nothing drawn on screen satisfies it just as well as a visible
+    // <label>. This asserts the visible half directly — a <label> element
+    // with the field's text exists and its htmlFor resolves to the input —
+    // which is what an aria-label-only render cannot produce.
+    vi.mocked(getIntegrations).mockResolvedValue({ items: [gusto()] })
+    renderPage()
+
+    const input = await screen.findByLabelText('API token')
+    const label = screen.getByText('API token').closest('label')
+    expect(label).not.toBeNull()
+    expect(label?.getAttribute('for')).toBe(input.id)
+  })
+
+  it('never renders two forms with the same input id', async () => {
+    // The payroll card offers both Gusto and ADP while nothing is connected
+    // — the real defect this fixes. Two ProviderForms on one card must not
+    // collide on id even though both happen to have a plain identifier
+    // field, which is what makes the id include the provider and not just
+    // the field name.
+    vi.mocked(getIntegrations).mockResolvedValue({
+      items: [gusto({
+        providers: [
+          {
+            provider: 'gusto', label: 'Gusto', oauth: false,
+            fields: [
+              { name: 'api_token', secret: true, label: 'API token' },
+              { name: 'company_id', secret: false, label: 'Company ID' },
+            ],
+          },
+          {
+            provider: 'adp', label: 'ADP', oauth: false,
+            fields: [
+              { name: 'client_secret', secret: true, label: 'Client secret' },
+              { name: 'client_id', secret: false, label: 'Client ID' },
+            ],
+          },
+        ],
+      })],
+    })
+    renderPage()
+    await screen.findByRole('button', { name: 'Connect Gusto' })
+    await screen.findByRole('button', { name: 'Connect ADP' })
+
+    const ids = Array.from(document.querySelectorAll('[id]'))
+      .map((el) => el.id)
+      .filter((id) => id !== '')
+    expect(new Set(ids).size).toBe(ids.length)
   })
 })

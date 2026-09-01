@@ -1143,10 +1143,17 @@ export interface Checklist {
 /** One credential field a provider needs. A `secret` field is write-only:
  * `tests/test_integrations_api.py::test_no_secret_is_ever_on_the_wire`
  * is what holds the API to never returning its value, which is why an input
- * for one starts blank. */
+ * for one starts blank.
+ *
+ * `label` is the visible text a form must draw beside the input — e.g.
+ * "Company ID" for `company_id`. It comes from `field_label` in
+ * src/usali/integrations.py, the same place `IntegrationProvider.label`
+ * below comes from `product_name`: this file holds no humanizing transform
+ * of its own (design doc, section 3). */
 export type ProviderField = {
   name: string
   secret: boolean
+  label: string
 }
 
 export type IntegrationProvider = {

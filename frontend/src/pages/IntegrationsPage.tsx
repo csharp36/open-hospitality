@@ -25,10 +25,25 @@ const TITLES: Record<string, string> = {
 }
 
 /** Renders whatever fields the spec named. It has no list of its own — that
- * is the point of serving the specs. `aria-label` rather than a wrapping
- * <label>, because the accessible name is what the tests query by:
- * 'renders an input per spec field and sends what it collected' in
- * IntegrationsPage.test.tsx is where that name is exercised. */
+ * is the point of serving the specs.
+ *
+ * Each input gets a real `<label htmlFor>`, not `aria-label`: an aria-label
+ * gives an accessible name with nothing drawn on screen, which is the exact
+ * defect this component shipped with — every test queried `getByLabelText`
+ * and passed while the page showed anonymous boxes next to "Connect Gusto".
+ * 'the label an operator sees is what names the input' in
+ * IntegrationsPage.test.tsx is what now checks the label is actually
+ * rendered, not just present as an accessible name.
+ *
+ * The id is `${integration}-${spec.provider}-${field.name}` rather than just
+ * `field.name`: a card can show two disconnected `ProviderForm`s at once
+ * (payroll offers both Gusto and ADP), so `field.name` alone is not unique
+ * across the page the moment two providers on one card share a field name —
+ * PROVIDERS is free to grow one that does, and nothing here would notice.
+ * Keying on the (integration, provider, field) triple closes that off by
+ * construction rather than by current PROVIDERS content. Checked by
+ * 'never renders two forms with the same input id' in the same file, which
+ * renders Gusto and ADP together and asserts the DOM has no duplicate id. */
 function ProviderForm({
   integration, spec, onDone,
 }: {
@@ -46,16 +61,21 @@ function ProviderForm({
       className="mt-2 space-y-2"
       onSubmit={(e) => { e.preventDefault(); connect.mutate() }}
     >
-      {spec.fields.map((field) => (
-        <input
-          key={field.name}
-          aria-label={field.name}
-          type={field.secret ? 'password' : 'text'}
-          className={controlClass}
-          value={values[field.name] ?? ''}
-          onChange={(e) => setValues((v) => ({ ...v, [field.name]: e.target.value }))}
-        />
-      ))}
+      {spec.fields.map((field) => {
+        const id = `${integration}-${spec.provider}-${field.name}`
+        return (
+          <label key={field.name} className="flex flex-col gap-1 text-sm" htmlFor={id}>
+            <span className="text-xs font-medium text-ink-muted">{field.label}</span>
+            <input
+              id={id}
+              type={field.secret ? 'password' : 'text'}
+              className={controlClass}
+              value={values[field.name] ?? ''}
+              onChange={(e) => setValues((v) => ({ ...v, [field.name]: e.target.value }))}
+            />
+          </label>
+        )
+      })}
       <button type="submit" className={controlClass}>{`Connect ${spec.label}`}</button>
       {connect.error !== null && (
         <p className="text-sm text-danger-red">{errorMessage(connect.error)}</p>
