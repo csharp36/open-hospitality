@@ -4,11 +4,10 @@
  * the app's indigo so the product palette is untouched. Serif display,
  * terracotta accent, monospace numbers. Resolved in Track A §7.
  *
- * This is the sole @theme definition of these tokens. It is light-mode only:
- * dark-mode remaps for the same seven color tokens live in
- * frontend/src/index.css under .dark (~lines 144-150), scoped to the app —
- * the marketing site is light-only by design. A dark-mode question about
- * these colors belongs there, not here.
+ * This is the sole @theme definition of these tokens. Dark-mode remaps for
+ * these tokens live in frontend/src/index.css under the .dark selector; no
+ * remap exists anywhere else. The marketing site's dark-mode posture is
+ * settled in docs/design/2026-09-01-oh16-marketing-front-door-design.md §8.
  *
  * Imported today by frontend/src/index.css (for the public /try page).
  * marketing/src/styles/global.css does not exist yet; once it does and
@@ -16,7 +15,8 @@
  *
  * A second @theme block is how Tailwind v4 merges tokens from another file;
  * `npm run build` in frontend emits --color-brand-canvas and the
- * .bg-brand-canvas utility from this file.
+ * .bg-brand-canvas utility from this file (verified: npm run build && grep
+ * bg-brand-canvas dist/assets/*.css).
  */
 @theme {
   --font-display: Georgia, "Times New Roman", serif;
