@@ -17,12 +17,34 @@ from __future__ import annotations
 from pathlib import Path
 
 import pypdfium2 as pdfium
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "frontend/public/samples/opera-trial-balance-sample.pdf"
 TARGET = REPO / "marketing/public/before-trial-balance.webp"
 SCALE = 2.0
+CROP_MARGIN = 24  # px at SCALE=2.0
+
+
+def _crop_to_content(image: Image.Image, margin: int) -> Image.Image:
+    """Crop a white-background page render down to its printed content.
+
+    The rendered PDF page is mostly blank below the report's last line;
+    `Image.getbbox()` finds the bounding box of non-zero pixels, but a white
+    background has no zero pixels, so the grayscale render is inverted first
+    (white -> black) to make the content the non-zero region. The box is then
+    expanded by `margin` on each side and clamped to the image bounds.
+    """
+    grayscale = image.convert("L")
+    bbox = ImageOps.invert(grayscale).getbbox()
+    if bbox is None:
+        return image
+    left, top, right, bottom = bbox
+    left = max(left - margin, 0)
+    top = max(top - margin, 0)
+    right = min(right + margin, image.width)
+    bottom = min(bottom + margin, image.height)
+    return image.crop((left, top, right, bottom))
 
 
 def main() -> None:
@@ -33,6 +55,9 @@ def main() -> None:
 
     pdf = pdfium.PdfDocument(SOURCE)
     image = pdf[0].render(scale=SCALE).to_pil()
+    before_size = image.size
+    image = _crop_to_content(image, CROP_MARGIN)
+    print(f"cropped {before_size} -> {image.size}")
     TARGET.parent.mkdir(parents=True, exist_ok=True)
     image.save(TARGET, "WEBP", quality=80, method=6)
     print(f"wrote {TARGET.relative_to(REPO)} ({TARGET.stat().st_size // 1024} KB)")
