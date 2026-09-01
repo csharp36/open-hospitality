@@ -74,9 +74,9 @@ export function readCatalogue(source: string = roadmapYaml): Map<string, Roadmap
 /**
  * Join the site's copy to the catalogue's status, refusing both ways it can lie.
  *
- * Throwing is deliberate rather than returning an error value: a caller that
- * invokes this at build time (page frontmatter) fails the build, which is the
- * only way to stop a shipped feature from sitting in "shipping next".
+ * Throwing is deliberate rather than returning an error value: Forward.astro's
+ * frontmatter is where this throw becomes a build failure; roadmap.test.ts's
+ * "the real catalogue" case is where the catalogue is checked.
  */
 export function featuredEntries(
   catalogue: Map<string, RoadmapEntry>,
