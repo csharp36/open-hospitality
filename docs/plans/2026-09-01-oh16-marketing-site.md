@@ -351,8 +351,9 @@ Expected: FAIL — `Failed to resolve import "./roadmap"`.
 `marketing/src/lib/roadmap.ts`:
 
 ```ts
-import { readFileSync } from 'node:fs'
 import { parse } from 'yaml'
+
+import roadmapYaml from '../../../.github/roadmap.yml?raw'
 
 export type RoadmapEntry = {
   id: string
@@ -395,11 +396,25 @@ export const FEATURED: FeaturedCopy[] = [
   },
 ]
 
-/** The catalogue the repo already keeps: .github/roadmap.yml, from marketing/src/lib/. */
-export function readCatalogue(
-  path = new URL('../../../.github/roadmap.yml', import.meta.url),
-): Map<string, RoadmapEntry> {
-  const doc = parse(readFileSync(path, 'utf8')) as { roadmap: RoadmapEntry[] }
+/**
+ * The catalogue the repo already keeps: .github/roadmap.yml.
+ *
+ * Imported as text via Vite's `?raw` rather than read from disk. A path
+ * resolved at RUNTIME from `import.meta.url` breaks here: `astro build`
+ * bundles this module into dist/.prerender/chunks/, a different depth than
+ * the source, so the relative climb misses the repo root and throws ENOENT
+ * before featuredEntries() reaches its shipped-status check -- which made the
+ * guard unable to fire at all. `?raw` is resolved by Vite against the SOURCE
+ * location while building the module graph, so relocation cannot break it,
+ * and the YAML is inlined with no runtime filesystem access.
+ */
+export function readCatalogue(source: string = roadmapYaml): Map<string, RoadmapEntry> {
+  const doc = parse(source) as { roadmap?: RoadmapEntry[] }
+  if (!Array.isArray(doc?.roadmap)) {
+    throw new Error(
+      '.github/roadmap.yml does not have a top-level "roadmap:" list — check the file is well-formed.',
+    )
+  }
   return new Map(doc.roadmap.map((entry) => [entry.id, entry]))
 }
 
@@ -441,6 +456,14 @@ Expected: three tests PASS, and `the real catalogue` FAILS with
 
 That failure is correct — Task 4 adds the entry. Do not weaken the guard to make
 it pass.
+
+**Why `?raw` and not `readFileSync`:** the first version of this used
+`new URL('../../../.github/roadmap.yml', import.meta.url)`. Vitest runs the
+source module, so all four tests passed. `astro build` runs a bundled copy at a
+different depth, so it threw ENOENT — and because that throw happened before the
+status check, the guard produced a path error instead of the message it exists to
+produce. **Passing unit tests said nothing about the behavior that mattered.**
+Task 6's deliberate break-the-build step is what exposed it; keep that step.
 
 - [ ] **Step 5: Commit**
 
