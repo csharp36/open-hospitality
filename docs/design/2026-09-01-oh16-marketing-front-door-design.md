@@ -231,6 +231,18 @@ The app's own tokens (`--color-surface`, `--color-accent`, the
 categorical series and its validation record) stay exactly where they
 are. Only the marketing block moves.
 
+**The marketing site ships light-only.** The warm cream-and-terracotta
+identity is a deliberate single look rather than one half of a pair, and
+a marketing page has no long working session to fatigue anyone's eyes.
+So the extracted file carries the light values only; the `.dark` remaps
+of the same seven color tokens stay in `frontend/src/index.css`, where
+they serve the app's `/try` page and nothing else.
+
+This was not decided during the brainstorm — it surfaced during Task 1 of
+the implementation, when extracting the tokens raised the question of
+what happens to their dark variants. Recorded here because the answer
+belongs in the design rather than in a CSS comment.
+
 ## 9. The "before" asset
 
 The transformation panel needs an input that reads as genuinely messy.
