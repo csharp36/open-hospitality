@@ -14,7 +14,7 @@ export default function DropZone({ onFile }: { onFile: (file: File) => void }) {
   function accept(file: File | undefined) {
     if (!file) return
     if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) {
-      setError('Please choose a PDF — the nightly report your PMS produces.')
+      setError('Please choose a PDF — the report your PMS produces.')
       return
     }
     if (file.size > MAX_BYTES) {

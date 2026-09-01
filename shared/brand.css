@@ -9,9 +9,9 @@
  * remap exists anywhere else. The marketing site's dark-mode posture is
  * settled in docs/design/2026-09-01-oh16-marketing-front-door-design.md §8.
  *
- * Imported today by frontend/src/index.css (for the public /try page).
- * marketing/src/styles/global.css does not exist yet; once it does and
- * imports this file too, it becomes a second reader of this one definition.
+ * Imported by frontend/src/index.css (for the public /try page) and by
+ * marketing/src/styles/global.css — both import this file, making it the
+ * single definition they share.
  *
  * A second @theme block is how Tailwind v4 merges tokens from another file;
  * `npm run build` in frontend emits --color-brand-canvas and the
