@@ -46,16 +46,19 @@ export const FEATURED: FeaturedCopy[] = [
 export function readCatalogue(
   path = new URL('../../../.github/roadmap.yml', import.meta.url),
 ): Map<string, RoadmapEntry> {
-  const doc = parse(readFileSync(path, 'utf8')) as { roadmap: RoadmapEntry[] }
+  const doc = parse(readFileSync(path, 'utf8')) as { roadmap?: RoadmapEntry[] }
+  if (!Array.isArray(doc?.roadmap)) {
+    throw new Error(`${path} does not have a top-level "roadmap:" list — check the file is well-formed.`)
+  }
   return new Map(doc.roadmap.map((entry) => [entry.id, entry]))
 }
 
 /**
  * Join the site's copy to the catalogue's status, refusing both ways it can lie.
  *
- * Throwing here fails `astro build`, because the forward band imports this in
- * page frontmatter. That is the intent: a shipped feature must be promoted out
- * of "shipping next" before the site can build again.
+ * Throwing is deliberate rather than returning an error value: a caller that
+ * invokes this at build time (page frontmatter) fails the build, which is the
+ * only way to stop a shipped feature from sitting in "shipping next".
  */
 export function featuredEntries(
   catalogue: Map<string, RoadmapEntry>,
@@ -72,7 +75,8 @@ export function featuredEntries(
     if (entry.status === 'shipped') {
       throw new Error(
         `${copy.id} ("${entry.title}") has shipped, but the marketing site still lists it ` +
-          `under "shipping next". Move it into the page proper and remove it from FEATURED.`,
+          `under "shipping next". Move it into the page proper and remove it from FEATURED ` +
+          `in marketing/src/lib/roadmap.ts.`,
       )
     }
     return { ...copy, status: entry.status }
