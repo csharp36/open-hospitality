@@ -425,4 +425,6 @@ is only half an edit.
 
 **Also updated:** the file's header comment, which claimed `OH-1..OH-5` were the
 whole productization roadmap and `OH-6..OH-14` the analytics backlog — already
-stale once OH-15 was added, and now covering OH-16..OH-21 as productization.
+stale once OH-15 was added, and stale again the moment OH-22 was. It no longer
+enumerates productization ids at all: it names the closed analytics range and
+says every other id is productization, which is true without maintenance.

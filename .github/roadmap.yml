@@ -14,11 +14,17 @@
 #   tags     freeform, for humans
 #   issue    optional GitHub issue number this capability is tracked in
 #
-# OH-1..OH-5 and OH-16..OH-21 are the productization roadmap. OH-6..OH-15
-# mirror the analytics backlog tracked in issue #17 — one roadmap entry per
-# child issue — so the bot dedups incoming analytics/reporting requests against
-# it. The bot only dedups against what's here, and matches on `summary`, so
-# keep those user-facing.
+# OH-6..OH-15 mirror the analytics backlog tracked in issue #17 — one roadmap
+# entry per child issue — so the bot dedups incoming analytics/reporting
+# requests against it. That range is closed: the backlog it mirrors is fixed,
+# and no new entry joins it. EVERY OTHER id is productization.
+#
+# Stated as a rule rather than as ranges because the ranges rotted twice —
+# once when OH-15 was added, once when OH-22 was. A rule does not need editing
+# when the next id is opened.
+#
+# The bot only dedups against what's here, and matches on `summary`, so keep
+# those user-facing.
 #
 # Sequencing and the gap analysis behind these entries live in
 # docs/ROADMAP.md; this file stays the canonical catalogue the bot reads.
