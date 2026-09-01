@@ -1102,11 +1102,15 @@ def main() -> None:
 
 
 def og_card() -> None:
-    """The social card. Drawn from the brand tokens rather than exported by hand,
-    so it cannot drift from shared/brand.css the way a checked-in export would.
+    """The social card, drawn in code so it can be regenerated rather than
+    re-exported from a design tool by hand.
 
-    Colors are the sRGB equivalents of the oklch tokens; they are duplicated
-    here because PIL cannot read CSS. If shared/brand.css changes, re-run this.
+    The three colors below are hand-converted sRGB approximations of the oklch
+    values in shared/brand.css -- PIL cannot read CSS, so they ARE a second
+    copy and they CAN drift. Nothing detects that: the card is a PNG, and no
+    test compares its pixels to the stylesheet. If the brand colors change,
+    someone has to remember to re-run this. That is the known cost of having a
+    raster social card at all.
     """
     canvas = (247, 242, 234)   # --color-brand-canvas
     ink = (51, 41, 31)         # --color-brand-ink
@@ -1422,16 +1426,31 @@ test('every page reaches the others through the nav', async ({ page }) => {
 })
 ```
 
-- [ ] **Step 3: Build and run**
+- [ ] **Step 3: Close the Playwright artifact gap in .gitignore**
+
+`marketing/.gitignore` currently lists `dist/`, `.astro/`, `node_modules/`, and
+`test-results/`. Playwright also writes `playwright-report/` and `blob-report/`,
+which the root `.gitignore` already excludes for the sibling `frontend/` package
+but which nothing excludes here. Append both:
+
+```
+playwright-report/
+blob-report/
+```
+
+Nothing was untracked before this task because no Playwright config existed; it
+does now.
+
+- [ ] **Step 4: Build and run**
 
 Run: `cd marketing && npm run build && npx playwright test`
 Expected: 2 passed. If Playwright's browsers are not installed, run
 `npx playwright install chromium` first.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add marketing/playwright.config.ts marketing/e2e/cta.spec.ts
+git add marketing/playwright.config.ts marketing/e2e/cta.spec.ts marketing/.gitignore
 git commit -m "test(oh16): smoke test the CTA target and cross-page nav"
 ```
 
