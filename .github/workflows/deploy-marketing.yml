@@ -1,0 +1,93 @@
+name: Deploy marketing site
+
+# Publishes marketing/ to Cloudflare Pages. Separate from deploy-demo.yml
+# because the two have nothing in common but a repo: this ships static files to
+# a CDN and cannot affect the running app, its database, or anyone's login.
+#
+# Trigger: workflow_dispatch only, matching deploy-demo.yml. Fork pull requests
+# cannot run workflow_dispatch, so no outside contributor can reach the
+# Cloudflare credential.
+#
+# The API token is scoped to Account -> Cloudflare Pages -> Edit and lives only
+# as a repo secret. See docs/design/2026-09-01-oh16-marketing-front-door-design.md §11.
+
+on:
+  workflow_dispatch:
+
+# A newer publish waits rather than racing an in-flight upload onto the same
+# project.
+concurrency:
+  group: deploy-marketing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: marketing
+      url: https://oh.mandati.ai
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: marketing
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: marketing/package-lock.json
+
+      - run: npm ci
+
+      # Build first: astro build runs the roadmap guard (Forward.astro's
+      # frontmatter calls featuredEntries(), which throws if a featured id in
+      # .github/roadmap.yml has shipped or vanished), and tests/build.test.ts
+      # asserts against dist/, which npm test alone would not have built.
+      #
+      # SITE_URL drives canonical tags and the sitemap, so it must be the
+      # canonical host rather than the *.pages.dev the upload returns —
+      # otherwise every canonical points at the wrong origin.
+      - name: Build
+        env:
+          SITE_URL: https://oh.mandati.ai
+          APP_ORIGIN: https://demo.mandati.ai
+        run: npm run build
+
+      - run: npm test
+
+      # The project is created once and reused on every later run. There is no
+      # `wrangler pages project create --if-not-exists`, so existence is
+      # checked first. A bare `|| true` around create would also hide a bad or
+      # unauthorized token behind a green step, so a failure here — from
+      # either command — is left to fail the job rather than swallowed.
+      - name: Ensure the Cloudflare Pages project exists
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          set +e
+          project_list=$(npx wrangler pages project list 2>&1)
+          list_status=$?
+          set -e
+          echo "${project_list}"
+          if [[ "${list_status}" -ne 0 ]]; then
+            echo "::error::wrangler pages project list failed (see output above) — not attempting create, since that would mask an auth failure as an already-exists error" >&2
+            exit "${list_status}"
+          fi
+          if echo "${project_list}" | grep -qE '(^|[^A-Za-z0-9-])open-hospitality-marketing([^A-Za-z0-9-]|$)'; then
+            echo "Project open-hospitality-marketing already exists."
+          else
+            npx wrangler pages project create open-hospitality-marketing --production-branch main
+          fi
+
+      - name: Publish to Cloudflare Pages
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages deploy dist --project-name open-hospitality-marketing
