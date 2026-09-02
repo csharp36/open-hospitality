@@ -1,0 +1,6 @@
+# The app host. The marketing site (oh.mandati.ai) is the surface meant to
+# rank in search; route access is gated in frontend/src/RootShell.tsx. /try
+# is the one route meant to be publicly findable, so it stays allowed below.
+User-agent: *
+Disallow: /
+Allow: /try

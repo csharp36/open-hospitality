@@ -1,0 +1,53 @@
+---
+import Base from '../layouts/Base.astro'
+import { TRY_URL } from '../lib/site'
+---
+<Base
+  title="Pricing — Open Hospitality"
+  description="The open core is free and self-hostable. The hosted product is what costs money. We are in pilot, and pricing lands at general availability."
+>
+  <section class="mx-auto max-w-3xl px-6 py-20">
+    <h1 class="font-display text-4xl">What this costs</h1>
+    <p class="mt-6 text-brand-ink-muted">
+      We are in pilot, and we have not set a price yet. Rather than invent one, here is
+      the shape of the answer — which is decided, and will not change when the number is.
+    </p>
+
+    <div class="mt-12 space-y-8">
+      <div class="rounded-lg border border-brand-line bg-brand-surface p-6">
+        <h2 class="font-display text-2xl">The open core is free</h2>
+        <p class="mt-3 text-brand-ink-muted">
+          The engine is Apache-2.0. Ingestion, the USALI mapping, the operating statement,
+          labor cost, scheduling and the time clock are open source, and you can run the
+          whole thing on your own hardware forever without paying us anything.
+        </p>
+      </div>
+
+      <div class="rounded-lg border border-brand-line bg-brand-surface p-6">
+        <h2 class="font-display text-2xl">The hosted product is what you pay for</h2>
+        <p class="mt-3 text-brand-ink-muted">
+          If you would rather not run a database, apply migrations, or manage identity, we
+          run it for you — with backups, upgrades, and support. That is the paid product.
+        </p>
+      </div>
+
+      <div class="rounded-lg border border-brand-line bg-brand-surface p-6">
+        <h2 class="font-display text-2xl">Pricing lands at general availability</h2>
+        <p class="mt-3 text-brand-ink-muted">
+          Pilot properties help us work out what a fair basis actually is. When we publish
+          a number, pilot participants will know well before it applies to them.
+        </p>
+      </div>
+    </div>
+
+    <p class="mt-12 text-brand-ink-muted">
+      The question behind the question is usually whether you will be squeezed once you
+      depend on this. The license is the answer: the core is open, so leaving is always
+      possible, and that constrains us more than any promise would.
+    </p>
+
+    <a href={TRY_URL} class="mt-10 inline-block rounded-lg bg-brand-accent px-5 py-3 font-medium text-white">
+      See it on your own report
+    </a>
+  </section>
+</Base>

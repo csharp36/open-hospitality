@@ -408,7 +408,7 @@ user-facing capability because the bot matches on `summary`:
 | id | Capability | Status | §ref |
 |---|---|---|---|
 | **OH-16** | Public marketing front door | `planned` | §1.1 |
-| **OH-17** | Connect your own accounting and payroll accounts | `planned` | §2.1 |
+| **OH-17** | Connect your own accounting and payroll accounts | `shipped` | §2.1 |
 | **OH-18** | Onboarding checklist of open setup items | `shipped` | §2.2 |
 | **OH-19** | Subscription plans and billing | `planned` | §4 |
 | **OH-20** | Review and correct USALI transaction-code mapping | `considering` | §4.1 |
@@ -425,4 +425,6 @@ is only half an edit.
 
 **Also updated:** the file's header comment, which claimed `OH-1..OH-5` were the
 whole productization roadmap and `OH-6..OH-14` the analytics backlog — already
-stale once OH-15 was added, and now covering OH-16..OH-21 as productization.
+stale once OH-15 was added, and stale again the moment OH-22 was. It no longer
+enumerates productization ids at all: it names the closed analytics range and
+says every other id is productization, which is true without maintenance.

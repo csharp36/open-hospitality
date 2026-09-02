@@ -1,0 +1,38 @@
+---
+const properties = [
+  ['Harborview Inn', '78.4% · $164'],
+  ['Cedar Street Hotel', '71.2% · $148'],
+  ['The Marlow', '83.9% · $211'],
+]
+---
+<section class="border-t border-brand-line px-6 py-16">
+  <div class="mx-auto grid max-w-4xl items-center gap-10 sm:grid-cols-2">
+    <div>
+      <h2 class="font-display text-3xl leading-snug">
+        Every property in one account, walled off from every other.
+      </h2>
+      <p class="mt-4 text-brand-ink-muted">
+        Add properties as you take them on. Isolation is enforced by the database itself,
+        not by application code that has to remember — so one property can never read
+        another's rows.
+      </p>
+    </div>
+    <div class="rounded-lg border border-brand-line bg-brand-surface p-5">
+      <dl>
+        {properties.map(([name, stat]) => (
+          <div class="flex justify-between border-b border-brand-line py-1.5 text-sm">
+            <dt>{name}</dt>
+            <dd class="font-mono tabular-nums">{stat}</dd>
+          </div>
+        ))}
+      </dl>
+      <p class="py-1.5 text-sm text-brand-ink-muted">+ 9 more</p>
+      <p class="mt-4 text-xs text-brand-accent">
+        Side-by-side roll-up
+        <span class="ml-1 rounded border border-brand-accent-soft px-1.5 py-0.5 uppercase tracking-wider">
+          shipping next
+        </span>
+      </p>
+    </div>
+  </div>
+</section>
