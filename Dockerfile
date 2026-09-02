@@ -8,10 +8,17 @@
 
 ########## 1. frontend build ##########
 FROM node:26-slim AS frontend
-WORKDIR /build
+WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
+# frontend/src/index.css imports "../../shared/brand.css", so this stage must
+# reproduce the repo's layout (frontend/ and shared/ as siblings under /build)
+# rather than flattening frontend/ onto the workdir -- otherwise the relative
+# import resolves outside the build context and `npm run build` fails.
+# Verified: docker build -t oh-verify . (build succeeds; the built CSS
+# contains --color-brand-canvas / .bg-brand-canvas from shared/brand.css).
+COPY shared/ /build/shared/
 # The deployed issuer is a build-time swap (frontend/src/auth/oidc.ts);
 # defaults speak the K3/K5 public hostnames.
 ARG VITE_OIDC_AUTHORITY=https://auth.example.com/realms/usali
@@ -60,7 +67,7 @@ COPY scripts/cloud ./scripts/cloud
 # those PDFs carry REAL production figures (K6b/K7): they must not ride
 # in a public image, even unreferenced.
 COPY tests/fixtures/faces ./tests/fixtures/faces
-COPY --from=frontend /build/dist ./frontend/dist
+COPY --from=frontend /build/frontend/dist ./frontend/dist
 
 # The seed writes the kiosk device tokens to REPO_ROOT (= /app); /app
 # stays root-owned (immutable app dir), so pre-create the one writable
