@@ -69,5 +69,25 @@ const ogImage = new URL('/og.png', Astro.site).href
       </div>
       <p class="mt-6 text-xs">Apache-2.0 licensed and self-hostable.</p>
     </footer>
+
+    {/* Cloudflare Web Analytics. Chosen because it sets no cookie and no
+        client identifier, so the site needs no consent banner. The site token
+        is not a secret: it is meant to be public in this HTML.
+
+        is:inline keeps Astro from processing the tag -- a processed script
+        does not carry data-cf-beacon through to the output.
+
+        This is a JSX-style comment rather than an HTML one because Astro emits
+        HTML comments into the page verbatim, which would put build notes on a
+        public page and add a third match to the count below.
+
+        Verified: after npm run build, dist/index.html holds exactly two script
+        tags, the JSON-LD block above and this beacon. */}
+    <script
+      is:inline
+      defer
+      src="https://static.cloudflareinsights.com/beacon.min.js"
+      data-cf-beacon='{"token": "142a8bb10590444d8e5dd0832cb8112c"}'
+    ></script>
   </body>
 </html>
