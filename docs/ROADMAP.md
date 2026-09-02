@@ -45,28 +45,47 @@ doc is linked rather than re-argued.
   fiscal calendar, occupancy / ADR / RevPAR / TRevPAR with comparisons and
   drill-through.
 
-**The shape of what remains:** the product can be *reached* and a tenant can be
-*created*, but there is no path by which a stranger discovers it, and no path
-by which a created tenant connects its own real systems or pays for the
-privilege. Those are the two ends of the funnel, and both are open.
+**The shape of what remains:** a stranger can now discover the product (OH-16)
+and a created tenant can connect its own real systems (OH-17). What is still
+open is payment — OH-19 — and the invite gate at §1.2, which stands between
+discovery and a tenant anyone can create without an operator shelling into a
+container.
 
 ---
 
 ## 2. Band 1 — discover → try → sign up
 
-The engine and the on-ramp exist; the front of the funnel does not.
+The front of the funnel now exists. What remains in this band is the gate
+behind it and the delivery seam that gate depends on.
 
-### 1.1 No marketing site (**OH-16**)
+### 1.1 Marketing site (**OH-16**, shipped)
 
-`/try` and `/signup` are routes inside the app SPA
-(`frontend/src/router.tsx:206`, `:219`) served from the demo host. There is no
-positioning page, no pricing page, no "who this is for", nothing indexable by a
-search engine. `/try` is the designed aha moment — see
-[Track A](design/2026-08-16-track-a-front-door-preview-design.md) — but a
-hotel owner who has never heard of USALI has no route *to* it.
+Shipped 2026-09-02 (PRs #114, #115) to the
+[OH-16 design](design/2026-09-01-oh16-marketing-front-door-design.md). A
+separate Astro package at `marketing/` — home, pricing, and "Your data" —
+deployed to Cloudflare Pages and live at `oh.mandati.ai`. It carries one CTA,
+to `{APP_ORIGIN}/try`, and no form of its own, which is what keeps it pure
+static with no CORS surface.
 
-What is needed: a public marketing surface that lands a stranger on `/try` and
-then on `/signup`, with the pricing story from Band 3 attached to it.
+It is deliberately NOT routes in the app SPA. `/` there is the entry route that
+redirects to the last-visited page, and `dist/index.html` is the shell every
+history fallback serves, so a marketing home cannot take `/` without moving the
+app's entry and its OIDC redirect URIs. `/try` and `/signup` remain SPA
+routes on the app host, defined in `frontend/src/router.tsx`; `/try` is still
+the designed aha moment — see
+[Track A](design/2026-08-16-track-a-front-door-preview-design.md) — and the
+marketing site is now the route *to* it.
+
+The site's forward band renders unbuilt capabilities out of
+`.github/roadmap.yml` at build time, and `marketing/src/lib/roadmap.ts` throws
+if a featured id is missing or has shipped — so a capability cannot be
+advertised as coming after it arrives.
+
+**Deliberately deferred, not missing:** the pricing page carries philosophy and
+no numbers, because OH-19 owns the basis and there is no paying tenant to
+calibrate against; and the `openhospitality.*` canonical domain waits on a
+domain purchase, with `oh.mandati.ai` serving as the live host meanwhile. The
+build is host-agnostic, so that move is a `SITE_URL` change plus a redirect.
 
 ### 1.2 Invite gate → open self-service
 
@@ -407,7 +426,7 @@ user-facing capability because the bot matches on `summary`:
 
 | id | Capability | Status | §ref |
 |---|---|---|---|
-| **OH-16** | Public marketing front door | `planned` | §1.1 |
+| **OH-16** | Public marketing front door | `shipped` | §1.1 |
 | **OH-17** | Connect your own accounting and payroll accounts | `shipped` | §2.1 |
 | **OH-18** | Onboarding checklist of open setup items | `shipped` | §2.2 |
 | **OH-19** | Subscription plans and billing | `planned` | §4 |

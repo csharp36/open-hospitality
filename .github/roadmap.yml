@@ -200,7 +200,7 @@ roadmap:
       what it costs, and that leads a hotel owner who has never heard of USALI
       into the try-it-now preview and then signup. The discovery surface ahead
       of the product itself.
-    status: planned
+    status: shipped
     tags: [marketing, onboarding, growth]
 
   - id: OH-17
