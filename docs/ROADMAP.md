@@ -112,7 +112,7 @@ delivery story.
 
 This is where the two structural blockers live.
 
-### 2.1 Per-tenant integration config (**OH-17**, backend shipped — frontend still missing)
+### 2.1 Per-tenant integration config (**OH-17**, shipped)
 
 Built to the
 [OH-17 design](design/2026-08-30-oh17-per-tenant-integration-config-design.md).
@@ -195,13 +195,20 @@ complete, which is the drift OH-17 exists to remove, so it carries an honest
 of its own (a provider identifier needs validation, a refusal shape, and a
 place in property-config to explain itself), not a field to bolt on here.
 
-**What is still not done, and must not be glossed:** the **`/integrations`
-frontend page does not exist yet** — it is a separate, not-yet-started plan.
-The checklist items above point real operators at a route the SPA does not
-serve, so today a click lands on the SPA's not-found page. OH-17 is
-backend-complete, not user-complete; nobody can actually connect QuickBooks,
-Gusto, ADP, Delphi, or Tripleseat through the product yet, only through
-`/api/integrations` directly.
+**The `/integrations` page shipped 2026-09-01** (PR #113), built to the
+[integrations-page design](design/2026-08-31-oh17-integrations-page-design.md)
+— `frontend/src/pages/IntegrationsPage.tsx`, routed in
+`frontend/src/router.tsx`. That closed a live defect as well as finishing the
+feature: `checklist.py` had been pointing two setup items at `/integrations`
+while the SPA served no such route, so main shipped two dead links. The API
+serves each provider's field spec, so the frontend carries no credential field
+list of its own and cannot drift from what the backend accepts.
+
+The non-optional requirement above is met generically rather than as a
+QBO special case: the page renders `Object.entries(item.identifiers)`, and
+`identifiers` is where `integrations_api`'s blind-read posture puts the QBO
+`realm_id` — so the connected company id is on screen for every integration
+that has one.
 
 **One** smaller loose end the design doc's §8a carries forward, deliberately:
 `cli.py`'s `_qbo_client_from_settings` (`cli.py:549`) still builds its
