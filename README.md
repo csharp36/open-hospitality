@@ -8,6 +8,9 @@ scheduling, and a time clock — with tenant isolation enforced at the database.
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/csharp36/open-hospitality/actions/workflows/ci.yml/badge.svg)](https://github.com/csharp36/open-hospitality/actions/workflows/ci.yml)
 
+**[oh.mandati.ai](https://oh.mandati.ai)** — what the product does and who it
+is for.
+
 ---
 
 ## What it does
