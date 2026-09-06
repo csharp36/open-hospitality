@@ -854,17 +854,24 @@ git add -A && git commit -m "feat(oh27-spa): the books get a door — General Le
   need `scripts/e2e_backend.py` to seed a posted world; the vitest tests
   cover the render logic and `tests/test_gl_api.py` covers the contract.
   Note it, do not force it.
-- **Read-path indexes.** `journal_line` has no index by `account_code` and
-  `journal_entry` none by `(property_id, business_date)`; both
-  `reporting.trial_balance` and `reporting.journal_entries` filter on
-  exactly those — sequential scans that are now user-facing on /gl. One
-  follow-up migration; it serves the shipped trial balance as much as the
-  new drill.
+- **Read-path indexes, and a cap on the drill.** `journal_line` has no
+  index by `account_code` and `journal_entry` none by
+  `(property_id, business_date)`; both `reporting.trial_balance` and
+  `reporting.journal_entries` filter on exactly those — sequential scans
+  that are now user-facing on /gl. One follow-up migration; it serves the
+  shipped trial balance as much as the new drill. In the same follow-up:
+  `journal_entries` has no result cap, so drilling a busy control account
+  over a full period returns every entry with all its lines on one click —
+  the missing index and the missing cap compound (review of PR #125). Any
+  cap must surface its truncation to the operator, never trim silently.
 - **A shared slide-over shell.** DONE on this branch (PR #125 review):
   `SlideOverShell.tsx` now owns the dialog chrome for both panels —
   Escape checks `defaultPrevented`, focus returns to the triggering row on
   every close path, and Tab wraps inside the panel
-  (`SlideOverShell.test.tsx`).
+  (`SlideOverShell.test.tsx`). Still outside the protocol: `Modal.tsx`
+  closes on Escape without checking or claiming the key — inert while no
+  Modal co-mounts with a slide-over, but the next dialog touch should
+  bring it in.
 - **`lineButtonClass` belongs in `ui.tsx`.** Two identical constants
   (`Statement.tsx`, `TrialBalanceCard.tsx`) whose identity is a design
   requirement; today the copy names its original in a comment — one
