@@ -11,6 +11,12 @@ Two firsts for this chain, both ADR-011 enforcement points:
   trigger on journal_line — at commit, every touched entry's debits must
   equal its credits exactly. The builder checks first with a friendlier
   error; this trigger is the wall, and it firing at all is a bug report.
+  The function runs as the invoking role under journal_line's FORCE RLS,
+  so it first checks it can still see the row that queued it: an org
+  context cleared or switched between insert and COMMIT raises (fail
+  loud) instead of summing a hidden set and calling it balanced (fail
+  open). Both RAISEs carry ERRCODE 23514 (check_violation) so they
+  classify with their constraint peers.
 - REVOKE UPDATE, DELETE on journal_entry, journal_line, gl_period_event
   from the app role (the l2a0rlswall REVOKE idiom): append-only is a grant,
   not a convention. gl_posting_ledger keeps UPDATE — it points at the
@@ -163,6 +169,12 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_journal_line_org_id", "journal_line", ["org_id"])
+    # (org_id, entry_id): the probe shape shared by the balance trigger's
+    # per-row SELECT (org_id via the RLS predicate), the composite entry FK,
+    # and drill-through reads of one entry's lines.
+    op.create_index(
+        "ix_journal_line_org_entry", "journal_line", ["org_id", "entry_id"]
+    )
 
     op.create_table(
         "gl_posting_ledger",
@@ -242,18 +254,36 @@ def upgrade() -> None:
     # The balance wall (ADR-011 §4): checked at COMMIT so multi-line entries
     # can be inserted line by line inside one transaction.
     op.execute(
-        """
+        f"""
         CREATE FUNCTION gl_entry_balance_check() RETURNS trigger
-        LANGUAGE plpgsql AS $$
+        LANGUAGE plpgsql
+        SET search_path = public
+        AS $$
         DECLARE imbalance numeric;
         BEGIN
+            -- Visibility sentinel. This function runs as the invoking role,
+            -- journal_line is FORCE RLS, and a deferred trigger evaluates at
+            -- COMMIT against the org GUC's value THEN. If the org context was
+            -- cleared or switched after the insert, the org_wall predicate
+            -- hides the very row that queued this trigger, and a SUM over a
+            -- hidden set would read as balanced. Refuse loudly instead.
+            PERFORM 1 FROM journal_line WHERE line_id = NEW.line_id;
+            IF NOT FOUND THEN
+                RAISE EXCEPTION
+                    'gl_entry_balance_check cannot see journal_line % at '
+                    'COMMIT: the {RLS_ORG_VAR} org context was cleared or '
+                    'switched after the insert, so its entry cannot be '
+                    'verified as balanced', NEW.line_id
+                    USING ERRCODE = '23514';
+            END IF;
             SELECT COALESCE(
                 SUM(CASE WHEN posting = 'Credit' THEN amount ELSE -amount END), 0
             )
             INTO imbalance FROM journal_line WHERE entry_id = NEW.entry_id;
             IF imbalance <> 0 THEN
                 RAISE EXCEPTION
-                    'journal entry % is out of balance by %', NEW.entry_id, imbalance;
+                    'journal entry % is out of balance by %', NEW.entry_id, imbalance
+                    USING ERRCODE = '23514';
             END IF;
             RETURN NULL;
         END $$

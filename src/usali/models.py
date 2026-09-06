@@ -416,6 +416,10 @@ class JournalLine(OrgScoped, Base):
             ["gl_account.org_id", "gl_account.account_code"],
             name="fk_journal_line_account_org",
         ),
+        # Mirrored in g1a0glcore: the probe shape shared by the balance
+        # trigger's per-row SELECT, the composite entry FK, and drill-through
+        # reads of one entry's lines.
+        Index("ix_journal_line_org_entry", "org_id", "entry_id"),
     )
 
     line_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
