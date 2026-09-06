@@ -207,18 +207,31 @@ export default function PeriodDetailCard({
         ) : (
           // Post before Close: Post is the remedy for the gaps named above,
           // Close is the commitment made once they are dealt with.
-          <div className="flex gap-2">
-            <button
-              type="button"
-              className={controlClass}
-              disabled={post.isPending}
-              onClick={() => post.mutate()}
-            >
-              Post {p.period_key}
-            </button>
-            <button type="button" className={controlClass} onClick={() => setConfirming(true)}>
-              Close {p.period_key}
-            </button>
+          <div className="space-y-2">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={controlClass}
+                disabled={post.isPending}
+                onClick={() => post.mutate()}
+              >
+                Post {p.period_key}
+              </button>
+              <button
+                type="button"
+                className={controlClass}
+                disabled={post.isPending}
+                onClick={() => setConfirming(true)}
+              >
+                Close {p.period_key}
+              </button>
+            </div>
+            {/* Rendered here, not with the card-footer errors: a post
+                failure's red line dies with its button — it must not sit
+                unlabeled under the reopen form of a since-closed period. */}
+            {post.error !== null && (
+              <p className="text-sm text-danger-red">{errorMessage(post.error)}</p>
+            )}
           </div>
         )
       )}
@@ -247,39 +260,44 @@ export default function PeriodDetailCard({
       )}
 
       {post.data !== undefined && (
-        <div className="overflow-x-auto">
-          <table className={tableClass}>
-            <thead>
-              <tr className="border-b border-line">
-                <th className={headCellClass}>Date</th>
-                <th className={headCellClass}>Source</th>
-                <th className={headCellClass}>Status</th>
-                <th className={headCellClass}>Entry</th>
-                <th className={headCellClass}>Message</th>
-              </tr>
-            </thead>
-            <tbody>
-              {post.data.map((o) => (
-                <tr
-                  key={`${o.business_date}:${o.source_type}`}
-                  className="border-b border-line last:border-0"
-                >
-                  <td className={`${cellClass} tabular-nums`}>{o.business_date}</td>
-                  <td className={cellClass}>{o.source_type}</td>
-                  <td className={cellClass}>
-                    <Badge tone={outcomeTone[o.status]}>{o.status}</Badge>
-                  </td>
-                  {/* Blank over an em-dash placeholder: an outcome that names
-                      no entry (a noop, a skip) is the ordinary case, not
-                      missing data. Same for a message. */}
-                  <td className={`${cellClass} tabular-nums`}>
-                    {o.entry_id !== null ? `entry #${o.entry_id}` : ''}
-                  </td>
-                  <td className={cellClass}>{o.message ?? ''}</td>
+        <div className="space-y-1">
+          {/* The table outlives the open-state controls (the outcomes are the
+              operator's record of what they just did), so it names itself. */}
+          <p className="text-sm font-medium text-ink">Post outcomes</p>
+          <div className="overflow-x-auto">
+            <table className={tableClass}>
+              <thead>
+                <tr className="border-b border-line">
+                  <th className={headCellClass}>Date</th>
+                  <th className={headCellClass}>Source</th>
+                  <th className={headCellClass}>Status</th>
+                  <th className={headCellClass}>Entry</th>
+                  <th className={headCellClass}>Message</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {post.data.map((o) => (
+                  <tr
+                    key={`${o.business_date}:${o.source_type}`}
+                    className="border-b border-line last:border-0"
+                  >
+                    <td className={`${cellClass} tabular-nums`}>{o.business_date}</td>
+                    <td className={cellClass}>{o.source_type}</td>
+                    <td className={cellClass}>
+                      <Badge tone={outcomeTone[o.status]}>{o.status}</Badge>
+                    </td>
+                    {/* Blank over an em-dash placeholder: an outcome that names
+                        no entry (a noop, a skip) is the ordinary case, not
+                        missing data. Same for a message. */}
+                    <td className={`${cellClass} tabular-nums`}>
+                      {o.entry_id !== null ? `entry #${o.entry_id}` : ''}
+                    </td>
+                    <td className={cellClass}>{o.message ?? ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -288,9 +306,6 @@ export default function PeriodDetailCard({
       )}
       {reopen.error !== null && (
         <p className="text-sm text-danger-red">{errorMessage(reopen.error)}</p>
-      )}
-      {post.error !== null && (
-        <p className="text-sm text-danger-red">{errorMessage(post.error)}</p>
       )}
     </Card>
   )

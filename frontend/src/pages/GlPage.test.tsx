@@ -461,7 +461,8 @@ describe('GlPage post the period', () => {
         date_to: '2026-07-31',
       }),
     )
-    // A 31-day post runs the engine 62 times; no double-fire.
+    // One engine run per (date, source) grain — gl_posting.POSTING_SOURCES
+    // is where the grains are enumerated; no double-fire.
     expect(postButton).toBeDisabled()
 
     resolvePost([
@@ -537,6 +538,31 @@ describe('GlPage post the period', () => {
     const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
     fireEvent.click(await within(card).findByRole('button', { name: 'Post 2026-P07' }))
     expect(await within(card).findByText('upstream down')).toBeInTheDocument()
+  })
+
+  it('a post failure dies with its button: closing the period removes the red line', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods)
+      .mockResolvedValueOnce([makeGlPeriod()])
+      .mockResolvedValue([makeGlPeriod({ state: 'closed' })])
+    vi.mocked(postGlRange).mockRejectedValue(new ApiError(503, 'upstream down'))
+    vi.mocked(closeGlPeriod).mockResolvedValue({
+      period_key: '2026-P07',
+      state: 'closed',
+      unposted_dates: [],
+      orphaned_dates: [],
+    })
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.click(await within(card).findByRole('button', { name: 'Post 2026-P07' }))
+    expect(await within(card).findByText('upstream down')).toBeInTheDocument()
+
+    fireEvent.click(within(card).getByRole('button', { name: 'Close 2026-P07' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'Yes, close' }))
+    expect(await within(card).findByText('Closed')).toBeInTheDocument()
+    // The Post button is gone with the closed state, and its failure line
+    // with it — no unlabeled red line under the reopen form.
+    expect(within(card).queryByText('upstream down')).not.toBeInTheDocument()
   })
 })
 
