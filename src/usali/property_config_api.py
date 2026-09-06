@@ -81,6 +81,8 @@ def _session(request: Request) -> Session:
 
 
 def _fiscal_config(session: Session, property_id: str) -> FiscalConfig | None:
+    # Kept as a delegator rather than deleted: portal_api imports this name
+    # directly, so removing it is not the local cleanup it looks like.
     return fiscal.config_for(session, property_id)
 
 

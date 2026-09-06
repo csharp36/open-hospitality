@@ -20,6 +20,10 @@ fiscal year STARTS in, NN = 01..12. Both types have 12 periods.
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
 
 # period -> number of weeks, for a 4-4-5 quarter repeated four times.
 _445_WEEKS = (4, 4, 5, 4, 4, 5, 4, 4, 5, 4, 4, 5)
@@ -128,7 +132,7 @@ def period_containing(config: FiscalConfig, day: date) -> str:
     raise ValueError(f"no fiscal period contains {day.isoformat()}")
 
 
-def config_for(session, property_id: str) -> "FiscalConfig | None":
+def config_for(session: "Session", property_id: str) -> "FiscalConfig | None":
     """Load a property's FiscalCalendar row as a FiscalConfig, or None.
 
     The one impure function in this module, so every caller (property
