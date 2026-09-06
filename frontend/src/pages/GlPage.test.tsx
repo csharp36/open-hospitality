@@ -826,4 +826,20 @@ describe('GlPage journal drill', () => {
     fireEvent.click(screen.getByRole('button', { name: /2026-P06/ }))
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
+
+  it('does not resurrect the panel on a return to the period it was drilled in', async () => {
+    await openDrill()
+    fireEvent.click(screen.getByRole('button', { name: /2026-P06/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /2026-P07/ }))
+    // Wait for the return to the drilled period to commit before asserting
+    // the panel stayed away.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /2026-P07/ })).toHaveAttribute(
+        'aria-pressed',
+        'true',
+      ),
+    )
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
 })

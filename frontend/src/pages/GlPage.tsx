@@ -4,7 +4,7 @@
 // org_admin close/reopen controls — above its trial balance. All fetching
 // lives here (TanStack Query keyed on property + search params).
 
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { keepPreviousData, skipToken, useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 
@@ -56,11 +56,23 @@ export default function GlPage() {
 
   const period = search.period
 
-  const [drill, setDrill] = useState<DrillTarget | null>(null)
-  // Changing property or period invalidates any open drill window (the
-  // SosPage precedent): the drilled entries are scoped to both, and a stale
-  // panel over a new selection would show the old one's entries.
-  useEffect(() => setDrill(null), [property, period])
+  // The drill is stored WITH the scope it was opened for, and read back only
+  // while that scope is still on screen: drilled entries are scoped to
+  // property and period both, and a stale panel over a new selection would
+  // show the old one's entries. Deriving `drill` (instead of clearing it in
+  // an effect) makes it null in the very render that changes the scope, so
+  // nothing below — panel or entries query — can pair a drill with a scope
+  // it was not opened under.
+  const drillScope = `${property}:${period}`
+  const [drillState, setDrillState] = useState<{
+    scope: string
+    target: DrillTarget
+  } | null>(null)
+  // Render-time adjustment (the PeriodDetailCard pattern), not an effect:
+  // without this clear, returning to the scope the drill was opened under
+  // would match again and resurrect the dismissed panel.
+  if (drillState !== null && drillState.scope !== drillScope) setDrillState(null)
+  const drill = drillState !== null && drillState.scope === drillScope ? drillState.target : null
 
   const periodsQuery = useQuery({
     queryKey: ['gl-periods', property, fiscalYear],
@@ -104,10 +116,8 @@ export default function GlPage() {
   })
 
   function selectPeriod(key: string) {
-    // Cleared here, not just in the effect above: synchronous with the click,
-    // no committed render pairs the new period with a stale drilled account
-    // (SosPage's updateSearch does the same).
-    setDrill(null)
+    // No drill clearing here: the scope-match derivation above is where a
+    // period switch invalidates an open drill, in the same render.
     void navigate({ search: (prev) => ({ ...prev, period: key }), replace: true })
   }
 
@@ -206,7 +216,9 @@ export default function GlPage() {
                 <>
                   <TrialBalanceCard
                     tb={tbQuery.data}
-                    onDrill={(code, name) => setDrill({ code, name })}
+                    onDrill={(code, name) =>
+                      setDrillState({ scope: drillScope, target: { code, name } })
+                    }
                   />
                   {/* Derived from the same response as the card above — no
                       second fetch, so the two can never disagree. */}
@@ -222,7 +234,7 @@ export default function GlPage() {
                   accountName={drill.name}
                   entries={entriesQuery.data?.entries}
                   error={entriesQuery.isError ? errorMessage(entriesQuery.error) : null}
-                  onClose={() => setDrill(null)}
+                  onClose={() => setDrillState(null)}
                 />
               )}
             </>
