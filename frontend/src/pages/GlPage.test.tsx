@@ -31,9 +31,10 @@ import {
   getGlPeriods,
   getJournalEntries,
   getTrialBalance,
+  postGlRange,
   reopenGlPeriod,
 } from '../api/gl'
-import type { JournalEntry } from '../api/types'
+import type { GlPostOutcome, JournalEntry } from '../api/types'
 import { createAppRouter } from '../router'
 import {
   AUTHED_CONTEXT,
@@ -391,6 +392,7 @@ describe('GlPage period detail', () => {
     await waitFor(() => expect(queryClient.getQueryData(['me'])).toBeDefined())
     expect(within(card).queryByRole('button', { name: 'Close 2026-P07' })).not.toBeInTheDocument()
     expect(within(card).queryByRole('button', { name: 'Reopen 2026-P07' })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Post 2026-P07' })).not.toBeInTheDocument()
   })
 
   it('surfaces a refused close inline via its detail', async () => {
@@ -406,6 +408,135 @@ describe('GlPage period detail', () => {
     expect(
       await within(card).findByText('close refused: the journal disagrees with the SOS'),
     ).toBeInTheDocument()
+  })
+})
+
+describe('GlPage post the period', () => {
+  const ORG_ADMIN = { subject: 'u1', username: 'admin', roles: ['org_admin'] }
+
+  function makeOutcome(overrides: Partial<GlPostOutcome> = {}): GlPostOutcome {
+    return {
+      business_date: '2026-07-01',
+      source_type: 'pms_daily',
+      status: 'posted',
+      entry_id: null,
+      message: null,
+      ...overrides,
+    }
+  }
+
+  it('offers Post to an org_admin on an open period', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    expect(await within(card).findByRole('button', { name: 'Post 2026-P07' })).toBeInTheDocument()
+  })
+
+  it('offers no Post on a closed period — the button could only 422', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([makeGlPeriod({ state: 'closed' })])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    // Reopen appearing proves `me` resolved and canManage is true — only
+    // then is the Post absence meaningful.
+    expect(await within(card).findByRole('button', { name: 'Reopen 2026-P07' })).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Post 2026-P07' })).not.toBeInTheDocument()
+  })
+
+  it('posts the period bounds, disables while pending, and renders per-grain outcomes', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    let resolvePost!: (outcomes: GlPostOutcome[]) => void
+    vi.mocked(postGlRange).mockImplementation(
+      () => new Promise((resolve) => (resolvePost = resolve)),
+    )
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    const postButton = await within(card).findByRole('button', { name: 'Post 2026-P07' })
+    fireEvent.click(postButton)
+
+    await waitFor(() =>
+      expect(postGlRange).toHaveBeenCalledWith({
+        property_id: 'HISJ',
+        date_from: '2026-07-01',
+        date_to: '2026-07-31',
+      }),
+    )
+    // A 31-day post runs the engine 62 times; no double-fire.
+    expect(postButton).toBeDisabled()
+
+    resolvePost([
+      makeOutcome({ status: 'posted', entry_id: 41 }),
+      makeOutcome({ source_type: 'payroll_daily', status: 'noop' }),
+      makeOutcome({
+        business_date: '2026-07-02',
+        status: 'failed',
+        message: 'unmapped transaction code ABC',
+      }),
+    ])
+
+    // One row per (date, source): status word, entry #N when set, and the
+    // failed row's message visible without any interaction.
+    expect(await within(card).findByText('entry #41')).toBeInTheDocument()
+    const postedRow = within(card).getByText('entry #41').closest('tr')!
+    expect(within(postedRow).getByText('2026-07-01')).toBeInTheDocument()
+    expect(within(postedRow).getByText('pms_daily')).toBeInTheDocument()
+    expect(within(postedRow).getByText('posted')).toBeInTheDocument()
+    expect(within(card).getByText('noop')).toBeInTheDocument()
+    expect(within(card).getByText('payroll_daily')).toBeInTheDocument()
+    const failedRow = within(card).getByText('failed').closest('tr')!
+    expect(within(failedRow).getByText('2026-07-02')).toBeInTheDocument()
+    expect(within(failedRow).getByText('unmapped transaction code ABC')).toBeInTheDocument()
+    expect(postButton).toBeEnabled()
+  })
+
+  it('tones the six statuses: ok / neutral / warn / neutral / danger', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(postGlRange).mockResolvedValue([
+      makeOutcome({ business_date: '2026-07-01', status: 'posted' }),
+      makeOutcome({ business_date: '2026-07-02', status: 'reposted' }),
+      makeOutcome({ business_date: '2026-07-03', status: 'noop' }),
+      makeOutcome({ business_date: '2026-07-04', status: 'reversed' }),
+      makeOutcome({ business_date: '2026-07-05', status: 'skipped' }),
+      makeOutcome({ business_date: '2026-07-06', status: 'failed', message: 'boom' }),
+    ])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.click(await within(card).findByRole('button', { name: 'Post 2026-P07' }))
+
+    expect(await within(card).findByText('posted')).toBeInTheDocument()
+    expect(within(card).getByText('posted').className).toMatch(/green/)
+    expect(within(card).getByText('reposted').className).toMatch(/green/)
+    expect(within(card).getByText('reversed').className).toMatch(/amber/)
+    expect(within(card).getByText('failed').className).toMatch(/red/)
+    // noop and skipped are neutral — skipped is the backend's honest "no
+    // chart yet / nothing to post" answer, not a warning.
+    expect(within(card).getByText('noop').className).not.toMatch(/green|amber|red/)
+    expect(within(card).getByText('skipped').className).not.toMatch(/green|amber|red/)
+  })
+
+  it('a successful post refetches the periods and the trial balance', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(postGlRange).mockResolvedValue([makeOutcome({ entry_id: 41 })])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    // Both queries settled once before the post.
+    await screen.findByRole('region', { name: 'Trial balance 2026-P07' })
+    expect(getGlPeriods).toHaveBeenCalledTimes(1)
+    expect(getTrialBalance).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(await within(card).findByRole('button', { name: 'Post 2026-P07' }))
+    await within(card).findByText('entry #41')
+    await waitFor(() => expect(getGlPeriods).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(getTrialBalance).toHaveBeenCalledTimes(2))
+  })
+
+  it('surfaces a transport failure inline', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(postGlRange).mockRejectedValue(new ApiError(503, 'upstream down'))
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.click(await within(card).findByRole('button', { name: 'Post 2026-P07' }))
+    expect(await within(card).findByText('upstream down')).toBeInTheDocument()
   })
 })
 

@@ -1,5 +1,5 @@
-// The selected period's detail: state, both gap lists, and the close/reopen
-// controls. The unposted count always says PMS in the visible copy — the
+// The selected period's detail: state, both gap lists, and the post and
+// close/reopen controls. The unposted count always says PMS in the visible copy — the
 // check is pms_daily-only by design (PeriodModel.unposted_dates' docstring in
 // gl_api.py is where that scope is set), and copy that totals up to "all
 // caught up" would claim the payroll side was verified when it was never
@@ -10,10 +10,25 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { closeGlPeriod, reopenGlPeriod } from '../api/gl'
-import type { GlPeriod } from '../api/types'
+import { closeGlPeriod, postGlRange, reopenGlPeriod } from '../api/gl'
+import type { GlPeriod, GlPostOutcome } from '../api/types'
 import { errorMessage } from '../lib/errors'
-import { Badge, Card, controlClass } from './ui'
+import { Badge, Card, cellClass, controlClass, headCellClass, tableClass } from './ui'
+import type { BadgeTone } from './ui'
+
+// Total over the status union: a widened GlPostOutcome['status'] fails tsc
+// here. `skipped` is neutral, not a warning — the backend uses it for the
+// honest "no chart yet / nothing to post" answer (gl_api's
+// test_post_without_a_chart_reports_honest_skips), and painting it amber
+// would nag every tenant that has not seeded a chart.
+const outcomeTone: Record<GlPostOutcome['status'], BadgeTone> = {
+  posted: 'ok',
+  reposted: 'ok',
+  noop: 'neutral',
+  reversed: 'warn',
+  skipped: 'neutral',
+  failed: 'danger',
+}
 
 export default function PeriodDetailCard({
   property,
@@ -71,6 +86,21 @@ export default function PeriodDetailCard({
     onSuccess: () => {
       setReason('')
       void invalidatePeriods()
+    },
+  })
+  // The period's own bounds are the range — at most ~31 days. Prefix
+  // invalidation on the trial-balance and entries families: this card does
+  // not track which scopes of those queries are cached, so it drops them all
+  // rather than guess. Outcomes live in mutation state and clear when the
+  // card remounts — GlPage's key on this card is where a scope switch forces
+  // that remount.
+  const post = useMutation({
+    mutationFn: () =>
+      postGlRange({ property_id: property, date_from: p.date_from, date_to: p.date_to }),
+    onSuccess: () => {
+      void invalidatePeriods()
+      void queryClient.invalidateQueries({ queryKey: ['gl-trial-balance'] })
+      void queryClient.invalidateQueries({ queryKey: ['gl-entries'] })
     },
   })
 
@@ -175,9 +205,21 @@ export default function PeriodDetailCard({
             </div>
           </div>
         ) : (
-          <button type="button" className={controlClass} onClick={() => setConfirming(true)}>
-            Close {p.period_key}
-          </button>
+          // Post before Close: Post is the remedy for the gaps named above,
+          // Close is the commitment made once they are dealt with.
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className={controlClass}
+              disabled={post.isPending}
+              onClick={() => post.mutate()}
+            >
+              Post {p.period_key}
+            </button>
+            <button type="button" className={controlClass} onClick={() => setConfirming(true)}>
+              Close {p.period_key}
+            </button>
+          </div>
         )
       )}
 
@@ -204,11 +246,51 @@ export default function PeriodDetailCard({
         </div>
       )}
 
+      {post.data !== undefined && (
+        <div className="overflow-x-auto">
+          <table className={tableClass}>
+            <thead>
+              <tr className="border-b border-line">
+                <th className={headCellClass}>Date</th>
+                <th className={headCellClass}>Source</th>
+                <th className={headCellClass}>Status</th>
+                <th className={headCellClass}>Entry</th>
+                <th className={headCellClass}>Message</th>
+              </tr>
+            </thead>
+            <tbody>
+              {post.data.map((o) => (
+                <tr
+                  key={`${o.business_date}:${o.source_type}`}
+                  className="border-b border-line last:border-0"
+                >
+                  <td className={`${cellClass} tabular-nums`}>{o.business_date}</td>
+                  <td className={cellClass}>{o.source_type}</td>
+                  <td className={cellClass}>
+                    <Badge tone={outcomeTone[o.status]}>{o.status}</Badge>
+                  </td>
+                  {/* Blank over an em-dash placeholder: an outcome that names
+                      no entry (a noop, a skip) is the ordinary case, not
+                      missing data. Same for a message. */}
+                  <td className={`${cellClass} tabular-nums`}>
+                    {o.entry_id !== null ? `entry #${o.entry_id}` : ''}
+                  </td>
+                  <td className={cellClass}>{o.message ?? ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {close.error !== null && (
         <p className="text-sm text-danger-red">{errorMessage(close.error)}</p>
       )}
       {reopen.error !== null && (
         <p className="text-sm text-danger-red">{errorMessage(reopen.error)}</p>
+      )}
+      {post.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(post.error)}</p>
       )}
     </Card>
   )
