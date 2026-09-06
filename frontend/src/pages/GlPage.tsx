@@ -3,13 +3,14 @@
 // and the trial balance renders for the selected period. All fetching lives
 // here (TanStack Query keyed on property + search params).
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { keepPreviousData, skipToken, useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 
 import { ApiError } from '../api/client'
-import { getGlPeriods, getTrialBalance } from '../api/gl'
+import { getGlPeriods, getJournalEntries, getTrialBalance } from '../api/gl'
 import type { TrialBalance } from '../api/types'
+import JournalDrillPanel from '../components/JournalDrillPanel'
 import {
   amountCellClass,
   amountHeadClass,
@@ -35,6 +36,14 @@ const routeApi = getRouteApi('/gl')
 const FISCAL_YEAR_MIN = 2000
 const FISCAL_YEAR_MAX = 2100
 
+// Same string as Statement.tsx's local lineButtonClass — the drill affordance
+// reads identically on both pages.
+const lineButtonClass =
+  'text-left text-accent hover:underline focus-visible:underline cursor-pointer'
+
+/** The drilled account: its code keys the fetch, its name titles the panel. */
+type DrillTarget = { code: string; name: string }
+
 export default function GlPage() {
   const search = routeApi.useSearch()
   const navigate = routeApi.useNavigate()
@@ -56,6 +65,12 @@ export default function GlPage() {
 
   const period = search.period
 
+  const [drill, setDrill] = useState<DrillTarget | null>(null)
+  // Changing property or period invalidates any open drill window (the
+  // SosPage precedent): the drilled entries are scoped to both, and a stale
+  // panel over a new selection would show the old one's entries.
+  useEffect(() => setDrill(null), [property, period])
+
   const periodsQuery = useQuery({
     queryKey: ['gl-periods', property, fiscalYear],
     // skipToken disables the query until a property exists.
@@ -73,6 +88,16 @@ export default function GlPage() {
       property === undefined || period === undefined
         ? skipToken
         : () => getTrialBalance(property, period),
+  })
+
+  const entriesQuery = useQuery({
+    // The 'gl-entries' prefix names this query family for invalidation.
+    queryKey: ['gl-entries', property, period, drill?.code],
+    // skipToken until an account is drilled with property and period in hand.
+    queryFn:
+      property === undefined || period === undefined || drill === null
+        ? skipToken
+        : () => getJournalEntries(property, period, drill.code),
   })
 
   function selectPeriod(key: string) {
@@ -151,7 +176,24 @@ export default function GlPage() {
                 <p className="text-sm text-ink-muted">Loading trial balance…</p>
               )}
               {tbQuery.isError && <TrialBalanceError error={tbQuery.error} />}
-              {tbQuery.data !== undefined && <TrialBalanceCard tb={tbQuery.data} />}
+              {tbQuery.data !== undefined && (
+                <TrialBalanceCard
+                  tb={tbQuery.data}
+                  onDrill={(code, name) => setDrill({ code, name })}
+                />
+              )}
+
+              {drill !== null && (
+                <JournalDrillPanel
+                  property={property}
+                  period={period}
+                  account={drill.code}
+                  accountName={drill.name}
+                  entries={entriesQuery.data?.entries}
+                  error={entriesQuery.isError ? errorMessage(entriesQuery.error) : null}
+                  onClose={() => setDrill(null)}
+                />
+              )}
             </>
           )}
         </>
@@ -179,7 +221,13 @@ function TrialBalanceError({ error }: { error: unknown }) {
   )
 }
 
-function TrialBalanceCard({ tb }: { tb: TrialBalance }) {
+function TrialBalanceCard({
+  tb,
+  onDrill,
+}: {
+  tb: TrialBalance
+  onDrill: (code: string, name: string) => void
+}) {
   // Totals can serialize at different scales; only numeric comparison is
   // honest here (eqFixed's own contract).
   const balanced = eqFixed(tb.total_debits, tb.total_credits)
@@ -207,7 +255,17 @@ function TrialBalanceCard({ tb }: { tb: TrialBalance }) {
           {tb.lines.map((line) => (
             <tr key={line.account_code} className="border-b border-line">
               <td className={`${cellClass} tabular-nums`}>{line.account_code}</td>
-              <td className={cellClass}>{line.name}</td>
+              <td className={cellClass}>
+                {/* The account's name is the drill affordance — the Statement
+                    line-button recipe, handing its account up to the page. */}
+                <button
+                  type="button"
+                  className={lineButtonClass}
+                  onClick={() => onDrill(line.account_code, line.name)}
+                >
+                  {line.name}
+                </button>
+              </td>
               <td className={`${cellClass} text-ink-muted`}>{line.account_type}</td>
               <td className={amountCellClass}>{fmtMoney(line.debits)}</td>
               <td className={amountCellClass}>{fmtMoney(line.credits)}</td>

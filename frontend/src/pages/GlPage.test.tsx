@@ -3,7 +3,7 @@
 // the 404-vs-failure split renders a quiet empty state, never a red line.
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
 
@@ -26,13 +26,15 @@ vi.mock('../api/gl', () => ({
 }))
 
 import { ApiError, getMe, getProperties } from '../api/client'
-import { getGlPeriods, getTrialBalance } from '../api/gl'
+import { getGlPeriods, getJournalEntries, getTrialBalance } from '../api/gl'
+import type { JournalEntry } from '../api/types'
 import { createAppRouter } from '../router'
 import {
   AUTHED_CONTEXT,
   HISJ_PROPERTY,
   SSSJ_PROPERTY,
   makeGlPeriod,
+  makeJournalEntry,
   makeTrialBalance,
 } from '../test/fixtures'
 import { AuthContext } from '../auth/authContext'
@@ -67,7 +69,21 @@ beforeEach(() => {
     makeGlPeriod(), // 2026-P07, open
   ])
   vi.mocked(getTrialBalance).mockResolvedValue(makeTrialBalance())
+  vi.mocked(getJournalEntries).mockResolvedValue(
+    journalEnvelope([makeJournalEntry({ entry_id: 12 })]),
+  )
 })
+
+function journalEnvelope(entries: JournalEntry[]) {
+  return { property_id: 'HISJ', period_key: '2026-P07', account_code: '4100', entries }
+}
+
+/** Renders /gl with a period selected, drills 4100, returns the open panel. */
+async function openDrill() {
+  renderPage('/gl?period=2026-P07')
+  fireEvent.click(await screen.findByRole('button', { name: 'Rooms Revenue' }))
+  return await screen.findByRole('dialog', { name: 'Journal entries: 4100 — Rooms Revenue' })
+}
 
 describe('GlPage', () => {
   it('renders the no-property empty state when no property exists', async () => {
@@ -192,5 +208,97 @@ describe('GlPage', () => {
       expect(chip).toHaveAttribute('aria-pressed', 'false')
     }
     expect(getTrialBalance).not.toHaveBeenCalled()
+  })
+})
+
+describe('GlPage journal drill', () => {
+  it('opens the entries panel from an account row and lays amounts under their posting', async () => {
+    const panel = await openDrill()
+    expect(getJournalEntries).toHaveBeenCalledWith('HISJ', '2026-P07', '4100')
+
+    // Entry header: date, source, entry #, posted by.
+    expect(await within(panel).findByText('2026-07-07')).toBeInTheDocument()
+    expect(within(panel).getByText('pms_daily')).toBeInTheDocument()
+    expect(within(panel).getByText('entry #12')).toBeInTheDocument()
+    expect(within(panel).getByText('posted by dev-admin')).toBeInTheDocument()
+
+    // Lines table: Debit and Credit columns, each amount under the column its
+    // posting names — never a signed amount.
+    expect(within(panel).getByRole('columnheader', { name: 'Debit' })).toBeInTheDocument()
+    expect(within(panel).getByRole('columnheader', { name: 'Credit' })).toBeInTheDocument()
+    const debitCells = within(
+      within(panel).getByText('Guest Ledger').closest('tr')!,
+    ).getAllByRole('cell')
+    expect(debitCells[2]).toHaveTextContent('10,456.37')
+    expect(debitCells[3]!.textContent).toBe('')
+    const creditCells = within(
+      within(panel).getByText('Rooms Revenue').closest('tr')!,
+    ).getAllByRole('cell')
+    expect(creditCells[2]!.textContent).toBe('')
+    expect(creditCells[3]).toHaveTextContent('10,456.37')
+  })
+
+  it('badges a reversal entry with the entry it reverses', async () => {
+    vi.mocked(getJournalEntries).mockResolvedValue(
+      journalEnvelope([
+        makeJournalEntry({ entry_id: 12 }),
+        makeJournalEntry({ entry_id: 13, reversal_of: 12, memo: 'Reversal of entry 12' }),
+      ]),
+    )
+    const panel = await openDrill()
+    expect(await within(panel).findByText('entry #13')).toBeInTheDocument()
+    expect(within(panel).getByText('reversal of entry #12')).toBeInTheDocument()
+    // The original entry carries no badge — exactly one reversal marker.
+    expect(within(panel).getAllByText(/reversal of entry/)).toHaveLength(1)
+  })
+
+  it('shows staged provenance on pms lines and nothing at all on null-provenance lines', async () => {
+    const panel = await openDrill()
+    // The credit line carries its staged transaction: txn code + source file.
+    expect(await within(panel).findByText('1000')).toBeInTheDocument()
+    expect(within(panel).getByText(/opera-2026-07-07\.pdf/)).toBeInTheDocument()
+    // The null-provenance debit line shows its memo and NO transaction
+    // placeholder: absent means "no source transaction by design", not
+    // missing data.
+    const debitRow = within(panel).getByText('Guest Ledger').closest('tr')!
+    expect(within(debitRow).getByText('Daily revenue 2026-07-07')).toBeInTheDocument()
+    expect(within(debitRow).getAllByRole('cell')[4]!.textContent).toBe('')
+    expect(within(debitRow).queryByText('—')).not.toBeInTheDocument()
+  })
+
+  it('focuses Close on open and closes on Escape', async () => {
+    const panel = await openDrill()
+    expect(within(panel).getByRole('button', { name: 'Close' })).toHaveFocus()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('renders a failed entries fetch loud inside the panel', async () => {
+    vi.mocked(getJournalEntries).mockRejectedValue(new ApiError(503, 'upstream down'))
+    const panel = await openDrill()
+    expect(
+      await within(panel).findByText('Failed to load journal entries: upstream down'),
+    ).toBeInTheDocument()
+  })
+
+  it('renders an empty entries list as a quiet line, not an error', async () => {
+    vi.mocked(getJournalEntries).mockResolvedValue(journalEnvelope([]))
+    const panel = await openDrill()
+    expect(
+      await within(panel).findByText('No entries for this account in this period.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(/Failed to load journal entries/)).not.toBeInTheDocument()
+  })
+
+  it('closes the panel when the property changes', async () => {
+    await openDrill()
+    fireEvent.change(screen.getByLabelText('Active property'), { target: { value: 'SSSJ' } })
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+  })
+
+  it('closes the panel when the period changes', async () => {
+    await openDrill()
+    fireEvent.click(screen.getByRole('button', { name: /2026-P06/ }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
   })
 })
