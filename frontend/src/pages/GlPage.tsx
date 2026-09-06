@@ -4,7 +4,7 @@
 // here (TanStack Query keyed on property + search params).
 
 import { useState } from 'react'
-import { skipToken, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, skipToken, useQuery } from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 
 import { ApiError } from '../api/client'
@@ -29,17 +29,30 @@ import { useGlobalProperty } from '../lib/propertyContext'
 // getRouteApi avoids the router.tsx <-> GlPage.tsx circular value import.
 const routeApi = getRouteApi('/gl')
 
+// The stepper's sane window: wide enough for any books this app will meet,
+// tight enough that a half-typed year ("2", "20") never commits to state and
+// so never fires a fetch.
+const FISCAL_YEAR_MIN = 2000
+const FISCAL_YEAR_MAX = 2100
+
 export default function GlPage() {
   const search = routeApi.useSearch()
   const navigate = routeApi.useNavigate()
   // Property comes from the GLOBAL top-bar selector — picked once, app-wide.
   const { property } = useGlobalProperty()
-  // The rail starts on the calendar year containing today and always passes
-  // it, so the query key names the year actually fetched. (The backend's own
-  // default for an omitted fiscal_year lives in gl_api.get_periods; on a
-  // non-calendar fiscal calendar the two can label the year differently, and
-  // the stepper is the remedy either way.)
-  const [fiscalYear, setFiscalYear] = useState(() => new Date().getFullYear())
+  // A deep-linked ?period= seeds the rail's year so rail and detail agree on
+  // arrival; the first four characters are the year by construction — the
+  // /gl route's validateSearch (PERIOD_RE in router.tsx) is where that shape
+  // is enforced. Otherwise the rail starts on the calendar year containing
+  // today, always passed explicitly so the query key names the year actually
+  // fetched. (The backend's own default for an omitted fiscal_year lives in
+  // gl_api.get_periods; on a non-calendar fiscal calendar the two can label
+  // the year differently, and the stepper is the remedy either way.)
+  const [fiscalYear, setFiscalYear] = useState(() =>
+    search.period !== undefined
+      ? parseInt(search.period.slice(0, 4), 10)
+      : new Date().getFullYear(),
+  )
 
   const period = search.period
 
@@ -47,6 +60,9 @@ export default function GlPage() {
     queryKey: ['gl-periods', property, fiscalYear],
     // skipToken disables the query until a property exists.
     queryFn: property === undefined ? skipToken : () => getGlPeriods(property, fiscalYear),
+    // Stepping the year keeps the old rail on screen until the new one lands
+    // instead of unmounting to the loading line.
+    placeholderData: keepPreviousData,
   })
 
   const tbQuery = useQuery({
@@ -86,9 +102,11 @@ export default function GlPage() {
                 type="number"
                 className={`${controlClass} w-24`}
                 value={fiscalYear}
+                min={FISCAL_YEAR_MIN}
+                max={FISCAL_YEAR_MAX}
                 onChange={(e) => {
                   const year = parseInt(e.target.value, 10)
-                  if (!Number.isNaN(year)) setFiscalYear(year)
+                  if (year >= FISCAL_YEAR_MIN && year <= FISCAL_YEAR_MAX) setFiscalYear(year)
                 }}
               />
             </div>

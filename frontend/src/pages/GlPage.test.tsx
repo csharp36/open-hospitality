@@ -95,6 +95,27 @@ describe('GlPage', () => {
     expect(getGlPeriods).toHaveBeenCalledWith('HISJ', 2025)
   })
 
+  it('ignores half-typed years instead of fetching them', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: 'Fiscal periods' })
+    // Retyping a year passes through junk states ("2", "20"); none may fetch.
+    fireEvent.change(screen.getByLabelText('Fiscal year'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Fiscal year'), { target: { value: '20' } })
+    expect(getGlPeriods).not.toHaveBeenCalledWith('HISJ', 2)
+    expect(getGlPeriods).not.toHaveBeenCalledWith('HISJ', 20)
+    expect(getGlPeriods).toHaveBeenCalledTimes(1)
+  })
+
+  it('seeds the rail year from a deep-linked period', async () => {
+    renderPage('/gl?period=2025-P07')
+    await screen.findByRole('group', { name: 'Fiscal periods' })
+    // Rail and detail agree on arrival: the rail fetches the linked period's
+    // year, and the trial balance fetches the linked period itself.
+    expect(getGlPeriods).toHaveBeenCalledWith('HISJ', 2025)
+    expect(getTrialBalance).toHaveBeenCalledWith('HISJ', '2025-P07')
+    expect(screen.getByLabelText('Fiscal year')).toHaveValue(2025)
+  })
+
   it('fetches and renders the trial balance when a chip is clicked', async () => {
     // Totals serialize at DIFFERENT scales: string equality would call this
     // unbalanced, and only exact numeric comparison (eqFixed) says balanced.
@@ -137,11 +158,11 @@ describe('GlPage', () => {
 
   it('renders a 404 as a quiet empty state, not a failure', async () => {
     vi.mocked(getTrialBalance).mockRejectedValue(
-      new ApiError(404, 'no journal lines for property HISJ in 2026-P08'),
+      new ApiError(404, 'no journal lines for property HISJ in 2026-P07'),
     )
     renderPage('/gl?period=2026-P07')
     expect(await screen.findByText('Nothing posted for this period yet.')).toBeInTheDocument()
-    expect(screen.getByText('no journal lines for property HISJ in 2026-P08')).toBeInTheDocument()
+    expect(screen.getByText('no journal lines for property HISJ in 2026-P07')).toBeInTheDocument()
     expect(screen.queryByText(/Failed to load trial balance/)).not.toBeInTheDocument()
   })
 
