@@ -384,7 +384,18 @@ def reopen_timecard(
         card.approved_by = None
         card.approved_at = None
         card.photos_purged_at = None
-        demote_timecard(session, card)
+        demoted = demote_timecard(session, card)
+        # OH-27: the accruals follow the facts, in the same transaction as
+        # the reopen. For each demoted grain, post_and_record re-aggregates
+        # whatever facts remain — other cards' approved hours repost as the
+        # reduced total, and an emptied grain reverses its standing entry
+        # (post_and_record's docstring is the contract; refusals land as
+        # failed ledger rows, never as a failed reopen).
+        for prop, day in sorted(demoted):
+            gl_posting.post_and_record(
+                session, property_id=prop, business_date=day,
+                source_type="payroll_accrual", actor=principal.subject,
+            )
         # Relink AFTER the flip: assemble skips approved cards (H1).
         assemble_timecard(
             session, card.employee_id, card.period_start,

@@ -1,12 +1,14 @@
 """Close/reopen semantics (design D-OH27.7): derived state, loud refusal,
 reopen requires a reason, close names the gaps in both directions.
 
-The `unposted` direction was the plan's original scope: fact dates with no
-current posted `pms_daily` entry. `orphaned` is the reverse, added in
-review of Task 6: dates with a current posted entry but no remaining
-facts, which happens when a re-transform empties a day AFTER it was
-posted — `post_and_record` returns `skipped` on a None plan, so the
-ledger row still says "posted" and the gap is otherwise invisible.
+The `unposted` direction was the plan's original scope: financial-fact
+dates with no current posted `pms_daily` entry. `orphaned` is the
+reverse, added in review of Task 6 and extended to `payroll_accrual` in
+review of Task 8: dates with a current entry whose fact side is empty,
+which happens when a re-transform (or an out-of-band delete) empties a
+day AFTER it was posted and nothing re-posts the grain — a re-post would
+reverse the entry (`post_and_record`'s plan-is-None branch), but until
+one runs the gap is otherwise invisible.
 """
 
 from decimal import Decimal
@@ -14,9 +16,9 @@ from decimal import Decimal
 import pytest
 from sqlalchemy import select
 
-from tests.test_gl_posting import _first_grain, _seed_calendar
+from tests.test_gl_posting import _first_grain, _seed_calendar, _seed_labor
 from usali import gl_chart, gl_posting
-from usali.models import GlPeriodEvent, JournalEntry, UsaliFinancialFact
+from usali.models import GlPeriodEvent, JournalEntry, UsaliFinancialFact, UsaliLaborFact
 
 
 def _setup(db_session, seed_six_pdfs):
@@ -140,3 +142,30 @@ def test_close_names_the_orphaned_posted_dates(db_session, founding_org, seed_si
                                    period_key=period, actor="admin")
     assert day in gaps.orphaned
     assert day not in gaps.unposted
+
+
+def test_close_names_an_orphaned_payroll_accrual(
+    db_session, founding_org, seed_six_pdfs
+):
+    """The fact side of a `payroll_accrual` ledger row is usali_labor_fact:
+    labor facts deleted out-of-band with no re-post leave a standing
+    accrual entry that close must name in `orphaned`."""
+    prop, day = _setup(db_session, seed_six_pdfs)
+    _seed_labor(db_session, prop, day, {"Front Desk": "500.00"})
+    out = gl_posting.post_and_record(
+        db_session, property_id=prop, business_date=day,
+        source_type="payroll_accrual", actor="test",
+    )
+    assert out.status == "posted"
+    db_session.execute(
+        UsaliLaborFact.__table__.delete().where(
+            UsaliLaborFact.property_id == prop,
+            UsaliLaborFact.business_date == day,
+        )
+    )
+    db_session.flush()
+
+    period = gl_posting.period_key_for(db_session, prop, day)
+    gaps = gl_posting.close_period(db_session, property_id=prop,
+                                   period_key=period, actor="admin")
+    assert day in gaps.orphaned

@@ -17,10 +17,7 @@ re-inserts, so re-running (or the CLI backfill) never double-counts.
 import logging
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, cast
-
 from sqlalchemy import delete, func, select
-from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from usali.models import EXCLUDE_FROM_PAYROLL, Employee, Property, Timecard, UsaliLaborFact
@@ -206,19 +203,29 @@ def promote_timecard(
     return written
 
 
-def demote_timecard(session: Session, card: Timecard) -> int:
+def demote_timecard(session: Session, card: Timecard) -> set[tuple[str, date]]:
     """Delete this card's ESTIMATED labor facts (H3 reopen) — the exact
     inverse of the promote's delete-then-rewrite, keyed the same way. A
     reopened card's hours are under review again and must not keep
     claiming approved cost on any report; re-approval re-promotes them.
     Actual (pay-run) facts are untouched — paid history is immutable.
-    Returns the number of fact rows deleted."""
-    result = cast("CursorResult[Any]", session.execute(
+    Returns the set of (property_id, business_date) grains the deleted
+    facts covered — mirroring `promote_timecard`'s return — so callers can
+    re-post GL accruals over exactly the grains that just changed."""
+    demoted = {
+        (property_id, business_date)
+        for property_id, business_date in session.execute(
+            select(UsaliLaborFact.property_id, UsaliLaborFact.business_date).where(
+                UsaliLaborFact.timecard_id == card.timecard_id
+            )
+        )
+    }
+    session.execute(
         delete(UsaliLaborFact).where(
             UsaliLaborFact.timecard_id == card.timecard_id
         )
-    ))
-    return result.rowcount
+    )
+    return demoted
 
 
 def _price(reg: Decimal, ot: Decimal, dt: Decimal, rates: HourlyRates) -> Decimal:

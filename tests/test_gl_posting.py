@@ -316,3 +316,72 @@ def test_process_file_posts_when_the_chart_exists(db_session, founding_org, tmp_
     rows = db_session.scalars(select(GlPostingLedger)).all()
     assert rows and all(r.source_type == "pms_daily" for r in rows)
     assert all(r.status == "posted" for r in rows)
+
+
+def test_an_emptied_grain_reverses_its_entry(db_session, founding_org, seed_six_pdfs):
+    """Plan-is-None with a standing entry: the facts are gone, so the entry
+    is a phantom amount. Re-posting reverses it, deletes the ledger row
+    (the grain returns to unposted), and the day drops out of BOTH close
+    gap directions."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    prop, day = _first_grain(db_session)
+    _seed_calendar(db_session, prop)
+    first = _post(db_session, prop, day)
+    assert first.status == "posted"
+
+    db_session.execute(
+        UsaliFinancialFact.__table__.delete().where(
+            UsaliFinancialFact.property_id == prop,
+            UsaliFinancialFact.business_date == day,
+        )
+    )
+    db_session.flush()
+    out = _post(db_session, prop, day)
+    assert out.status == "reversed"
+
+    entries = db_session.scalars(
+        select(JournalEntry).order_by(JournalEntry.entry_id)
+    ).all()
+    assert len(entries) == 2
+    assert entries[1].reversal_of == entries[0].entry_id
+    assert out.entry_id == entries[1].entry_id
+    net: dict[str, Decimal] = {}
+    for ln in db_session.scalars(select(JournalLine)).all():
+        sign = Decimal(1) if ln.posting == "Debit" else Decimal(-1)
+        net[ln.account_code] = net.get(ln.account_code, Decimal(0)) + sign * Decimal(str(ln.amount))
+    assert net and all(v == 0 for v in net.values())  # nets to zero per account
+    assert db_session.scalar(select(GlPostingLedger)) is None
+
+    period = gl_posting.period_key_for(db_session, prop, day)
+    gaps = gl_posting.close_period(
+        db_session, property_id=prop, period_key=period, actor="admin"
+    )
+    assert day not in gaps.unposted and day not in gaps.orphaned
+
+
+def test_an_emptied_grain_in_a_closed_period_records_a_refusal(
+    db_session, founding_org, seed_six_pdfs
+):
+    """Same emptied grain, but the period closed first: the reversal is
+    refused onto the ledger row (the standing entry is untouchable), not
+    written into closed books."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    prop, day = _first_grain(db_session)
+    _seed_calendar(db_session, prop)
+    assert _post(db_session, prop, day).status == "posted"
+    period = gl_posting.period_key_for(db_session, prop, day)
+    gl_posting.close_period(
+        db_session, property_id=prop, period_key=period, actor="admin"
+    )
+    db_session.execute(
+        UsaliFinancialFact.__table__.delete().where(
+            UsaliFinancialFact.property_id == prop,
+            UsaliFinancialFact.business_date == day,
+        )
+    )
+    db_session.flush()
+    out = _post(db_session, prop, day)
+    assert out.status == "failed" and "closed" in out.message
+    assert len(db_session.scalars(select(JournalEntry)).all()) == 1
+    ledger = db_session.scalar(select(GlPostingLedger))
+    assert ledger.entry_id is not None and ledger.message is not None

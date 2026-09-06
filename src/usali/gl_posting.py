@@ -391,7 +391,7 @@ POSTING_SOURCES: tuple[PostingSource, ...] = (
 
 _SOURCES = {s.source_type: s for s in POSTING_SOURCES}
 
-OutcomeStatus = Literal["posted", "noop", "reposted", "skipped", "failed"]
+OutcomeStatus = Literal["posted", "noop", "reposted", "reversed", "skipped", "failed"]
 
 
 @dataclass(frozen=True)
@@ -499,7 +499,15 @@ def post_and_record(
     quarantine a parsed file. What deliberately still escapes:
     `IntegrityError` from the ledger's unique constraint (the concurrency
     arbiter — see GlPostingLedger's docstring) and invariant violations
-    such as `_finish_plan`'s out-of-balance ValueError."""
+    such as `_finish_plan`'s out-of-balance ValueError.
+
+    Outcomes: "posted" (first entry for the grain), "noop" (standing entry,
+    same source hash), "reposted" (facts changed — reversal plus a fresh
+    entry), "reversed" (the facts are GONE but an entry stands — a reversal
+    is written, the ledger row is deleted, and the grain returns to
+    unposted; `entry_id` names the reversal entry), "skipped" (no chart, or
+    no facts and no standing entry), "failed" (a refusal, recorded on the
+    ledger row)."""
     if (
         session.scalar(
             select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
@@ -540,7 +548,33 @@ def post_and_record(
         period = fiscal.period_containing(cfg, business_date)
         plan = source.build_plan(session, property_id, business_date)
         if plan is None:
-            return PostOutcome("skipped", None, None)
+            if row is None or row.entry_id is None:
+                return PostOutcome("skipped", None, None)
+            # The grain emptied AFTER an entry was posted (a re-transform,
+            # or a timecard reopen demoting the day's last facts). A
+            # standing entry over no facts is a phantom amount: reverse it
+            # and delete the ledger row — the grain is back to unposted.
+            # (gl_posting_ledger keeps DELETE; g1a0glcore's _IMMUTABLE
+            # revoke covers only the three journal tables.) In a closed
+            # period the refusal lands on the ledger row like every other.
+            if period_state(session, property_id, period) == "closed":
+                return _fail(
+                    f"facts for {property_id} {business_date.isoformat()} "
+                    f"are gone but period {period} is closed; the standing "
+                    "entry cannot be reversed"
+                )
+            prior = session.get(JournalEntry, row.entry_id)
+            reversal = _write_entry(
+                session,
+                _plan_of_entry(session, prior),
+                source_type=source_type,
+                actor=actor,
+                reversal_of=prior.entry_id,
+                flip=True,
+            )
+            session.delete(row)
+            session.flush()
+            return PostOutcome("reversed", reversal.entry_id, None)
         if row is not None and row.entry_id is not None:
             if row.source_hash == plan.request_hash:
                 if row.message is not None:
@@ -597,13 +631,17 @@ def period_key_for(session: "Session", property_id: str, day: date) -> str:
 @dataclass(frozen=True)
 class CloseGaps:
     """The two directions a close can be out of sync with the facts
-    (design D-OH27.7, extended): `unposted` names fact dates in the period
-    with no current posted `pms_daily` entry (nothing was posted, or the
-    standing entry failed); `orphaned` names dates that DO have a current
-    posted entry but no remaining facts — a re-transform that emptied the
-    day after posting. `post_and_record` returns `skipped` on a None plan,
-    so the ledger row for an orphaned date still reads "posted" and would
-    otherwise close silently."""
+    (design D-OH27.7, extended): `unposted` names financial-fact dates in
+    the period with no current posted `pms_daily` entry (nothing was
+    posted, or the standing entry failed) — deliberately pms_daily-only,
+    because "facts with no entry" means `usali_financial_fact` here; a
+    labor day with no accrual is the ordinary no-chart/no-cost case, not a
+    gap. `orphaned` covers BOTH sources: dates with a current entry whose
+    fact side is empty — `usali_financial_fact` for `pms_daily`,
+    `usali_labor_fact` for `payroll_accrual` — a grain emptied after
+    posting and never re-posted (a re-post reverses the entry via
+    `post_and_record`'s plan-is-None branch, which removes the date from
+    both directions)."""
 
     unposted: list[date]
     orphaned: list[date]
@@ -629,19 +667,41 @@ def close_period(
             .distinct()
         )
     )
+    labor_dates = set(
+        session.scalars(
+            select(UsaliLaborFact.business_date)
+            .where(
+                UsaliLaborFact.property_id == property_id,
+                UsaliLaborFact.business_date >= start,
+                UsaliLaborFact.business_date <= end,
+            )
+            .distinct()
+        )
+    )
     ledger_rows = session.scalars(
         select(GlPostingLedger).where(
             GlPostingLedger.property_id == property_id,
-            GlPostingLedger.source_type == "pms_daily",
+            GlPostingLedger.source_type.in_(("pms_daily", "payroll_accrual")),
             GlPostingLedger.business_date >= start,
             GlPostingLedger.business_date <= end,
         )
     ).all()
-    posted_dates = {row.business_date for row in ledger_rows if row.status == "posted"}
-    entry_dates = {row.business_date for row in ledger_rows if row.entry_id is not None}
+    posted_dates = {
+        row.business_date
+        for row in ledger_rows
+        if row.source_type == "pms_daily" and row.status == "posted"
+    }
+    # The fact side an entry must still be justified by, per source
+    # (see CloseGaps).
+    fact_side = {"pms_daily": fact_dates, "payroll_accrual": labor_dates}
     gaps = CloseGaps(
         unposted=sorted(fact_dates - posted_dates),
-        orphaned=sorted(entry_dates - fact_dates),
+        orphaned=sorted({
+            row.business_date
+            for row in ledger_rows
+            if row.entry_id is not None
+            and row.business_date not in fact_side[row.source_type]
+        }),
     )
     if period_state(session, property_id, period_key) != "closed":
         session.add(
