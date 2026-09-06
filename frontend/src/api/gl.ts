@@ -8,7 +8,14 @@
 // and a second copy of it would redirect once per in-flight 401.
 
 import { authHeaders, raiseApiError, redirectToLogin } from './client'
-import type { GlCloseResponse, GlPeriod, GlPostOutcome, JournalEntries, TrialBalance } from './types'
+import type {
+  GlCloseResponse,
+  GlPeriod,
+  GlPostOutcome,
+  GlPostRangeBody,
+  JournalEntries,
+  TrialBalance,
+} from './types'
 
 // The GETs are spelled out rather than routed through client.ts's private
 // `getJson` for checklist.ts's reason: exporting a helper to save a few lines
@@ -17,19 +24,17 @@ import type { GlCloseResponse, GlPeriod, GlPostOutcome, JournalEntries, TrialBal
 export async function getGlPeriods(property: string, fiscalYear?: number): Promise<GlPeriod[]> {
   // fiscal_year is omitted entirely when not passed — the backend defaults it,
   // and `?fiscal_year=undefined` would fail its int parse.
-  const year = fiscalYear === undefined ? '' : `&fiscal_year=${fiscalYear}`
-  const res = await fetch(`/api/gl/periods?property=${property}${year}`, {
-    headers: await authHeaders(),
-  })
+  const params = new URLSearchParams({ property })
+  if (fiscalYear !== undefined) params.set('fiscal_year', String(fiscalYear))
+  const res = await fetch(`/api/gl/periods?${params}`, { headers: await authHeaders() })
   if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
   if (!res.ok) await raiseApiError(res)
   return res.json() as Promise<GlPeriod[]>
 }
 
 export async function getTrialBalance(property: string, period: string): Promise<TrialBalance> {
-  const res = await fetch(`/api/gl/trial-balance?property=${property}&period=${period}`, {
-    headers: await authHeaders(),
-  })
+  const params = new URLSearchParams({ property, period })
+  const res = await fetch(`/api/gl/trial-balance?${params}`, { headers: await authHeaders() })
   if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
   if (!res.ok) await raiseApiError(res)
   return res.json() as Promise<TrialBalance>
@@ -40,10 +45,8 @@ export async function getJournalEntries(
   period: string,
   account: string,
 ): Promise<JournalEntries> {
-  const res = await fetch(
-    `/api/gl/entries?property=${property}&period=${period}&account=${account}`,
-    { headers: await authHeaders() },
-  )
+  const params = new URLSearchParams({ property, period, account })
+  const res = await fetch(`/api/gl/entries?${params}`, { headers: await authHeaders() })
   if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
   if (!res.ok) await raiseApiError(res)
   return res.json() as Promise<JournalEntries>
@@ -80,11 +83,7 @@ export async function reopenGlPeriod(
  *  trouble is decided by `gl_posting.post_and_record` and comes back as an
  *  outcome status (`skipped`/`failed`), so a resolved promise is not success —
  *  callers must branch on `GlPostOutcome.status`. */
-export async function postGlRange(body: {
-  property_id: string
-  date_from: string
-  date_to: string
-}): Promise<GlPostOutcome[]> {
+export async function postGlRange(body: GlPostRangeBody): Promise<GlPostOutcome[]> {
   const res = await fetch('/api/gl/post', {
     method: 'POST',
     headers: await authHeaders({ 'Content-Type': 'application/json' }),

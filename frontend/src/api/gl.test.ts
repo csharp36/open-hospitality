@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { getAccessToken } from '../auth/oidc'
+import { getAccessToken, login } from '../auth/oidc'
 import { makeGlPeriod, makeJournalEntry, makeTrialBalance } from '../test/fixtures'
 import {
   closeGlPeriod,
@@ -115,6 +115,17 @@ describe('gl API', () => {
 
   it('surfaces the 422 detail when a close is refused', async () => {
     mockFetch(422, { detail: 'unknown period key 2026-P99' })
-    await expect(closeGlPeriod('HISJ', '2026-P99')).rejects.toThrow('unknown period key 2026-P99')
+    await expect(closeGlPeriod('HISJ', '2026-P99')).rejects.toMatchObject({
+      status: 422,
+      detail: expect.stringContaining('unknown period key'),
+    })
+  })
+
+  // ONE 401 test only: `redirecting` in client.ts is a module-level latch, so a
+  // second 401 in this file would see login already fired and assert nothing.
+  it('a 401 redirects to login and still rejects', async () => {
+    mockFetch(401)
+    await expect(getGlPeriods('HISJ')).rejects.toThrow()
+    expect(login).toHaveBeenCalled()
   })
 })

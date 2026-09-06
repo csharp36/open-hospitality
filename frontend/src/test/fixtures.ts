@@ -326,7 +326,7 @@ export const PARKING_TXNS: StagedTxn[] = [
 ]
 
 // --- General ledger (OH-27) --------------------------------------------------
-// Dates sit inside HISJ_PROPERTY's 2026-07-01..2026-07-07 window so property
+// Business dates sit inside HISJ_PROPERTY's 2026-07-01..2026-07-07 window so property
 // bounds and GL fixtures agree; amounts are Numeric(15, 4)-scale strings like
 // the SOS fixture above.
 
@@ -344,7 +344,9 @@ export function makeGlPeriod(overrides: Partial<GlPeriod> = {}): GlPeriod {
 
 /** A small balanced chart — cash 1010, guest ledger 1210, revenue 4100,
  *  wages 6100 — with total debits equal to total credits (12066.3700 each),
- *  so a test asserting the balanced badge is asserting something honest. */
+ *  so a test asserting the balanced badge is asserting something honest.
+ *  Overriding `lines` means overriding both totals too — the maker spreads
+ *  the override in verbatim and recomputes nothing. */
 export function makeTrialBalance(overrides: Partial<TrialBalance> = {}): TrialBalance {
   return {
     property_id: 'HISJ',
@@ -387,8 +389,12 @@ export function makeTrialBalance(overrides: Partial<TrialBalance> = {}): TrialBa
   }
 }
 
-/** One pms_daily entry with a PMS-provenance line (txn fields set) and a
- *  payroll-shaped line (provenance fields null, department memo instead). */
+/** One balanced pms_daily entry: a Credit revenue line carrying single-fact
+ *  provenance (fact_id and the three txn fields set) and a Debit guest-ledger
+ *  line of the same amount with those four fields null. The null-provenance
+ *  line is ordinary pms_daily reality, not a payroll marker —
+ *  `gl_posting.JeLine` (`_emit`) sets `fact_id` only when exactly one fact
+ *  makes up the line. Payroll-shaped entries come from overrides. */
 export function makeJournalEntry(overrides: Partial<JournalEntry> = {}): JournalEntry {
   return {
     entry_id: 7,
@@ -405,7 +411,7 @@ export function makeJournalEntry(overrides: Partial<JournalEntry> = {}): Journal
         account_name: 'Rooms Revenue',
         posting: 'Credit',
         amount: '10456.3700',
-        memo: null,
+        memo: 'Daily revenue 2026-07-07',
         fact_id: 9001,
         pms_trx_code: '1000',
         pms_trx_desc: 'ROOM REVENUE',
@@ -413,11 +419,11 @@ export function makeJournalEntry(overrides: Partial<JournalEntry> = {}): Journal
       },
       {
         line_id: 72,
-        account_code: '6100',
-        account_name: 'Wages - Rooms',
+        account_code: '1210',
+        account_name: 'Guest Ledger',
         posting: 'Debit',
-        amount: '1200.0000',
-        memo: 'Housekeeping accrual',
+        amount: '10456.3700',
+        memo: 'Daily revenue 2026-07-07',
         fact_id: null,
         pms_trx_code: null,
         pms_trx_desc: null,

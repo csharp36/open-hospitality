@@ -1275,6 +1275,13 @@ export interface JournalEntries {
   entries: JournalEntry[]
 }
 
+/** The body of POST /api/gl/post — mirrors PostBody in src/usali/gl_api.py. */
+export interface GlPostRangeBody {
+  property_id: string
+  date_from: string
+  date_to: string
+}
+
 /** One (date, source) grain's outcome from POST /api/gl/post. `entry_id` is
  *  the entry the outcome names, or null when it names none. */
 export interface GlPostOutcome {
