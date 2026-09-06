@@ -49,13 +49,15 @@ def _seed_minimal_books(factory, property_id):
                        pms_source="opera"))
         s.flush()
         # T-prefixed codes: the Task 4 chart template carries 4000/1210, and
-        # provision_tenant will seed it — bare codes would collide on the
-        # (org_id, account_code) PK once that lands.
+        # provision_tenant seeds it — bare codes would collide on the
+        # (org_id, account_code) PK once that lands. No system_role either:
+        # the seeded "1210" already claims "guest_ledger_clearing" for this
+        # org, and uq_gl_account_org_role is unique per (org_id, system_role)
+        # — nothing below reads this account's role, only its code.
         s.add(GlAccount(account_code="T4000", name="Room Revenue",
                         account_type="income", is_active=True))
         s.add(GlAccount(account_code="T1210", name="Guest Ledger Clearing",
-                        account_type="asset", is_active=True,
-                        system_role="guest_ledger_clearing"))
+                        account_type="asset", is_active=True))
         s.flush()
         entry = JournalEntry(property_id=property_id,
                              business_date=date(2026, 7, 7),
