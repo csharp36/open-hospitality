@@ -20,6 +20,19 @@ export function pct(part: string, total: string): string {
   return `${((Number(part) / t) * 100).toFixed(1)}%`
 }
 
+/**
+ * The unbalanced badge's tail: which side is larger and by exactly how much.
+ * `delta` is the aName side minus the bName side (a subFixed result), and it
+ * is rendered at full precision on purpose — fmtMoney's 2dp rounding can make
+ * a sub-cent residue's two sides display identically, and this clause is what
+ * still tells them apart.
+ */
+export function fmtImbalance(delta: string, aName: string, bName: string): string {
+  return delta.startsWith('-')
+    ? `${bName} over by ${delta.slice(1)}`
+    : `${aName} over by ${delta}`
+}
+
 /** Statistics cell: trim trailing fractional zeros ("95.5000" -> "95.5"). */
 export function fmtStat(s: string | null): string {
   if (s === null) return ''

@@ -174,9 +174,12 @@ describe('GlPage', () => {
     expect(within(tbCard).getByText('balanced ✓')).toBeInTheDocument()
   })
 
-  it('shows a danger badge, not balanced, when totals differ', async () => {
+  it('shows a danger badge carrying the exact delta and its direction', async () => {
+    // A sub-cent residue — the likeliest real disagreement. Both totals round
+    // to the same 2dp display, so the badge must name the full-precision
+    // delta itself or it asserts two identical-looking numbers differ.
     vi.mocked(getTrialBalance).mockResolvedValue(
-      makeTrialBalance({ total_debits: '12066.3700', total_credits: '12000.0000' }),
+      makeTrialBalance({ total_debits: '12066.3701', total_credits: '12066.3700' }),
     )
     renderPage('/gl?period=2026-P07')
     expect(await screen.findByText('Rooms Revenue')).toBeInTheDocument()
@@ -184,7 +187,11 @@ describe('GlPage', () => {
     // the lines and keeps its own badge (its describe block covers that).
     const tbCard = screen.getByRole('region', { name: 'Trial balance 2026-P07' })
     expect(within(tbCard).queryByText('balanced ✓')).not.toBeInTheDocument()
-    expect(within(tbCard).getByText(/does not equal/)).toBeInTheDocument()
+    expect(
+      within(tbCard).getByText(
+        'Debits 12,066.37 does not equal credits 12,066.37 — debits over by 0.0001',
+      ),
+    ).toBeInTheDocument()
   })
 
   it('renders a 404 as a quiet empty state, not a failure', async () => {
@@ -258,6 +265,27 @@ describe('GlPage balance sheet', () => {
     expect(within(card).getByText('balanced ✓')).toBeInTheDocument()
     const tbCard = screen.getByRole('region', { name: 'Trial balance 2026-P07' })
     expect(within(tbCard).getByText(/does not equal/)).toBeInTheDocument()
+  })
+
+  it('badges an unbalanced foot with the exact delta and its direction', async () => {
+    // A sub-cent residue on the asset side: both foot totals display as
+    // 9,666.37, so only the full-precision delta makes the badge legible.
+    // This is also the negative-delta direction — the larger side is named
+    // from the sign, not assumed.
+    const lines = makeTrialBalance().lines.map((line) =>
+      line.account_code === '1010' ? { ...line, debits: '499.9999' } : line,
+    )
+    vi.mocked(getTrialBalance).mockResolvedValue(
+      makeTrialBalance({ lines, total_debits: '12066.3699', total_credits: '12066.3700' }),
+    )
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Balance sheet 2026-P07' })
+    expect(within(card).queryByText('balanced ✓')).not.toBeInTheDocument()
+    expect(
+      within(card).getByText(
+        'Assets 9,666.37 does not equal liabilities and equity 9,666.37 — liabilities and equity over by 0.0001',
+      ),
+    ).toBeInTheDocument()
   })
 })
 

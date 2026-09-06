@@ -4,8 +4,8 @@
 // the fetch.
 
 import type { TrialBalance } from '../api/types'
-import { eqFixed } from '../lib/decimal'
-import { fmtMoney } from '../lib/format'
+import { eqFixed, subFixed } from '../lib/decimal'
+import { fmtImbalance, fmtMoney } from '../lib/format'
 import {
   amountCellClass,
   amountHeadClass,
@@ -88,7 +88,9 @@ export default function TrialBalanceCard({
           <Badge tone="ok">balanced ✓</Badge>
         ) : (
           <Badge tone="danger">
-            Debits {fmtMoney(tb.total_debits)} does not equal credits {fmtMoney(tb.total_credits)}
+            {/* The delta stays full precision — fmtImbalance's doc says why. */}
+            Debits {fmtMoney(tb.total_debits)} does not equal credits {fmtMoney(tb.total_credits)}{' '}
+            — {fmtImbalance(subFixed(tb.total_debits, tb.total_credits), 'debits', 'credits')}
           </Badge>
         )}
       </p>

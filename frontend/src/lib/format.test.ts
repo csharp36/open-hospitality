@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { fmtMoney, fmtStat, pct } from './format'
+import { fmtImbalance, fmtMoney, fmtStat, pct } from './format'
 
 describe('fmtMoney', () => {
   it('formats 4dp storage strings to 2dp with thousands separators', () => {
@@ -26,6 +26,19 @@ describe('pct', () => {
 
   it('returns n/a on zero total', () => {
     expect(pct('0.0000', '0.0000')).toBe('n/a')
+  })
+})
+
+describe('fmtImbalance', () => {
+  it('names the first side on a positive delta, at full precision', () => {
+    expect(fmtImbalance('0.0001', 'debits', 'credits')).toBe('debits over by 0.0001')
+    expect(fmtImbalance('66.3700', 'debits', 'credits')).toBe('debits over by 66.3700')
+  })
+
+  it('names the second side on a negative delta, delta unsigned', () => {
+    expect(fmtImbalance('-0.0001', 'assets', 'liabilities and equity')).toBe(
+      'liabilities and equity over by 0.0001',
+    )
   })
 })
 

@@ -3,7 +3,8 @@
 
 import type { TrialBalance } from '../api/types'
 import { balanceSheet, type BalanceSheetLine } from '../lib/balanceSheet'
-import { fmtMoney } from '../lib/format'
+import { subFixed } from '../lib/decimal'
+import { fmtImbalance, fmtMoney } from '../lib/format'
 import {
   amountCellClass,
   amountHeadClass,
@@ -68,8 +69,14 @@ export default function BalanceSheetCard({ tb }: { tb: TrialBalance }) {
           <Badge tone="ok">balanced ✓</Badge>
         ) : (
           <Badge tone="danger">
+            {/* The delta stays full precision — fmtImbalance's doc says why. */}
             Assets {fmtMoney(bs.foot.totalAssets)} does not equal liabilities and equity{' '}
-            {fmtMoney(bs.foot.totalLiabilitiesAndEquity)}
+            {fmtMoney(bs.foot.totalLiabilitiesAndEquity)} —{' '}
+            {fmtImbalance(
+              subFixed(bs.foot.totalAssets, bs.foot.totalLiabilitiesAndEquity),
+              'assets',
+              'liabilities and equity',
+            )}
           </Badge>
         )}
       </p>
