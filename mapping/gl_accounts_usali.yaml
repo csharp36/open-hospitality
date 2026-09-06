@@ -10,7 +10,7 @@
 # actually present in mapping/opera.yaml, mapping/skytouch.yaml, and
 # mapping/autoclerk.yaml (verified via
 # `grep -n "major" mapping/opera.yaml mapping/skytouch.yaml mapping/autoclerk.yaml`),
-# not invented here — see 2026-09-06 gl_chart.py task notes for the diff.
+# not invented here — re-verify with: grep -n "major:" mapping/opera.yaml mapping/skytouch.yaml mapping/autoclerk.yaml
 # The five major categories that actually occur across those dictionaries
 # are: "Operated Departments", "Miscellaneous Income", "Non-Operating",
 # "Settlements", "Taxes (Pass-Through)". "Rooms" and "Other Operated
