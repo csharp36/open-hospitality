@@ -1963,11 +1963,10 @@ def journal_entries(
     `line_transactions` fields); lines without one carry None for all three
     — which lines carry a fact_id is `gl_posting`'s decision (`JeLine`),
     and test_journal_entries_drill_joins_the_staged_txn pins both halves.
-    Ordered by
-    (business_date, entry_id, line_id) so re-reads are stable and a
-    reversal renders beside what it reverses. An account with no lines in
-    the period returns an empty list — the `line_transactions` precedent:
-    drill-through of nothing is nothing, not an error.
+    Ordered by (business_date, entry_id, line_id) so re-reads are stable
+    and a reversal renders beside what it reverses. An account with no
+    lines in the period returns an empty list — the `line_transactions`
+    precedent: drill-through of nothing is nothing, not an error.
     """
     cfg = fiscal.require_config(fiscal.config_for(session, property_id))
     date_from, date_to = fiscal.resolve_period(cfg, period_key)

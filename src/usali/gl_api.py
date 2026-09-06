@@ -12,7 +12,7 @@ precedent: exact through JSON, no float round-trip.
 """
 
 from datetime import date, datetime, timedelta
-from typing import Callable, TypeVar
+from typing import Callable, TypeVar, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
@@ -174,7 +174,11 @@ class JournalLineModel(BaseModel):
     line_id: int
     account_code: str
     account_name: str
-    posting: str
+    # Annotated with the engine's own Literal, so the admitted pair can
+    # never drift from `gl_posting.Posting` — the authority (the
+    # `PostOutcomeModel.status` shape); ck_journal_line_posting is the DB
+    # wall for the same pair.
+    posting: gl_posting.Posting
     amount: str
     memo: str | None
     fact_id: int | None
@@ -518,7 +522,9 @@ def get_entries(
                         line_id=line.line_id,
                         account_code=line.account_code,
                         account_name=line.account_name,
-                        posting=line.posting,
+                        # Narrowing the column's str to the pair
+                        # ck_journal_line_posting enforces on it.
+                        posting=cast(gl_posting.Posting, line.posting),
                         amount=str(line.amount),
                         memo=line.memo,
                         fact_id=line.fact_id,
