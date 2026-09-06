@@ -110,6 +110,23 @@ describe('GlPage', () => {
     expect(getGlPeriods).not.toHaveBeenCalled()
   })
 
+  it('shows the periods loading line before the rail settles', async () => {
+    vi.mocked(getGlPeriods).mockImplementation(() => new Promise(() => {}))
+    renderPage()
+    expect(await screen.findByText('Loading periods…')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Fiscal periods' })).not.toBeInTheDocument()
+  })
+
+  it('renders a failure to load the periods rail loud, with no rail underneath it', async () => {
+    vi.mocked(getGlPeriods).mockRejectedValue(new ApiError(503, 'upstream down'))
+    renderPage()
+    expect(
+      await screen.findByText('Failed to load periods: upstream down'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Fiscal periods' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Loading periods…')).not.toBeInTheDocument()
+  })
+
   it('renders a chip per period, closed ones carrying a Closed badge', async () => {
     renderPage()
     const rail = await screen.findByRole('group', { name: 'Fiscal periods' })
@@ -281,6 +298,24 @@ describe('GlPage', () => {
     }
     expect(getTrialBalance).not.toHaveBeenCalled()
   })
+
+  it('prompts to pick a period before any period is selected', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: 'Fiscal periods' })
+    expect(
+      screen.getByText('Pick a period to view its trial balance.'),
+    ).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: /^Period / })).not.toBeInTheDocument()
+    expect(getTrialBalance).not.toHaveBeenCalled()
+  })
+
+  it('shows the trial balance loading line while a selected period is in flight', async () => {
+    vi.mocked(getTrialBalance).mockImplementation(() => new Promise(() => {}))
+    renderPage('/gl?period=2026-P07')
+    await screen.findByRole('region', { name: 'Period 2026-P07' })
+    expect(await screen.findByText('Loading trial balance…')).toBeInTheDocument()
+    expect(screen.queryByRole('region', { name: 'Trial balance 2026-P07' })).not.toBeInTheDocument()
+  })
 })
 
 describe('GlPage balance sheet', () => {
@@ -373,6 +408,21 @@ describe('GlPage period detail', () => {
     // the qualifier sentence stays.
     expect(within(card).getByText(/payroll accruals are not checked here/i)).toBeInTheDocument()
     expect(within(card).queryByText(/all caught up/i)).not.toBeInTheDocument()
+  })
+
+  it('says no PMS-day gaps while still naming the orphaned entries below it', async () => {
+    // Zero unposted, some orphaned: the qualified "No PMS-day gaps." branch —
+    // distinct from the all-clear sentence, since orphaned entries remain.
+    vi.mocked(getGlPeriods).mockResolvedValue([
+      makeGlPeriod({ orphaned_dates: ['2026-07-04'] }),
+    ])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    expect(within(card).getByText('No PMS-day gaps.')).toBeInTheDocument()
+    expect(
+      within(card).queryByText('No PMS-day gaps and no orphaned entries.'),
+    ).not.toBeInTheDocument()
+    expect(within(card).getByText('1 posted entry lost its facts (orphaned)')).toBeInTheDocument()
   })
 
   it('renders no detail card when ?period= matches no period in the rail', async () => {
