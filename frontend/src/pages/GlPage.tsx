@@ -91,7 +91,7 @@ export default function GlPage() {
   })
 
   const entriesQuery = useQuery({
-    // The 'gl-entries' prefix names this query family for invalidation.
+    // One query per drill scope: property, period, account.
     queryKey: ['gl-entries', property, period, drill?.code],
     // skipToken until an account is drilled with property and period in hand.
     queryFn:
@@ -101,6 +101,10 @@ export default function GlPage() {
   })
 
   function selectPeriod(key: string) {
+    // Cleared here, not just in the effect above: synchronous with the click,
+    // no committed render pairs the new period with a stale drilled account
+    // (SosPage's updateSearch does the same).
+    setDrill(null)
     void navigate({ search: (prev) => ({ ...prev, period: key }), replace: true })
   }
 
