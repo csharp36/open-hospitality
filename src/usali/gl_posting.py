@@ -29,6 +29,10 @@ back to it):
 `request_hash` is a sha256 fingerprint of the plan's economic content
 (property, date, and every (account, posting, amount) line) — the
 canonical construction is unchanged by the move (see `_finish_plan`).
+That the canonical construction actually matches the facts is not just
+asserted here: `tests/test_gl_parity.py::test_journal_and_facts_agree_on_the_seeded_samples`
+is the standing proof, posting every seeded grain and asserting zero
+`reporting.sos_journal_parity` diffs against the fact-derived SOS.
 """
 
 import hashlib
