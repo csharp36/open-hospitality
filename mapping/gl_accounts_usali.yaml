@@ -6,11 +6,9 @@
 # usali_* fields are the join keys the SOS parity gate uses; income and
 # expense accounts should carry them, clearing/liability accounts do not.
 #
-# usali_major_category / usali_schedule_id are COPIED from the values
-# actually present in mapping/opera.yaml, mapping/skytouch.yaml, and
-# mapping/autoclerk.yaml (verified via
-# `grep -n "major" mapping/opera.yaml mapping/skytouch.yaml mapping/autoclerk.yaml`),
-# not invented here — re-verify with: grep -n "major:" mapping/opera.yaml mapping/skytouch.yaml mapping/autoclerk.yaml
+# usali_major_category / usali_schedule_id are COPIED from the values actually
+# present in the mapping dictionaries — re-verify with:
+# grep -n "major:\|schedule_id:" mapping/opera.yaml mapping/skytouch.yaml mapping/autoclerk.yaml
 # The five major categories that actually occur across those dictionaries
 # are: "Operated Departments", "Miscellaneous Income", "Non-Operating",
 # "Settlements", "Taxes (Pass-Through)". "Rooms" and "Other Operated

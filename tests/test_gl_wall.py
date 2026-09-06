@@ -51,8 +51,8 @@ def _seed_minimal_books(factory, property_id):
         # T-prefixed codes: the Task 4 chart template carries 4000/1210, and
         # provision_tenant seeds it — bare codes would collide on the
         # (org_id, account_code) PK once that lands. No system_role either:
-        # the seeded "1210" already claims "guest_ledger_clearing" for this
-        # org, and uq_gl_account_org_role is unique per (org_id, system_role)
+        # the seeded "1210" already claims "guest_ledger_clearing" for the
+        # provisioned org, and uq_gl_account_org_role is unique per (org_id, system_role)
         # — nothing below reads this account's role, only its code.
         s.add(GlAccount(account_code="T4000", name="Room Revenue",
                         account_type="income", is_active=True))

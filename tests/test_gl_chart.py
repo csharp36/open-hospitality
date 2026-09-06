@@ -24,18 +24,19 @@ def test_the_template_is_a_superset_of_the_qbo_chart():
 
 
 def test_seeding_is_idempotent_and_org_scoped(db_session, founding_org):
-    first = gl_chart.seed_chart(db_session)
-    again = gl_chart.seed_chart(db_session)
-    assert first > 0 and again == 0  # second run inserts nothing
+    first = gl_chart.seed_chart(db_session, org_id=1)
+    again = gl_chart.seed_chart(db_session, org_id=1)
+    assert first == len(gl_chart.load_template())
+    assert again == 0  # second run inserts nothing
     row = db_session.get(GlAccount, (1, "4000"))
     assert row is not None and row.account_type == "income"
 
 
 def test_seeding_does_not_resurrect_an_edited_account(db_session, founding_org):
     """The OH-17 seed lesson: a re-run must never overwrite operator edits."""
-    gl_chart.seed_chart(db_session)
+    gl_chart.seed_chart(db_session, org_id=1)
     row = db_session.get(GlAccount, (1, "4000"))
     row.name = "Rooms Revenue (renamed)"
     db_session.flush()
-    gl_chart.seed_chart(db_session)
+    gl_chart.seed_chart(db_session, org_id=1)
     assert db_session.get(GlAccount, (1, "4000")).name == "Rooms Revenue (renamed)"

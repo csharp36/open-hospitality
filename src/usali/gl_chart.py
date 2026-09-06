@@ -5,14 +5,15 @@ re-run inserts template rows the org lacks and NEVER updates a row that
 exists — an operator's rename or deactivation survives every later seed
 (the OH-17 env-seed lesson, applied from day one).
 
-``seed_chart`` takes an explicit ``org_id`` (default: the founding org)
-rather than reading it off ``tenancy.current_org_id``: every caller here
-runs on an OWNER (un-instrumented, RLS-bypassing) session —
-:func:`usali.provisioning.provision_tenant`'s documented contract, and
-the `db_session` test fixture — and ``current_org_id`` only resolves on a
-session `tenancy.bind_org_context` has bound, which an owner session
-never is (`session.info` carries no org key, so it would raise
-``MissingOrgContext`` on every call). Explicit `org_id` matches how the
+``seed_chart`` takes an explicit ``org_id`` rather than reading it off
+``tenancy.current_org_id``: every caller here runs on an un-instrumented
+session (owner or provisioner) — neither binds an org context. That
+covers both callers by name: the `db_session` test fixture's owner
+session, and :func:`usali.provisioning.provision_tenant`'s `usali_provisioner`
+session (RLS-bound but never org-bound, per migration `g2a0provgl`).
+``current_org_id`` only resolves on a session `tenancy.bind_org_context`
+has bound, which neither of these is (`session.info` carries no org key,
+so it would raise ``MissingOrgContext`` on every call). Explicit `org_id` matches how the
 rest of provisioning already writes OrgScoped rows on the owner session
 (e.g. `provisioning.provision_tenant`'s `RoleAssignment` insert, and
 `property_registry._seed_integration_credentials`) rather than relying on
@@ -31,7 +32,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from usali.models import GlAccount
-from usali.tenancy import FOUNDING_ORG_ID
 
 _TEMPLATE = Path(__file__).resolve().parents[2] / "mapping" / "gl_accounts_usali.yaml"
 
@@ -55,9 +55,9 @@ def load_template(path: Path = _TEMPLATE) -> list[TemplateAccount]:
     return [TemplateAccount(**{**e, "account_code": str(e["account_code"])}) for e in raw]
 
 
-def seed_chart(
-    session: Session, org_id: int = FOUNDING_ORG_ID, path: Path = _TEMPLATE
-) -> int:
+# org_id is keyword-only with no default: a default org in a multi-tenant
+# seeder is a silent-wrong-tenant footgun, so callers must say which org.
+def seed_chart(session: Session, *, org_id: int, path: Path = _TEMPLATE) -> int:
     """Insert template accounts `org_id` lacks; return the count inserted."""
     have = set(
         session.scalars(
