@@ -808,3 +808,62 @@ def test_non_jpeg_bytes_are_never_served_as_an_image(db_engine, db_session, tmp_
     assert "no-store" in r.headers["cache-control"]
     # Still a read of the employee's punch evidence — still audited.
     assert len(_photo_audits(db_session)) == 1
+
+
+# --- OH-27: approval posts payroll accruals over the promoted grains ---------
+
+
+def _approve(c, mint, card_id):
+    return c.post(f"/api/timecards/{card_id}/approve",
+                  headers={"Authorization": f"Bearer {mint(roles=['org_admin'], sub='adm')}"})
+
+
+def test_approval_posts_a_payroll_accrual_when_the_chart_exists(
+    db_engine, db_session, tmp_path
+):
+    """With a chart and a fiscal calendar seeded, approving a card writes a
+    posted payroll_accrual ledger row for each (property, day) the promotion
+    wrote, in the same transaction as the approval, attributed to the
+    approver."""
+    from usali import gl_chart
+    from usali.models import FiscalCalendar, GlPostingLedger, JournalEntry
+
+    device_id, emp_id = _seed(db_session)
+    set_rate_everywhere(db_session, db_session.get(Employee, emp_id), "20.00")
+    gl_chart.seed_chart(db_session, org_id=1)
+    db_session.add(FiscalCalendar(
+        property_id="HISJ", calendar_type="calendar_month",
+        fiscal_year_start_month=1, week_start_weekday=None,
+    ))
+    _punch(db_session, device_id, emp_id, "clock_in", 9)
+    _punch(db_session, device_id, emp_id, "clock_out", 17)
+    db_session.commit()
+    card = assemble_timecard(db_session, emp_id, date(2026, 7, 7), anchor=_ANCHOR)
+    db_session.commit()
+
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = _approve(c, mint, card.timecard_id)
+    assert r.status_code == 200, r.text
+
+    rows = db_session.execute(select(GlPostingLedger)).scalars().all()
+    assert [(x.source_type, x.property_id, x.business_date, x.status) for x in rows] \
+        == [("payroll_accrual", "HISJ", date(2026, 7, 7), "posted")]
+    entry = db_session.get(JournalEntry, rows[0].entry_id)
+    assert entry.posted_by == "adm"
+
+
+def test_approval_without_a_chart_still_succeeds_with_zero_gl_rows(
+    db_engine, db_session, tmp_path
+):
+    """The skip gate: an org with no chart of accounts approves cleanly and
+    the GL stays untouched — a books rollout must not gate payroll."""
+    from usali.models import GlPostingLedger
+
+    card_id, _ = _open_card(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = _approve(c, mint, card_id)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved"
+    assert db_session.execute(select(GlPostingLedger)).scalars().all() == []

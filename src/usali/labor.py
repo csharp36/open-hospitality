@@ -42,10 +42,15 @@ _CENTS_PER_HOUR = Decimal("0.01")
 _MONEY = Decimal("0.0001")
 
 
-def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
+def promote_timecard(
+    session: Session, card: Timecard, *, anchor: date
+) -> set[tuple[str, date]]:
     """Promote one APPROVED timecard to `usali_labor_fact` rows (one per worked
-    business date). Returns the number of rows written. Raises ValueError if the
-    card is not approved — only approved hours are promoted."""
+    business date per property). Returns the set of (property_id,
+    business_date) grains it wrote — one fact per pair, so `len()` is the row
+    count — for callers that post GL accruals over exactly those grains.
+    Raises ValueError if the card is not approved — only approved hours are
+    promoted."""
     if card.status != "approved":
         raise ValueError(f"timecard {card.timecard_id} is not approved (status={card.status})")
 
@@ -82,7 +87,7 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
             "employee_id=%s is exclude_from_payroll; timecard %s promoted no facts",
             employee.employee_id, card.timecard_id,
         )
-        return 0
+        return set()
     # Per-day worked hours from B2's engine (lunch already excluded), plus the
     # property split for each day. Computed BEFORE exemption because exemption is
     # now resolved over the days actually worked, not sampled at period_start.
@@ -120,7 +125,7 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
     # Re-promote safety: clear this timecard's prior facts first.
     session.execute(delete(UsaliLaborFact).where(UsaliLaborFact.timecard_id == card.timecard_id))
 
-    written = 0
+    written: set[tuple[str, date]] = set()
     # ORDER IS LOAD-BEARING: overtime runs on the employee's COMBINED hours
     # first, and only the resulting hours are split across properties. Splitting
     # first and running overtime per property would turn 6h at one hotel plus 5h
@@ -186,7 +191,7 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
                 est_cost=cost.quantize(_MONEY, rounding=ROUND_HALF_UP),
                 timecard_id=card.timecard_id,
             ))
-            written += 1
+            written.add((property_id, row.business_date))
     # E4: sick leave accrues off the same approved hours, in the same
     # idempotent pass (its delete-then-rewrite keys on this card, like the
     # facts above). Excluded staff never reach here (the skip returned 0),

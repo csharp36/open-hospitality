@@ -70,7 +70,7 @@ def test_promote_writes_department_aggregate_cost_and_hours(db_session):
     db_session.commit()
 
     facts = db_session.execute(select(UsaliLaborFact)).scalars().all()
-    assert n == len(facts) == 2  # one per business date
+    assert len(n) == len(facts) == 2  # one per business date
     by_date = {f.business_date: f for f in facts}
     day5 = by_date[date(2026, 1, 5)]
     assert Decimal(str(day5.hours)) == Decimal("8.00")

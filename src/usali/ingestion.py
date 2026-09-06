@@ -37,6 +37,7 @@ from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
 from usali.adaptors.pdf import Word, extract_pages, extract_words
 from usali.detect import Detection, detect, load_registry
+from usali import gl_posting
 from usali.ledger_promote import promote_ledgers
 from usali.ledger_stage import stage_ledgers
 from usali.models import IngestBatch, IngestionCoverage
@@ -300,6 +301,19 @@ def _process_section(
     # DAY/MONTH/YEAR periods records the DAY business_date the handler returns.
     record_coverage(session, det.property_id, business_date, det.report_type)
     batch.status = "transformed"
+    # OH-27: promotion and posting land in the caller's one transaction.
+    # post_and_record's docstring is the contract enforced here: the five
+    # typed GL refusals become failed ledger rows rather than exceptions, so
+    # a books problem never quarantines a parsed file (what deliberately
+    # still escapes is IntegrityError and invariant violations); with no
+    # chart seeded it returns "skipped" and writes nothing (GL is off).
+    gl_posting.post_and_record(
+        session,
+        property_id=det.property_id,
+        business_date=business_date,
+        source_type="pms_daily",
+        actor="ingestion",
+    )
     return ProcessResult(
         pms_source=det.pms_source,
         report_type=det.report_type,

@@ -282,3 +282,37 @@ def test_unmapped_gl_records_a_failed_row(db_session, founding_org, seed_six_pdf
     assert out.status == "failed"
     ledger = db_session.scalar(select(GlPostingLedger))
     assert ledger.status == "failed" and "no GL account code" in ledger.message
+
+
+def test_process_file_posts_when_the_chart_exists(db_session, founding_org, tmp_path):
+    """The ingestion hook (design §3): promotion and posting land in ONE
+    transaction — process_pack commits the pack's facts and their journal
+    entries together. Mirrors test_skytouch_end_to_end's seeding, plus the
+    chart and a fiscal calendar so the posts land as posted rows, not the
+    fiscal refusal's failed ones."""
+    import shutil
+    from pathlib import Path
+
+    from usali.ingestion import process_pack
+    from usali.mapping.loader import load_mappings
+    from usali.mapping.property_registry import seed_properties
+    from usali.mapping.schedules import seed_schedules
+
+    seed_schedules(db_session, "mapping/usali_schedules.yaml")
+    load_mappings(db_session, "mapping/skytouch.yaml")
+    seed_properties(db_session, "mapping/properties.yaml")
+    gl_chart.seed_chart(db_session, org_id=1)
+    _seed_calendar(db_session, "STDEMO")
+    db_session.commit()
+
+    sample = Path("docs/reference/samples/SkyTouch - Standard Audit Pack (mock).pdf")
+    drop = tmp_path / sample.name
+    shutil.copy(sample, drop)
+    results = process_pack(
+        db_session, drop,
+        processed_dir=tmp_path / "processed", failed_dir=tmp_path / "failed",
+    )
+    assert results  # the pack parsed as before
+    rows = db_session.scalars(select(GlPostingLedger)).all()
+    assert rows and all(r.source_type == "pms_daily" for r in rows)
+    assert all(r.status == "posted" for r in rows)

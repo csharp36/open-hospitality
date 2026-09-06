@@ -1,6 +1,6 @@
 import hashlib
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TypeVar, cast, get_args
 
@@ -8,7 +8,7 @@ import httpx
 import typer
 from sqlalchemy import select
 
-from usali import invites, qbo_push, render, reporting
+from usali import gl_chart, gl_posting, invites, qbo_push, render, reporting
 from usali.adaptors import autoclerk_transaction_summary as autoclerk
 from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors.pdf import extract_words
@@ -111,6 +111,50 @@ def seed_properties_cmd(
         n = seed_properties(s, yaml_path)
         s.commit()
     typer.echo(f"Seeded {n} properties")
+
+
+@app.command("gl-seed-chart")
+def gl_seed_chart_cmd() -> None:
+    """Seed the USALI chart for the org (insert-only; edits survive)."""
+    # The CLI is the org-1 operator surface (see _session_factory's L3 note),
+    # so the chart seeds under FOUNDING_ORG_ID like every other command.
+    with _session_factory()() as s:
+        n = gl_chart.seed_chart(s, org_id=FOUNDING_ORG_ID)
+        s.commit()
+    typer.echo(f"Seeded {n} account(s)")
+
+
+@app.command("gl-post")
+def gl_post_cmd(
+    property_id: str = typer.Argument(...),
+    date_from: str = typer.Argument(..., help="YYYY-MM-DD"),
+    date_to: str = typer.Argument(..., help="YYYY-MM-DD"),
+) -> None:
+    """Post (or re-post) every source for each date in the range —
+    the D-OH27.8 backfill: the production engine, run over history."""
+    start = _parse_date(date_from, "DATE_FROM")
+    end = _parse_date(date_to, "DATE_TO")
+    if start > end:
+        raise typer.BadParameter(f"{date_from} is after {date_to}")
+    failures = 0
+    with _session_factory()() as s:
+        day = start
+        while day <= end:
+            for source in gl_posting.POSTING_SOURCES:
+                out = gl_posting.post_and_record(
+                    s, property_id=property_id, business_date=day,
+                    source_type=source.source_type, actor="cli",
+                )
+                if out.status != "skipped":
+                    typer.echo(f"{day} {source.source_type}: {out.status}"
+                               + (f" — {out.message}" if out.message else ""))
+                if out.status == "failed":
+                    failures += 1
+            day += timedelta(days=1)
+        s.commit()
+    if failures:
+        typer.echo(f"FAILED: {failures} posting(s) refused", err=True)
+        raise typer.Exit(code=1)
 
 
 @app.command("invite")
@@ -500,7 +544,17 @@ def promote_labor_cmd() -> None:
             select(Timecard).where(Timecard.status == "approved")
         ).scalars().all()
         for card in cards:
-            total += promote_timecard(s, card, anchor=anchor)
+            written = promote_timecard(s, card, anchor=anchor)
+            total += len(written)
+            # OH-27: accrue payroll over exactly the grains the promotion
+            # wrote, in the same transaction. post_and_record's docstring is
+            # the contract: GL refusals become failed ledger rows, never
+            # exceptions; with no chart seeded it skips and writes nothing.
+            for prop, day in sorted(written):
+                gl_posting.post_and_record(
+                    s, property_id=prop, business_date=day,
+                    source_type="payroll_accrual", actor="cli",
+                )
         s.commit()
     typer.echo(f"Promoted {total} labor facts across {len(cards)} approved timecards")
 

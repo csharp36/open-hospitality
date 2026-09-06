@@ -106,7 +106,7 @@ def test_promotion_writes_no_facts_for_an_excluded_employee(db_session):
     db_session.commit()
 
     facts = db_session.execute(select(UsaliLaborFact)).scalars().all()
-    assert written == 0
+    assert written == set()
     assert facts == [], (
         "an excluded employee's hours must not enter Schedule 15 or any "
         "hours statistic — no rows, not zero-cost rows"
