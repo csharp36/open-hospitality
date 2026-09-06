@@ -202,6 +202,24 @@ describe('app shell', () => {
     // A single entry, and it is the real one — not a link plus a dead twin.
     expect(screen.getAllByText('Weekly Schedule')).toHaveLength(1)
   })
+
+  // No `show` gate: reads ride the mount's operator gates, so every operator
+  // who can see the sidebar may see the books. The controls inside the page
+  // are gated separately — pinned by GlPage.test.tsx ("property_gm sees state
+  // and gaps but no close/reopen controls").
+  it('shows the General Ledger link to any operator', async () => {
+    renderApp()
+    const link = await screen.findByRole('link', { name: /general ledger/i })
+    expect(link).toHaveAttribute('href', '/gl')
+  })
+
+  it('the Financial Reports placeholder is gone', async () => {
+    renderApp()
+    // Anchor on the live entry first so the absence check below is not
+    // racing the render of the nav it inspects.
+    await screen.findByRole('link', { name: /general ledger/i })
+    expect(screen.queryByText(/financial reports/i)).toBeNull()
+  })
 })
 
 describe('app shell — setup nav', () => {

@@ -131,7 +131,7 @@ const SECTIONS: NavSection[] = [
       { to: '/coverage', label: 'Coverage', icon: CoverageIcon },
       { label: 'Daily Reports', icon: FileIcon, soon: true },
       { label: 'Night Audit', icon: MoonIcon, soon: true },
-      { label: 'Financial Reports', icon: BankIcon, soon: true },
+      { to: '/gl', label: 'General Ledger', icon: BankIcon },
     ],
   },
 ]
