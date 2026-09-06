@@ -369,6 +369,11 @@ class JournalEntry(OrgScoped, Base):
             ["property.org_id", "property.property_id"],
             name="fk_journal_entry_property_org",
         ),
+        ForeignKeyConstraint(
+            ["org_id", "reversal_of"],
+            ["journal_entry.org_id", "journal_entry.entry_id"],
+            name="fk_journal_entry_reversal_org",
+        ),
     )
 
     entry_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -377,10 +382,11 @@ class JournalEntry(OrgScoped, Base):
     source_type: Mapped[str] = mapped_column(String(30))
     source_hash: Mapped[str] = mapped_column(String(64))
     memo: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    reversal_of: Mapped[int | None] = mapped_column(
-        ForeignKey("journal_entry.entry_id", name="fk_journal_entry_reversal"),
-        nullable=True,
-    )
+    # The FK on this column is the composite fk_journal_entry_reversal_org in
+    # __table_args__: (org_id, reversal_of) -> (org_id, entry_id), the same
+    # shape every other org-crossing reference here uses. A single-column FK
+    # would let the DB accept a reversal pointing at another org's entry.
+    reversal_of: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     posted_by: Mapped[str] = mapped_column(String(64))
     posted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
