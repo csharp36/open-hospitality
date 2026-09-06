@@ -2,6 +2,7 @@
 statement must match the fact-derived SOS exactly on the seeded sample
 data. The SOS is NOT re-pointed until this holds on real data too."""
 
+from datetime import date
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -12,7 +13,7 @@ from usali.models import UsaliFinancialFact
 from tests.test_gl_posting import _seed_calendar
 
 
-def _post_all_grains(db_session) -> list[tuple[str, object]]:
+def _post_all_grains(db_session) -> list[tuple[str, date]]:
     """Seed a fiscal calendar for every distinct property the seeded facts
     touch (`seed_six_pdfs` spans properties across the Opera/Autoclerk
     samples), then post every (property, business_date) grain found in the
@@ -23,10 +24,13 @@ def _post_all_grains(db_session) -> list[tuple[str, object]]:
     for prop in sorted({p for p, _ in pairs}):
         _seed_calendar(db_session, prop)
     for prop, day in pairs:
-        gl_posting.post_and_record(
+        out = gl_posting.post_and_record(
             db_session, property_id=prop, business_date=day,
             source_type="pms_daily", actor="test",
         )
+        # A silently failed grain would shrink BOTH sides of the parity
+        # comparison; the gate is only as strong as this assertion.
+        assert out.status == "posted", f"{prop} {day}: {out.status} {out.message}"
     return pairs
 
 
