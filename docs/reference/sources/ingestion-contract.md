@@ -1,7 +1,8 @@
 # Ingestion Contract — the daily deliverables
 
-The system replicates **Inn-flow**, which receives these reports **as PDF attachments via
-email**. The PDFs in `docs/reference/samples/` are the exact files sent. **PDF is therefore the primary
+These reports arrive **as PDF attachments via email** — the standard delivery
+mechanism for night-audit output across the industry, and therefore the primary
+ingestion path. The PDFs in `docs/reference/samples/` are the exact files sent. **PDF is therefore the primary
 ingestion format**, not XML/CSV. (The Opera XML catalog and the Autoclerk CSVs we also have
 are secondary: the XML seeds the mapping dictionary; the CSVs are convenience exports.)
 
