@@ -183,6 +183,14 @@ def test_l1_round_trips_on_an_empty_database():
                 # with its own org_id index.
                 "ix_property_stat_config_org_id",
                 "ix_ingestion_coverage_org_id",
+                # g1a0glcore (OH-27): four of the five GL tables carry their
+                # own org_id index; gl_account does not — its org_id is PART
+                # OF the composite primary key, the org_checklist_override /
+                # org_integration_credential case above.
+                "ix_journal_entry_org_id",
+                "ix_journal_line_org_id",
+                "ix_gl_posting_ledger_org_id",
+                "ix_gl_period_event_org_id",
             }
             assert set(_l1._ORG_TABLES) | {"property"} <= org_id_tables()
 

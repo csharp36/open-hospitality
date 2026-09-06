@@ -313,7 +313,7 @@ roadmap:
       double-entry journal every PMS and labor fact posts into, fiscal periods
       with a close, trial balance and balance sheet. QuickBooks becomes an
       optional export.
-    status: planned
+    status: in-progress
     tags: [gl, accounting]
 
   - id: OH-28

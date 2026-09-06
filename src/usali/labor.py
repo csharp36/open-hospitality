@@ -17,10 +17,7 @@ re-inserts, so re-running (or the CLI backfill) never double-counts.
 import logging
 from datetime import date
 from decimal import ROUND_HALF_UP, Decimal
-from typing import Any, cast
-
 from sqlalchemy import delete, func, select
-from sqlalchemy.engine import CursorResult
 from sqlalchemy.orm import Session
 
 from usali.models import EXCLUDE_FROM_PAYROLL, Employee, Property, Timecard, UsaliLaborFact
@@ -42,10 +39,15 @@ _CENTS_PER_HOUR = Decimal("0.01")
 _MONEY = Decimal("0.0001")
 
 
-def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
+def promote_timecard(
+    session: Session, card: Timecard, *, anchor: date
+) -> set[tuple[str, date]]:
     """Promote one APPROVED timecard to `usali_labor_fact` rows (one per worked
-    business date). Returns the number of rows written. Raises ValueError if the
-    card is not approved — only approved hours are promoted."""
+    business date per property). Returns the set of (property_id,
+    business_date) grains it wrote — one fact per pair, so `len()` is the row
+    count — for callers that post GL accruals over exactly those grains.
+    Raises ValueError if the card is not approved — only approved hours are
+    promoted."""
     if card.status != "approved":
         raise ValueError(f"timecard {card.timecard_id} is not approved (status={card.status})")
 
@@ -82,7 +84,7 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
             "employee_id=%s is exclude_from_payroll; timecard %s promoted no facts",
             employee.employee_id, card.timecard_id,
         )
-        return 0
+        return set()
     # Per-day worked hours from B2's engine (lunch already excluded), plus the
     # property split for each day. Computed BEFORE exemption because exemption is
     # now resolved over the days actually worked, not sampled at period_start.
@@ -120,7 +122,7 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
     # Re-promote safety: clear this timecard's prior facts first.
     session.execute(delete(UsaliLaborFact).where(UsaliLaborFact.timecard_id == card.timecard_id))
 
-    written = 0
+    written: set[tuple[str, date]] = set()
     # ORDER IS LOAD-BEARING: overtime runs on the employee's COMBINED hours
     # first, and only the resulting hours are split across properties. Splitting
     # first and running overtime per property would turn 6h at one hotel plus 5h
@@ -186,11 +188,11 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
                 est_cost=cost.quantize(_MONEY, rounding=ROUND_HALF_UP),
                 timecard_id=card.timecard_id,
             ))
-            written += 1
+            written.add((property_id, row.business_date))
     # E4: sick leave accrues off the same approved hours, in the same
     # idempotent pass (its delete-then-rewrite keys on this card, like the
-    # facts above). Excluded staff never reach here (the skip returned 0),
-    # matching their no-facts treatment.
+    # facts above). Excluded staff never reach here (the skip returned an
+    # empty set), matching their no-facts treatment.
     accrue_for_card(
         session, card, day_hours=day_hours, exempt=exempt,
         jurisdiction=_jurisdiction_for_card(
@@ -201,19 +203,29 @@ def promote_timecard(session: Session, card: Timecard, *, anchor: date) -> int:
     return written
 
 
-def demote_timecard(session: Session, card: Timecard) -> int:
+def demote_timecard(session: Session, card: Timecard) -> set[tuple[str, date]]:
     """Delete this card's ESTIMATED labor facts (H3 reopen) — the exact
     inverse of the promote's delete-then-rewrite, keyed the same way. A
     reopened card's hours are under review again and must not keep
     claiming approved cost on any report; re-approval re-promotes them.
     Actual (pay-run) facts are untouched — paid history is immutable.
-    Returns the number of fact rows deleted."""
-    result = cast("CursorResult[Any]", session.execute(
+    Returns the set of (property_id, business_date) grains the deleted
+    facts covered — mirroring `promote_timecard`'s return — so callers can
+    re-post GL accruals over exactly the grains that just changed."""
+    demoted = {
+        (property_id, business_date)
+        for property_id, business_date in session.execute(
+            select(UsaliLaborFact.property_id, UsaliLaborFact.business_date).where(
+                UsaliLaborFact.timecard_id == card.timecard_id
+            )
+        )
+    }
+    session.execute(
         delete(UsaliLaborFact).where(
             UsaliLaborFact.timecard_id == card.timecard_id
         )
-    ))
-    return result.rowcount
+    )
+    return demoted
 
 
 def _price(reg: Decimal, ot: Decimal, dt: Decimal, rates: HourlyRates) -> Decimal:

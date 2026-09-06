@@ -808,3 +808,146 @@ def test_non_jpeg_bytes_are_never_served_as_an_image(db_engine, db_session, tmp_
     assert "no-store" in r.headers["cache-control"]
     # Still a read of the employee's punch evidence — still audited.
     assert len(_photo_audits(db_session)) == 1
+
+
+# --- OH-27: approval posts payroll accruals over the promoted grains ---------
+
+
+def _approve(c, mint, card_id):
+    return c.post(f"/api/timecards/{card_id}/approve",
+                  headers={"Authorization": f"Bearer {mint(roles=['org_admin'], sub='adm')}"})
+
+
+def _reopen(c, mint, card_id):
+    return c.post(f"/api/timecards/{card_id}/reopen",
+                  headers={"Authorization": f"Bearer {mint(roles=['org_admin'], sub='adm')}"})
+
+
+def _gl_world(db_session):
+    """The world where approval posts accruals: `_seed` plus a rate on the
+    employee, the chart, and a fiscal calendar for HISJ."""
+    from usali import gl_chart
+    from usali.models import FiscalCalendar
+
+    device_id, emp_id = _seed(db_session)
+    set_rate_everywhere(db_session, db_session.get(Employee, emp_id), "20.00")
+    gl_chart.seed_chart(db_session, org_id=1)
+    db_session.add(FiscalCalendar(
+        property_id="HISJ", calendar_type="calendar_month",
+        fiscal_year_start_month=1, week_start_weekday=None,
+    ))
+    return device_id, emp_id
+
+
+def _approved_gl_card(db_session, device_id, emp_id, c, mint):
+    """One 8h day on 2026-07-07, assembled and approved through the API."""
+    _punch(db_session, device_id, emp_id, "clock_in", 9)
+    _punch(db_session, device_id, emp_id, "clock_out", 17)
+    db_session.commit()
+    card = assemble_timecard(db_session, emp_id, date(2026, 7, 7), anchor=_ANCHOR)
+    db_session.commit()
+    r = _approve(c, mint, card.timecard_id)
+    assert r.status_code == 200, r.text
+    return card.timecard_id
+
+
+def test_approval_posts_a_payroll_accrual_when_the_chart_exists(
+    db_engine, db_session, tmp_path
+):
+    """With a chart and a fiscal calendar seeded, approving a card writes a
+    posted payroll_accrual ledger row for each (property, day) the promotion
+    wrote, in the same transaction as the approval, attributed to the
+    approver."""
+    from usali.models import GlPostingLedger, JournalEntry
+
+    device_id, emp_id = _gl_world(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    _approved_gl_card(db_session, device_id, emp_id, c, mint)
+
+    rows = db_session.execute(select(GlPostingLedger)).scalars().all()
+    assert [(x.source_type, x.property_id, x.business_date, x.status) for x in rows] \
+        == [("payroll_accrual", "HISJ", date(2026, 7, 7), "posted")]
+    entry = db_session.get(JournalEntry, rows[0].entry_id)
+    assert entry.posted_by == "adm"
+
+
+def test_approval_without_a_chart_still_succeeds_with_zero_gl_rows(
+    db_engine, db_session, tmp_path
+):
+    """The skip gate: an org with no chart of accounts approves cleanly and
+    the GL stays untouched — a books rollout must not gate payroll."""
+    from usali.models import GlPostingLedger
+
+    card_id, _ = _open_card(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    r = _approve(c, mint, card_id)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "approved"
+    assert db_session.execute(select(GlPostingLedger)).scalars().all() == []
+
+
+def test_reopen_reverses_the_accrual_to_net_zero(db_engine, db_session, tmp_path):
+    """Reopening the only approved card on a day empties the grain: the
+    standing accrual is reversed (journal nets to zero, account by account)
+    and the ledger row is gone — no phantom expense survives the reopen."""
+    from usali.models import GlPostingLedger, JournalEntry, JournalLine
+
+    device_id, emp_id = _gl_world(db_session)
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    card_id = _approved_gl_card(db_session, device_id, emp_id, c, mint)
+    assert db_session.scalars(select(GlPostingLedger)).one().status == "posted"
+
+    r = _reopen(c, mint, card_id)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "open"
+
+    assert db_session.execute(select(GlPostingLedger)).scalars().all() == []
+    entries = db_session.scalars(
+        select(JournalEntry).order_by(JournalEntry.entry_id)
+    ).all()
+    assert len(entries) == 2
+    assert entries[1].reversal_of == entries[0].entry_id
+    from decimal import Decimal
+    net: dict[str, Decimal] = {}
+    for ln in db_session.scalars(select(JournalLine)).all():
+        sign = Decimal(1) if ln.posting == "Debit" else Decimal(-1)
+        net[ln.account_code] = net.get(ln.account_code, Decimal(0)) + sign * Decimal(str(ln.amount))
+    assert net and all(v == 0 for v in net.values())
+
+
+def test_reopen_reposts_the_remaining_total_when_another_card_stands(
+    db_engine, db_session, tmp_path
+):
+    """Two cards on the same day: reopening one must repost the accrual as
+    the OTHER card's total, not reverse the day to zero — the grain's plan
+    re-aggregates every remaining fact."""
+    from decimal import Decimal
+
+    from usali.models import GlPostingLedger, JournalLine
+
+    device_id, emp_id = _gl_world(db_session)
+    emp2 = make_employee(db_session, property_id="HISJ", full_name="W Two",
+                         pay_type="hourly", pay_rate="10.00")
+    db_session.flush()
+    verifier, mint = make_authkit()
+    c = _client(db_engine, tmp_path, verifier)
+    card1_id = _approved_gl_card(db_session, device_id, emp_id, c, mint)
+    card2_id = _approved_gl_card(db_session, device_id, emp2.employee_id, c, mint)
+    assert card2_id != card1_id
+
+    r = _reopen(c, mint, card1_id)
+    assert r.status_code == 200, r.text
+
+    row = db_session.scalars(select(GlPostingLedger)).one()
+    assert row.source_type == "payroll_accrual" and row.status == "posted"
+    # The standing entry carries only emp2's cost: 8h x $10.
+    credit = db_session.scalars(
+        select(JournalLine).where(
+            JournalLine.entry_id == row.entry_id,
+            JournalLine.account_code == "2200",  # accrued_payroll in the template
+        )
+    ).one()
+    assert Decimal(str(credit.amount)) == Decimal("80.00")

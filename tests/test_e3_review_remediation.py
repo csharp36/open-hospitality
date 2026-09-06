@@ -124,7 +124,7 @@ def test_repromotion_of_a_filed_card_after_exclusion_refuses(db_session):
     _shift(db_session, device_id, emp.employee_id, 6, 9, 17)
     db_session.commit()
     card = _approved_card(db_session, emp.employee_id)
-    assert promote_timecard(db_session, card, anchor=_ANCHOR) == 1
+    assert len(promote_timecard(db_session, card, anchor=_ANCHOR)) == 1
     db_session.commit()
 
     db_session.get(Employee, emp.employee_id).pay_type = "exclude_from_payroll"
@@ -149,7 +149,7 @@ def test_an_always_excluded_card_still_promotes_nothing_quietly(db_session):
     _shift(db_session, device_id, emp.employee_id, 6, 9, 17)
     db_session.commit()
     card = _approved_card(db_session, emp.employee_id)
-    assert promote_timecard(db_session, card, anchor=_ANCHOR) == 0
+    assert promote_timecard(db_session, card, anchor=_ANCHOR) == set()
     db_session.commit()
     assert db_session.execute(select(UsaliLaborFact)).scalars().all() == []
 
@@ -183,7 +183,7 @@ def test_pay_run_names_an_excluded_employee_with_promoted_facts(db_session):
     db_session.commit()
     _approved_card(db_session, hank.employee_id)
     wanda_card = _approved_card(db_session, wanda.employee_id)
-    assert promote_timecard(db_session, wanda_card, anchor=_ANCHOR) == 1
+    assert len(promote_timecard(db_session, wanda_card, anchor=_ANCHOR)) == 1
     db_session.commit()
 
     db_session.get(Employee, wanda.employee_id).pay_type = "exclude_from_payroll"

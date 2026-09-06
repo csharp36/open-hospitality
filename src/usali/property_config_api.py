@@ -41,6 +41,7 @@ from usali.auth import (
     require_grants,
     require_operator,
 )
+from usali import fiscal
 from usali.fiscal import (
     FiscalCalendarNotConfigured,
     FiscalConfig,
@@ -80,14 +81,9 @@ def _session(request: Request) -> Session:
 
 
 def _fiscal_config(session: Session, property_id: str) -> FiscalConfig | None:
-    row = session.get(FiscalCalendar, property_id)
-    if row is None:
-        return None
-    return FiscalConfig(
-        calendar_type=row.calendar_type,
-        fiscal_year_start_month=row.fiscal_year_start_month,
-        week_start_weekday=row.week_start_weekday,
-    )
+    # Kept as a delegator rather than deleted: portal_api imports this name
+    # directly, so removing it is not the local cleanup it looks like.
+    return fiscal.config_for(session, property_id)
 
 
 def _adr_room_basis(session: Session, property_id: str) -> str:

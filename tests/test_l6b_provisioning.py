@@ -12,6 +12,7 @@ import pytest
 from sqlalchemy import func, select
 
 from tests.orgwall import app_role_url
+from usali import gl_chart
 from usali.auth import effective_roles
 from usali.db import make_engine, make_session_factory
 from usali.keycloak_admin import (
@@ -19,7 +20,7 @@ from usali.keycloak_admin import (
     KeycloakAdminConflict,
     KeycloakAdminError,
 )
-from usali.models import Organization, RoleAssignment
+from usali.models import GlAccount, Organization, RoleAssignment
 from usali.provisioning import provision_tenant
 from usali.tenancy import bind_org_context
 
@@ -52,6 +53,14 @@ def test_provision_creates_org_user_membership_row_and_grant(db_session, foundin
     org = db_session.get(Organization, result.org_id)
     assert org.kc_org_alias == RIVAL_ALIAS and org.name == "Rival Hotel Group"
     assert result.org_id == 2  # founding org is 1
+
+    # D-OH27.1: provisioning also seeds the new org its own USALI chart.
+    chart_rows = db_session.execute(
+        select(func.count()).select_from(GlAccount).where(
+            GlAccount.org_id == result.org_id
+        )
+    ).scalar_one()
+    assert chart_rows == len(gl_chart.load_template())
 
 
 def test_provision_writes_the_grant_org_wide_in_the_new_org(db_session, founding_org):

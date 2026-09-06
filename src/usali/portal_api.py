@@ -1243,6 +1243,9 @@ def qbo_preview(
     business_date: Annotated[date, Query(alias="date")],
 ) -> JePlanModel:
     """The balanced JE plan for one property + business date; posts nothing."""
+    # Previews build from FACTS; the push exports the journal (plan_for_push).
+    # They agree unless facts changed without a re-post — see plan_for_push's
+    # docstring.
     plan = _run_qbo(
         lambda: qbo_push.build_journal_entry(
             session, property_id=property_id, business_date=business_date

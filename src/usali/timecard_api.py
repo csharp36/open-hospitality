@@ -23,6 +23,7 @@ from usali.auth import (
     require_grants,
 )
 from usali.config import get_settings
+from usali import gl_posting
 from usali.labor import demote_timecard, promote_timecard
 from usali.assignments import (
     assignments_on,
@@ -324,7 +325,21 @@ def approve_timecard(
         # The card is now locked and audited — promote its approved hours to
         # estimated labor facts (idempotent; a re-approval 409s above and never
         # reaches here, so this cannot double-count).
-        promote_timecard(session, card, anchor=get_settings().payroll_period_anchor)
+        written = promote_timecard(
+            session, card, anchor=get_settings().payroll_period_anchor
+        )
+        # OH-27: accrue payroll for each grain the promotion wrote, in the
+        # same transaction as the approval. The plan re-aggregates EVERY
+        # fact on the grain, not just this card's — so a later card's
+        # approval reposts the combined day. post_and_record's docstring is
+        # the contract: GL refusals become failed ledger rows, never
+        # exceptions, so a books problem cannot fail the approval; with no
+        # chart seeded it skips and writes nothing.
+        for prop, day in sorted(written):
+            gl_posting.post_and_record(
+                session, property_id=prop, business_date=day,
+                source_type="payroll_accrual", actor=principal.subject,
+            )
         model = _to_model(session, card)
         session.commit()
         return model
@@ -371,7 +386,18 @@ def reopen_timecard(
         card.approved_by = None
         card.approved_at = None
         card.photos_purged_at = None
-        demote_timecard(session, card)
+        demoted = demote_timecard(session, card)
+        # OH-27: the accruals follow the facts, in the same transaction as
+        # the reopen. For each demoted grain, post_and_record re-aggregates
+        # whatever facts remain — other cards' approved hours repost as the
+        # reduced total, and an emptied grain reverses its standing entry
+        # (post_and_record's docstring is the contract; refusals land as
+        # failed ledger rows, never as a failed reopen).
+        for prop, day in sorted(demoted):
+            gl_posting.post_and_record(
+                session, property_id=prop, business_date=day,
+                source_type="payroll_accrual", actor=principal.subject,
+            )
         # Relink AFTER the flip: assemble skips approved cards (H1).
         assemble_timecard(
             session, card.employee_id, card.period_start,

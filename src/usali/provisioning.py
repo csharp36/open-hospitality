@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from usali import gl_chart
 from usali.auth import ORG_ADMIN
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminConflict
 from usali.models import Organization, RoleAssignment
@@ -185,6 +186,9 @@ def provision_tenant(
             )
         )
     session.flush()
+
+    # D-OH27.1: every new org starts with the USALI chart.
+    gl_chart.seed_chart(session, org_id=org_id)
 
     return ProvisionResult(
         org_id=org_id, kc_org_id=kc_org_id, admin_subject=admin_subject

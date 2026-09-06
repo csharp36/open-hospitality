@@ -33,6 +33,7 @@ from usali.integrations_api import router as integrations_router
 from usali.keycloak_admin import KeycloakAdmin, KeycloakAdminClient
 from usali.face_enrollment import router as face_enrollment_router
 from usali.face_match import FaceEmbedder
+from usali.gl_api import router as gl_router
 from usali.kiosk import admin_router as kiosk_admin_router
 from usali.kiosk import kiosk_router
 from usali.notifications import Notifier, notifier_from_settings
@@ -444,6 +445,9 @@ def create_app(
     # org_admin through its own `require_integration_admin` — the read too,
     # unlike the checklist — so the outer gate here is only authentication.
     app.include_router(integrations_router, dependencies=operator_gates)
+    # The GL surface (OH-27). Reads ride these gates; every mutation inside
+    # narrows to org_admin through its own `require_gl_admin`.
+    app.include_router(gl_router, dependencies=operator_gates)
     # The Intuit OAuth callback, and it is included with NO dependencies on
     # purpose (D-OH17.11): it arrives as a top-level browser navigation with
     # no bearer token and no active-org header, so both gates above would

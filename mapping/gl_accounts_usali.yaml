@@ -1,0 +1,64 @@
+# USALI (11th ed.) chart-of-accounts template — seeded per org by
+# usali.gl_chart.seed_chart at provisioning and via `usali gl-seed-chart`.
+#
+# system_role is how the posting engine finds structural accounts
+# (design D-OH27.2): renumber freely, the roles travel with the rows.
+# usali_* fields are the join keys the SOS parity gate uses; income and
+# expense accounts should carry them, clearing/liability accounts do not.
+#
+# usali_major_category / usali_schedule_id are COPIED from the values actually
+# present in the mapping dictionaries — re-verify with:
+# grep -n "major:\|schedule_id:" mapping/opera.yaml mapping/skytouch.yaml mapping/autoclerk.yaml
+# The five major categories that actually occur across those dictionaries
+# are: "Operated Departments", "Miscellaneous Income", "Non-Operating",
+# "Settlements", "Taxes (Pass-Through)". "Rooms" and "Other Operated
+# Departments" are USALI *sub*-categories in the real data, not majors —
+# do not reintroduce them as usali_major_category values.
+#
+# This template is a starting chart, not a mandate: orgs extend and rename
+# their own copies after seeding. Codes 1000-6000 are carried from
+# mapping/qbo_accounts.yaml so books already pushed to QBO keep their codes.
+- account_code: "1000"
+  name: "Cash Clearing"
+  account_type: asset
+- account_code: "1100"
+  name: "Credit Card Clearing"
+  account_type: asset
+- account_code: "1200"
+  name: "Accounts Receivable Clearing"
+  account_type: asset
+- account_code: "1210"
+  name: "Guest Ledger Clearing"
+  account_type: asset
+  system_role: guest_ledger_clearing
+- account_code: "2100"
+  name: "Sales & Occupancy Tax Payable"
+  account_type: liability
+- account_code: "2200"
+  name: "Accrued Payroll"
+  account_type: liability
+  system_role: accrued_payroll
+- account_code: "4000"
+  name: "Room Revenue"
+  account_type: income
+  usali_schedule_id: 1
+  usali_major_category: "Operated Departments"
+- account_code: "4100"
+  name: "Other Operated Departments Revenue"
+  account_type: income
+  usali_schedule_id: 3
+  usali_major_category: "Operated Departments"
+- account_code: "4200"
+  name: "Miscellaneous Income"
+  account_type: income
+  usali_schedule_id: 4
+  usali_major_category: "Miscellaneous Income"
+- account_code: "5000"
+  name: "Rooms Labor — Wages"
+  account_type: expense
+  usali_schedule_id: 14
+  system_role: labor_wages_expense
+- account_code: "6000"
+  name: "Write-Offs & Bad Debt"
+  account_type: expense
+  usali_major_category: "Non-Operating"

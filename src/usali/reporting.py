@@ -57,10 +57,14 @@ import yaml
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from usali import fiscal
 from usali.config import get_settings
 from usali.models import (
     Base,
     Department,
+    GlAccount,
+    JournalEntry,
+    JournalLine,
     LaborStandard,
     MappingException,
     PayRun,
@@ -1842,3 +1846,142 @@ def labor_analytics(
         suppressed_departments=suppressed,
         unpriced_hours=unpriced,
     )
+
+
+# --- Trial balance (OH-27 D-OH27.9) ------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TrialBalanceLine:
+    account_code: str
+    name: str
+    account_type: str
+    debits: Decimal
+    credits: Decimal
+
+
+@dataclass(frozen=True)
+class TrialBalanceReport:
+    property_id: str
+    period_key: str
+    date_from: date
+    date_to: date
+    lines: list[TrialBalanceLine]
+    total_debits: Decimal
+    total_credits: Decimal
+
+
+def trial_balance(
+    session: Session, *, property_id: str, period_key: str
+) -> TrialBalanceReport:
+    """Journal-derived per-account totals for one fiscal period. Reads
+    journal_line joined to journal_entry (for property + date scope) and
+    gl_account (for name/type); reversals net out arithmetically, so no
+    filtering is needed. Raises NoFactsError when the period holds no
+    journal lines — the same typed signal the SOS uses."""
+    cfg = fiscal.require_config(fiscal.config_for(session, property_id))
+    date_from, date_to = fiscal.resolve_period(cfg, period_key)
+    rows = session.execute(
+        select(
+            JournalLine.account_code,
+            GlAccount.name,
+            GlAccount.account_type,
+            JournalLine.posting,
+            JournalLine.amount,
+        )
+        .join(JournalEntry, JournalEntry.entry_id == JournalLine.entry_id)
+        .join(GlAccount, GlAccount.account_code == JournalLine.account_code)
+        .where(
+            JournalEntry.property_id == property_id,
+            JournalEntry.business_date >= date_from,
+            JournalEntry.business_date <= date_to,
+        )
+    ).all()
+    if not rows:
+        raise NoFactsError(
+            f"no journal lines for property {property_id} in {period_key}"
+        )
+    acc: dict[str, TrialBalanceLine] = {}
+    for code, name, acct_type, posting, amount in rows:
+        prior = acc.get(code)
+        debits = (prior.debits if prior else Decimal("0")) + (
+            Decimal(str(amount)) if posting == "Debit" else Decimal("0")
+        )
+        credits = (prior.credits if prior else Decimal("0")) + (
+            Decimal(str(amount)) if posting == "Credit" else Decimal("0")
+        )
+        acc[code] = TrialBalanceLine(code, name, acct_type, debits, credits)
+    lines = [acc[c] for c in sorted(acc)]
+    return TrialBalanceReport(
+        property_id=property_id,
+        period_key=period_key,
+        date_from=date_from,
+        date_to=date_to,
+        lines=lines,
+        total_debits=sum((line.debits for line in lines), Decimal("0")),
+        total_credits=sum((line.credits for line in lines), Decimal("0")),
+    )
+
+
+# --- Parity gate: journal vs SOS facts (OH-27 D-OH27.9) ----------------------------
+
+
+@dataclass(frozen=True)
+class ParityDiff:
+    gl_account_code: str
+    fact_total: Decimal
+    journal_total: Decimal
+
+
+def sos_journal_parity(
+    session: Session, *, property_id: str, date_from: date, date_to: date
+) -> list[ParityDiff]:
+    """Per GL account over the range: the facts' net amount vs the
+    journal's net (credits positive), pms_daily entries only. The
+    balancing (guest-ledger-clearing) account is excluded — it has no fact
+    counterpart by construction. Empty list == parity."""
+    fact_rows = session.execute(
+        select(
+            UsaliFinancialFact.gl_account_code,
+            func.sum(UsaliFinancialFact.amount),
+        )
+        .where(
+            UsaliFinancialFact.property_id == property_id,
+            UsaliFinancialFact.business_date >= date_from,
+            UsaliFinancialFact.business_date <= date_to,
+            UsaliFinancialFact.gl_account_code.is_not(None),
+        )
+        .group_by(UsaliFinancialFact.gl_account_code)
+    ).all()
+    facts = {code: Decimal(str(total)).quantize(Decimal("0.0001"))
+             for code, total in fact_rows}
+
+    clearing = session.scalar(
+        select(GlAccount.account_code).where(
+            GlAccount.system_role == "guest_ledger_clearing"
+        )
+    )
+    journal_rows = session.execute(
+        select(JournalLine.account_code, JournalLine.posting, JournalLine.amount)
+        .join(JournalEntry, JournalEntry.entry_id == JournalLine.entry_id)
+        .where(
+            JournalEntry.property_id == property_id,
+            JournalEntry.source_type == "pms_daily",
+            JournalEntry.business_date >= date_from,
+            JournalEntry.business_date <= date_to,
+        )
+    ).all()
+    journal: dict[str, Decimal] = {}
+    for code, posting, amount in journal_rows:
+        if code == clearing:
+            continue
+        signed = Decimal(str(amount)) if posting == "Credit" else -Decimal(str(amount))
+        journal[code] = journal.get(code, Decimal("0")) + signed
+
+    diffs = []
+    for code in sorted(set(facts) | set(journal)):
+        f = facts.get(code, Decimal("0"))
+        j = journal.get(code, Decimal("0")).quantize(Decimal("0.0001"))
+        if f != j:
+            diffs.append(ParityDiff(code, f, j))
+    return diffs

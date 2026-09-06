@@ -724,7 +724,7 @@ def _seed_world(
             card.approved_by = "demo-seed"
             card.approved_at = datetime.now(UTC)
             session.flush()
-            promoted += promote_timecard(session, card, anchor=ANCHOR)
+            promoted += len(promote_timecard(session, card, anchor=ANCHOR))
     session.commit()
     notes.append(f"history: {len(PERIOD_STARTS)} closed periods, "
                  f"{promoted} labor facts promoted, sick leave accrued")
