@@ -215,8 +215,8 @@ def put_account(
                 detail=(
                     f"account {account_code} carries system role "
                     f"{row.system_role!r}; the posting engine resolves that "
-                    "account by role, so it cannot be deactivated — move the "
-                    "role to another account first"
+                    "account by role, so it cannot be deactivated. Moving a "
+                    "role is an operator action (no API assigns roles yet)"
                 ),
             )
         if row is None:

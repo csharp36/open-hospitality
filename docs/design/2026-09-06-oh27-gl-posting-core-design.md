@@ -294,8 +294,11 @@ Refusals, all loud, none silent (ADR-010):
   superseded entry has exactly one reversal.
 - **Close semantics:** posting refused into closed, allowed after audited
   reopen; close response names unposted fact dates.
-- **RLS:** the two-org isolation suite covers all five tables, through the
-  ORM wall and with it bypassed — the OH-17 pattern.
+- **RLS:** behavioral two-org isolation on `gl_account`, `journal_entry`,
+  and `journal_line` (`test_gl_wall.py`); `gl_posting_ledger` and
+  `gl_period_event` are covered structurally — policy presence, FORCE, and
+  the byte-identical predicate — by `test_l2_rls_wall.py`'s inventory and
+  cross-pin tests.
 - **Parity:** fact-derived SOS vs journal-derived revenue-side statement,
   zero diff over the seeded sample data — the D-OH27.9 gate, checked in CI
   from day one so drift is caught before the cutover decision.
