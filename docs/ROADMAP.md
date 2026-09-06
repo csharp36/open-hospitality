@@ -1,456 +1,302 @@
-# Open Hospitality — road to a paying tenant
+# Open Hospitality — roadmap and sequencing
 
-Status: **GAP ANALYSIS (2026-08-30).** The sequencing narrative for what
-stands between today's demo and a hotel that discovers the product, tries it,
-signs up, connects its real systems, and pays.
+Status: **REVISED 2026-09-06.** This revision supersedes the 2026-08-30 gap
+analysis (preserved in git history at `5b01df5`). That document asked what
+stood between the demo and a hotel that discovers the product, tries it, signs
+up, connects its real systems, and pays; everything it verified about the
+code's state is carried forward here unchanged. What changes is the sequencing
+above that state, driven by the September positioning analysis at
+[`reference/competitive-positioning-2026-09.md`](reference/competitive-positioning-2026-09.md).
 
 ## Relationship to `.github/roadmap.yml`
 
 [`.github/roadmap.yml`](../.github/roadmap.yml) stays the **single source of
 truth** the triage bot dedups feature requests against. It is a flat catalogue
-of capabilities with stable `OH-<n>` ids. This document is the **ordering and
-gap analysis over that catalogue**: what is genuinely missing, which items
-silently block others, and what should be built first. Where the two disagree,
-the yml wins on *what a capability is*; this doc wins on *what state it is in
-and when it should land*. §8 records the deltas already applied back to the yml.
-
-Every claim below is grounded in the code as of 2026-08-30, with the evidence
-cited inline. Where a design decision already settles a question, the decision
-doc is linked rather than re-argued.
+of capabilities with stable `OH-<n>` ids. This document is the **ordering over
+that catalogue**: what is genuinely missing, which items silently block
+others, and what should be built first. Where the two disagree, the yml wins
+on *what a capability is*; this doc wins on *what state it is in and when it
+should land*. §7 records the deltas applied back to the yml in this revision.
 
 ---
 
-## 1. Where we are
+## 1. What changed on 2026-09-06
 
-**Shipped and load-bearing:**
+Four decisions, each argued in full in the positioning analysis. Recorded here
+because they re-order everything below.
 
-- The **engine** — detect → parse → stage → promote, USALI mapping, the
-  Summary Operating Statement, labor Schedule 14/15, scheduling, the kiosk.
-- **Multi-tenancy** — D1 isolation (two walls in `tenancy.py`, 49 `OrgScoped`
-  models across 42 tenant tables, RLS fail-closed) and D2 Keycloak
-  Organizations identity, both pinned by a real two-org isolation test.
-- **Three PMS sources** — Opera, AutoClerk, and SkyTouch (including the
-  bundled Standard Audit Pack via `process_pack`), through one detection
-  registry.
-- **Track A** — the `/try` anonymous parse-preview that persists nothing, live
-  on the demo host.
-- **Track B / B1** — invite-gated public signup wired to `provision_tenant`,
-  first-property creation, PMS-interest capture, SMTP-backed invite and OTP
-  email.
-- **Track B / B4** — the onboarding open-items checklist: seven setup items
-  probed on read, a permanent `/setup` page, and a sidebar count badge plus a
-  first-run dashboard card that retire once nothing is open *and* nothing
-  failed to check.
-- **Property config and core performance statistics** — room inventory,
-  fiscal calendar, occupancy / ADR / RevPAR / TRevPAR with comparisons and
-  drill-through.
+### 1.1 The layer, named — and extended downward
 
-**The shape of what remains:** a stranger can now discover the product (OH-16)
-and a created tenant can connect its own real systems (OH-17). What is still
-open is payment — OH-19 — and the invite gate at §1.2, which stands between
-discovery and a tenant anyone can create without an operator shelling into a
-container.
+Open Hospitality sits in the layer the industry calls hotel accounting or
+back-office software: **the accounting and labor layer between the PMS and the
+general ledger**. That has been true since the first USALI mapping shipped.
+What is new is the decision to extend downward: OH will carry a
+**full-featured general ledger** (OH-27 through OH-30), built in stack-ranked
+slices, so an owner with one to ten properties can keep the books in OH,
+reconcile them to the bank, and hand their CPA a year-end package — without a
+separate ledger product. "Full-featured" is deliberately narrowed to one
+industry, one chart of accounts (USALI), and a known set of transaction
+sources; the out-of-scope list in §8 is what keeps it from growing by
+accretion into a general-purpose ledger.
 
----
+The reasoning, in short: OH already computes and emits a journal every day
+(the QuickBooks push), so the posting model exists and merely lacks a home;
+and a multi-property owner's real pain is the books and the operating data
+living in different systems. The QuickBooks push stays, as an export *from*
+the journal, for owners whose CPA insists.
 
-## 2. Band 1 — discover → try → sign up
+### 1.2 Two standing decisions are superseded or amended
 
-The front of the funnel now exists. What remains in this band is the gate
-behind it and the delivery seam that gate depends on.
+- **[`reference/build-vs-integrate.md`](reference/build-vs-integrate.md),
+  "Bank reconciliation: DON'T BUILD" — superseded.** The verdict rested on
+  QuickBooks doing it and on Pillar E5's credential posture. The first is now
+  a feature OH provides natively; the second is addressed by the amendment
+  below. The rest of that document's verdicts stand (see §8).
+- **Pillar E5's bank posture — amended, not reversed.** The property that
+  matters is kept: OH never stores an account number, routing number, or
+  online-banking credential in a form the server can read, and employee
+  direct-deposit details stay sealed client-side per ADR-004. What changes is
+  that OH will hold **aggregator access tokens** (Plaid first, Yodlee as a
+  second adapter) granting read-only transaction access to *business*
+  operating accounts — stored with ADR-005 per-org field encryption like the
+  QBO refresh token, revocable from the integrations page, every read written
+  to the audit log. A token cannot initiate payment, and the aggregator's own
+  consent screen is the credential holder. This needs an ADR before OH-28
+  code is written (§6).
 
-### 1.1 Marketing site (**OH-16**, shipped)
+### 1.3 Seven PMS integrations, then aggregators
 
-Shipped 2026-09-02 (PRs #114, #115) to the
-[OH-16 design](design/2026-09-01-oh16-marketing-front-door-design.md). A
-separate Astro package at `marketing/` — home, pricing, and "Your data" —
-deployed to Cloudflare Pages and live at `oh.mandati.ai`. It carries one CTA,
-to `{APP_ORIGIN}/try`, and no form of its own, which is what keeps it pure
-static with no CORS surface.
+The connectivity target is fixed at **seven integrations**: HotelKey
+(including Hilton PEP's emailed pack and BWH's AutoClerk Atlas),
+choiceADVANTAGE (built), Oracle OPERA (files built, OHIP next), Sabre SynXis
+Property Hub, Marriott FOSSE and its Agilysys Stay successor, Visual Matrix,
+and Cloudbeds. Together they reach roughly 60% of US properties and about 80%
+of branded ones. Past that, every point of coverage costs a new parser for a
+PMS with a few hundred properties — so the independent tail is served through
+integration aggregators, not an eighth adapter. Most of the seven deliver by
+scheduled email in the same few report shapes already parsed, which is why
+the emailed-report intake (OH-23) is on the critical path and why each new
+source is a parser plus a mapping dictionary, not a new architecture.
 
-It is deliberately NOT routes in the app SPA. `/` there is the entry route that
-redirects to the last-visited page, and `dist/index.html` is the shell every
-history fallback serves, so a marketing home cannot take `/` without moving the
-app's entry and its OIDC redirect URIs. `/try` and `/signup` remain SPA
-routes on the app host, defined in `frontend/src/router.tsx`; `/try` is still
-the designed aha moment — see
-[Track A](design/2026-08-16-track-a-front-door-preview-design.md) — and the
-marketing site is now the route *to* it.
+### 1.4 choiceADVANTAGE, not SkyTouch
 
-The site's forward band renders unbuilt capabilities out of
-`.github/roadmap.yml` at build time, and `marketing/src/lib/roadmap.ts` throws
-if a featured id is missing or has shipped — so a capability cannot be
-advertised as coming after it arrives.
+The source built as "SkyTouch" parses the audit pack that **choiceADVANTAGE**
+— Choice's franchise PMS — emails nightly. SkyTouch Hotel OS is a separate
+product sold to non-Choice hotels, sharing lineage but not report shapes, and
+is *not* built. Docs (this file, the README, `roadmap.yml`) now say
+choiceADVANTAGE. The in-code identifier (`pms_source`, `mapping/skytouch.yaml`,
+the adapter module names) still says `SKYTOUCH`; renaming it is a tracked
+task, sequenced with the mapping-editor schema work (§4) since both touch the
+dictionary keying.
 
-**Deliberately deferred, not missing:** the pricing page carries philosophy and
-no numbers, because OH-19 owns the basis and there is no paying tenant to
-calibrate against; and the `openhospitality.*` canonical domain waits on a
-domain purchase, with `oh.mandati.ai` serving as the live host meanwhile. The
-build is host-agnostic, so that move is a `SITE_URL` change plus a redirect.
+### 1.5 Billing stays early — a deliberate departure
 
-### 1.2 Invite gate → open self-service
-
-Signup is invite-gated by decision (D-B4,
-[scoping doc](design/2026-08-17-track-b-self-service-onboarding-scoping.md) §3),
-and per [D8](design/2026-08-16-data-posture-progressive-onboarding-design.md)
-the pilot gate is a flag lifted at GA, not a second stack. The gate itself is
-cheap to lift. What is missing is the **admin surface** around it: invite
-creation is deliberately a CLI command (owner-session only), so approving a
-Track A capture today means someone shelling into a container.
-
-### 1.3 B2 — the notification seam is half-built
-
-`notifications.py` ships the `Notifier` protocol, a `ConsoleNotifier`, and
-`SmtpNotifier`. **`SmtpNotifier.send_sms` raises rather than silently dropping
-a code** — an honest refusal, but it means there is no SMS vendor. D-B1 and
-D-B5 both assumed a verified cell: for owner alerting (D-B1 rationale (c)) and
-as the second factor at signup (D-B5). Email currently carries the whole
-delivery story.
+The positioning analysis ranks subscription billing (OH-19) late, in Tier 2.
+This revision **rejects that ordering**: OH-19 leads Tier 1. The premise of
+this roadmap is still a paying tenant, and billing is what turns a tenant into
+revenue; it also forces the open-core boundary decision (§6), which must be
+settled *before* the hosted bank connection ships, because the aggregator
+contract and its compliance envelope are the natural paid line.
 
 ---
 
-## 3. Band 2 — try → a real production tenant
+## 2. Where we are
 
-This is where the two structural blockers live.
+Verified against the code in the 2026-08-30 analysis; the only code change
+since is the `/integrations` page (PR #113), reflected below.
 
-### 2.1 Per-tenant integration config (**OH-17**, shipped)
+**Shipped:**
 
-Built to the
-[OH-17 design](design/2026-08-30-oh17-per-tenant-integration-config-design.md).
-`org_integration_credential` (`OrgIntegrationCredential`, `models.py:467`) is
-one `OrgScoped` row per `(org, integration)`: the row IS the connection, so a
-tenant cannot hold a provider without credentials for it, and secrets
-(`EncryptedString`, per ADR-005) cannot drift from the provider name that
-reads them. It absorbed L5's `org_settings.crm_provider` — `OrgSettings` is
-now gone entirely, since that column was its only reason to exist. RLS's
-`org_wall` policy covers the table like every other tenant table
-(`tests/test_l2_rls_wall.py:453`), and a real two-org isolation suite exercises
-it through the ORM wall and with the ORM wall bypassed
-(`tests/test_integrations.py:452`).
+- **The engine** — detect → parse → stage → promote, USALI mapping, the
+  Summary Operating Statement with drill-through, labor Schedule 14/15,
+  per-department analytics, scheduling, the kiosk with enforced punch order,
+  payroll orchestration to swappable providers with estimate vs. actual.
+- **Three PMS sources** — Opera, AutoClerk, and choiceADVANTAGE (the bundled
+  Standard Audit Pack via `process_pack`), through one detection registry.
+- **Multi-tenancy** — RLS fail-closed as the tenant wall, Keycloak
+  Organizations identity, client-side sealed PII (ADR-004), per-org field
+  encryption (ADR-005), pinned by a real two-org isolation suite.
+- **Property config and core statistics** — room inventory, fiscal calendar,
+  occupancy / ADR / RevPAR / TRevPAR with comparisons (OH-6, most of OH-7).
+- **Productization** — the marketing site (OH-16), the anonymous `/try`
+  preview, invite-gated signup, the onboarding open-items checklist (OH-18),
+  and per-tenant integration config with the `/integrations` page (OH-17).
 
-`src/usali/integrations.py` is the registry and the resolution seam:
-`resolve_payroll` (returning `ResolvedPayroll`, so a run's provider *name*
-travels with its adapter — see the module docstring for the mis-pay this
-prevents), `resolve_qbo`, `resolve_crm_feed`, `DbTokenStore`, and the
-`IntegrationNotConfigured` / `CredentialUnreadable` refusals ADR-005's
-rotation hazard requires. `QboClient` now takes a `TokenStore` instead of a
-bare refresh token, so Intuit's per-grant token rotation
-(`qbo_client.py:177`) is durable per tenant — closing a bug the client's own
-docstring used to document against itself. Every adapter has a real
-read-only authenticated `verify()`, so `src/usali/integrations_api.py`'s
-`PUT /api/integrations/{integration}` refuses a credential that cannot
-authenticate before it is ever stored (D-OH17.8) — connecting is no longer
-"paste a key and hope."
+**Open, carried forward from the previous analysis:**
 
-`src/usali/integrations_api.py` exposes `GET` / `PUT` / `DELETE
-/api/integrations` (org_admin only, no secret ever returned in a response)
-plus the QBO OAuth pair (`/api/integrations/accounting/authorize` and its
-callback) with an HMAC-signed `state`. One amendment from the design's
-original plan: **D-OH17.7 was revised during execution** — `DbTokenStore`
-takes no row lock, so concurrent QBO pushes are not serialized, in one
-process or across them. Two simultaneous pushes fork the refresh-token
-lineage exactly as two workers would; the loser's grant fails visibly and a
-retry succeeds. This is accepted, not mitigated — a row lock held across an
-outbound HTTP call with no release path on a failed grant was judged worse —
-so nothing here should be read as promising cross-process serialization.
-
-**A second accepted residual, decided 2026-08-30:** the OAuth `state` is
-signed and short-lived but **not single-use**, so a captured, unexpired state
-submitted with an attacker's own fresh Intuit `code` binds the attacker's
-QuickBooks company onto the victim org's accounting row. Accepted after
-working out that a nonce store would not have closed it — single-use refuses
-only the second use, and an attacker who calls back first consumes the nonce
-himself. The fix, if it is ever needed, is a browser-bound cookie across the
-authorize/callback pair, not a nonce table. Full reasoning in D-OH17.11's
-residual-risk block. **This makes one frontend requirement non-optional: the
-`/integrations` page must DISPLAY the connected QBO company id**, because the
-stored `realm_id` plus the `integration_connected` audit event are the only
-signals that separate a hijack from a normal connection.
-
-**Two review outcomes worth carrying (2026-08-31).** The env seed is now
-first-provisioning only — it used to run on every deploy and silently
-reinstated a credential an operator had revoked, because disconnect is a row
-delete and the seed was keyed on absence. And the deployed demo reports
-`all_clear` over integrations whose seeded credentials are the literal
-`"mock"` pointed at `127.0.0.1`: **accepted while org 1 is a demo, and a real
-defect the moment org 1 serves a pilot tenant** — see D-OH17.15's amendments
-for why the obvious fix (skip the defaults) is closed off by the pay-run e2e.
-
-The open-items checklist (§2.2) is the one place this is fully wired
-end-to-end: `payroll`, `accounting`, and `demand_feed` each probe the
-tenant's own credential row (`checklist.py`'s `_probe_payroll` /
-`_probe_accounting` / `_probe_demand_feed`). Payroll and accounting route to
-`/integrations`. The old tripwire that pinned all three to `where: null` is
-deleted; its mirror,
-`test_demand_feed_is_the_one_item_without_a_surface` (D-OH17.12 as amended by
-D-OH17.16), pins the exact set of items with no connect surface, so it fails
-in both directions.
-
-**`demand_feed` is deliberately NOT one of them** (decided 2026-08-30). A
-credential does not finish that connection: verification and every real pull
-need a property `crm_ref`, and the only writer of `crm_ref` is the repo's
-YAML seed — no API sets it, `property_config_api` included. Routing it to
-`/integrations` would have flipped a checklist item to a form no tenant can
-complete, which is the drift OH-17 exists to remove, so it carries an honest
-`unavailable_reason` instead. Making `crm_ref` tenant-settable is a feature
-of its own (a provider identifier needs validation, a refusal shape, and a
-place in property-config to explain itself), not a field to bolt on here.
-
-**The `/integrations` page shipped 2026-09-01** (PR #113), built to the
-[integrations-page design](design/2026-08-31-oh17-integrations-page-design.md)
-— `frontend/src/pages/IntegrationsPage.tsx`, routed in
-`frontend/src/router.tsx`. That closed a live defect as well as finishing the
-feature: `checklist.py` had been pointing two setup items at `/integrations`
-while the SPA served no such route, so main shipped two dead links. The API
-serves each provider's field spec, so the frontend carries no credential field
-list of its own and cannot drift from what the backend accepts.
-
-The non-optional requirement above is met generically rather than as a
-QBO special case: the page renders `Object.entries(item.identifiers)`, and
-`identifiers` is where `integrations_api`'s blind-read posture puts the QBO
-`realm_id` — so the connected company id is on screen for every integration
-that has one.
-
-**One** smaller loose end the design doc's §8a carries forward, deliberately:
-`cli.py`'s `_qbo_client_from_settings` (`cli.py:549`) still builds its
-`QboClient` from process-wide `Settings` with a `StaticTokenStore` — the CLI
-is not org-aware at all, acceptable while it is an operator tool run against
-one deployment, but it should not grow a second user. (The sibling hazard
-§8a once carried beside it — `payroll_run_api.create_run` recording
-`provider_name` from `Settings` instead of the resolved row — was fixed
-before merge in `resolve_payroll`/`ResolvedPayroll`, and §8a was rewritten to
-say so: it now opens "Resolved 2026-08-30 in `986b5da`". Nothing is stale
-there; the correction has landed.)
-
-### 2.2 B4 — the open-items model (**OH-18**, shipped)
-
-[D8.2](design/2026-08-16-data-posture-progressive-onboarding-design.md) is
-explicit: there is no sandbox→prod flip; each integration carries its own
-lifecycle state per tenant, onboarding is a persisted resumable checklist, and
-**"fully prod" is not a state — it is zero open items.** When this document was
-written, a search of `src/` for `open_item` or `checklist` returned nothing.
-
-It exists now, backend and frontend, built to the
-[B4 design](design/2026-08-30-track-b-b4-open-items-checklist-design.md).
-`checklist.py` holds a closed registry of seven items, each owning a probe;
-status is **derived on read**, never stored (D-B4.1), so the only persisted
-rows are dismissals (`org_checklist_override`) — a stored `payroll: connected`
-would outlive the credential being revoked, the exact drift D8.3 forbids. There
-is still no tenant status column and no lifecycle enum on `organization`, also
-deliberately (D-B4.7): "fully prod" stays the derived predicate `all_clear`,
-which is what keeps D8's retired promotion model from growing back as a column.
-The frontend renders it on three surfaces sharing one query key, so they cannot
-disagree: `/setup`, which is permanent, and a sidebar count badge and a
-first-run dashboard card, which both retire on `all_clear` rather than on
-`open_count == 0`. The distinction matters exactly once — a total probe failure
-leaves `open_count` at zero while nothing is actually known, and gating on it
-would retire both surfaces at the moment the operator most needs them.
-
-What shipped is the **container**, not its consumers. Onboarding UI beyond
-`/setup`, per-integration connect surfaces (§2.1), alert configuration (§2.3)
-and billing-at-trial-end (§4) still hang from it and are still open; building it
-first is what keeps each of them from inventing its own tenant-state model.
-
-### 2.3 Alerts and notifications as a product feature
-
-`notifications.py` is a transactional seam — invites and OTP codes. There is no
-per-tenant recipient configuration, no digest, no delivery preferences. The
-roadmap already carries the *content* of alerting as **OH-9** (ledger anomaly
-detection, issue #11) and **OH-15** (operational KPI alerts, issue #19); what
-neither covers is the **delivery and subscription plumbing** underneath, which
-needs the per-tenant state from §2.2 anyway.
-
-### 2.4 Ingestion-boundary redaction is preview-only
-
-D8.4 requires detect-and-redact of guest identity and card PANs **at the
-ingestion boundary**, on the grounds that a real night-audit export carries
-real guest names and card numbers (observed in a real SkyTouch pack).
-
-Today `redact()` is applied on exactly one path: the anonymous preview
-(`server.py:115`, operating on a `PreviewPayload`). The authenticated `/ingest`
-endpoint (`server.py:489`) writes the **raw uploaded PDF** to the inbox
-directory and moves it to `processed/` — no redaction, and the original bytes
-persist on disk.
-
-That is defensible while the only uploader is us. It is **a compliance gate on
-the first real tenant uploading a real audit pack**, and it should close before
-Band 3 rather than after.
+- **Ingestion-boundary redaction** is preview-only: the authenticated
+  `/ingest` path stores the raw uploaded PDF unredacted. A compliance gate on
+  the first real tenant's first real upload — now Tier 0 (§3).
+- **The invite gate** is a flag lifted at GA by design, but invite creation is
+  a CLI command, so approving a signup means an operator shelling into a
+  container. The admin surface around the gate is still missing.
+- **The notification seam** is transactional only (invites, OTP): no SMS
+  vendor, no per-tenant recipients, no digests. Now OH-26, Tier 2.
+- **Billing** (OH-19) is greenfield: no plan model, no entitlement check, no
+  trial clock, no payment rail. D8 places it as an open item that becomes
+  required at trial end — a consumer of the checklist, not a parallel
+  subsystem.
+- **The mapping dictionary** is a single global table in direct conflict with
+  franchise-configurable transaction codes; the org-override schema decision
+  (§6) blocks the mapping editor (OH-20).
 
 ---
 
-## 4. Band 3 — subscription and billing (**OH-19**)
+## 3. The spine — sequencing
 
-Completely greenfield. A search across `src/` and `frontend/src/` for
-`stripe|billing|subscription|plan_tier` returns only Delphi's API
-*subscription key*. There is no plan model, no entitlement check, no trial
-clock, no metering, and no payment rail.
+Ranked by expected contribution to the first cohort of paying tenants, with
+dependencies explicit. The general-ledger slices are named G1–G8 in the
+positioning analysis; the mapping to roadmap ids is G1 → OH-27, G2 → OH-28,
+G3+G4 → OH-29, G5+G6+G7 → OH-30, G8 → the forecasting item in Tier 2.
 
-Until 2026-08-30 `roadmap.yml` mentioned billing only as a trailing clause
-inside **OH-1**'s summary, which was not enough to plan against; it is now
-**OH-19** in its own right.
+### Tier 0 — the first feed, the compliance gate, the ledger core
 
-D8 already places it correctly: billing is an **open item that becomes required
-at trial end** — so it is a consumer of §2.2, not a parallel subsystem.
-
-Decisions not yet made, and each one changes the build:
-
-- **Pricing basis** — per property, per room, per user, or per ingested report.
-- **The Apache-2.0 line** — what the open core always includes versus what the
-  hosted/premium modules charge for. The LICENSE and README already reserve
-  "premium/hosted modules, licensed separately"; nothing defines the boundary.
-- **Where the trial clock lives** — tenant state (§2.2) is the obvious host.
-- **Entitlement enforcement point** — a gate at the router, at the feature, or
-  purely advisory during the pilot.
-
----
-
-## 5. Band 4 — follow-on capability
-
-### 4.1 ⚠️ The mapping-adjustment UI is blocked on a schema decision (**OH-20**)
-
-`UsaliMappingDictionary` (`models.py:145`) is a plain `Base` model — **not
-`OrgScoped`** — keyed `(pms_source, pms_trx_code, usali_edition)` and loaded
-from repo YAML by `mapping/loader.py`. It is a single global dictionary shared
-by every tenant.
-
-But `mapping/skytouch.yaml` ships entirely `needs-review` *precisely because
-SkyTouch transaction codes are franchise-configurable per property*. Those two
-facts are in direct conflict, and the conflict surfaces the moment a second
-SkyTouch property signs up with a different code set.
-
-A tenant-facing mapping editor therefore requires a decision first: make the
-dictionary org-scoped, or add an org-override layer above a shared base. Both
-are defensible; neither is free.
-
-The supporting pieces already exist: `MappingException` (`models.py:185`) is
-`OrgScoped` and already captures the unmapped rows that would feed a worklist,
-and `CoveragePage` already renders coverage gaps — read-only, with no write
-endpoint anywhere in `portal_api.py`.
-
-### 4.2 Additional PMS (**OH-2**, `considering`)
-
-- **HotelKey** — intentionally on hold pending API access and a real Final
-  Audit Report sample; we don't want to build against one report shape that may
-  vary across M3 / Inn-Flow integrations.
-- **SkyTouch segmentation** (Revenue by Market / Rate Code) — exists in
-  choiceADVANTAGE, not built; must first be enabled in a property's audit pack,
-  which makes it an onboarding step as much as a parser.
-- **CLI / watcher auto-routing** of a dropped file to pack-vs-single —
-  deferred; `process_pack` is a standalone entry point. The property registry
-  already records `pms_source`, the intended routing key.
-
-### 4.3 Metrics (**OH-7**, issue #9 — largely shipped)
-
-Small and well-scoped remainders, per
-[`reference/performance-metrics.md`](reference/performance-metrics.md) §Deferrals:
-
-- **GOPPAR** and general (non-labor) **CPOR** → blocked on expense ingestion
-  (issue #26).
-- **Weekly narrative recap** → issue #14 (**OH-12**).
-
-### 4.4 Chat interface over hotel performance (**OH-21**)
-
-Genuinely greenfield — there are zero LLM dependencies in `pyproject.toml` or
-`frontend/package.json`. It is also the item that gets *cheaper* the more of
-the rest lands, because it wants a clean semantic layer over the SOS,
-performance, and labor queries that already exist rather than a new data path.
-
-The standing constraint from **OH-12** applies and should be inherited
-verbatim: *numbers are computed; the generator writes prose about them and
-never introduces a figure of its own.* That is the same reconciliation
-principle D8.3 enforces — an operator compares our output to their own
-spreadsheet, so a figure we invented is worse than a blank.
-
----
-
-## 6. Recommended sequencing
-
-The ordering is driven by what unblocks the most other work, not by what is
-most visible.
-
-| # | Work | Why here |
-|---|---|---|
-| 1 | **B4 — tenant state + open-items model** (§2.2) — **shipped** | The container onboarding UI, integration status, alerting, and billing all hang from. Everything downstream invents its own tenant-state model without it. |
-| 2 | **Per-tenant integration config + OAuth connect** (§2.1) — **backend shipped** | Unblocks connect-payroll, connect-QBO, and the honest "off, not mock" rendering D8.3 requires. The checklist already routes to `/integrations`; that page itself is the remaining, still-unplanned frontend slice. |
-| 3 | **Ingestion-boundary redaction** (§2.4) | A compliance gate on the first real tenant's first real upload. Cheap now, expensive after. |
-| 4 | **Marketing site + open signup** (§1.1, §1.2) | Only worth opening the funnel once a tenant that walks in can reach a working, honestly-labelled portal. |
-| 5 | **Billing** (Band 3) | Consumes (1) as an open item; needs (4) to have a pricing page to point at. |
-| 6 | **Mapping-editor schema decision, then the UI** (§4.1) | Forced by the second SkyTouch property, not by the first. Decide before building. |
-| 7 | Additional PMS, metrics remainders, chat (§4.2–§4.4) | Genuine follow-ons; none block a paying tenant. |
-
-Items 1 and 2 are unglamorous plumbing that three separate user-facing features
-are silently waiting on, and the two most likely to be under-scoped if planned
-from the feature side. (1) has landed, and so has (2)'s backend; the
-under-scoping risk that motivated calling it out has now moved onto the
-`/integrations` frontend slice specifically, which is still unplanned.
-
----
-
-## 7. Open decisions
-
-Each of these should get a decision doc (or a decision line in an existing one)
-before the corresponding build starts:
-
-1. **Mapping dictionary tenancy** — org-scoped table, or global base plus
-   per-org override layer? (§4.1, blocks the mapping UI)
-2. **Pricing basis and the open-core boundary** — what the Apache-2.0 core
-   always includes. (§4, blocks billing and the pricing page)
-3. ~~**Per-tenant secret storage shape**~~ — **settled** by D-OH17.2 in the
-   [OH-17 design](design/2026-08-30-oh17-per-tenant-integration-config-design.md):
-   ADR-005 symmetric field encryption, not a dedicated credential store or
-   ADR-004's blind vault — Intuit's server-side QBO token rotation needs a
-   write-back path a blind vault cannot offer. (§2.1)
-4. **SMS vendor** — required for D-B5's verified cell and owner alerting, still
-   unchosen. (§1.3)
-5. **Whether redaction is destructive** — does `/ingest` redact before writing
-   to the inbox, or store raw and redact on promote? D8.4 says "at the
-   boundary", which reads as the former. (§2.4)
-
----
-
-## 8. Deltas applied to `.github/roadmap.yml` (2026-08-30)
-
-The canonical file had drifted from the code. These edits are **applied**, so
-the triage bot now dedups against reality. Recorded here because the reasoning
-lives in this document, not in the yml.
-
-**Stale entries corrected:**
-
-- **OH-1** — its summary described the model
-  [D8](design/2026-08-16-data-posture-progressive-onboarding-design.md)
-  retired: *"land in a time-boxed sandbox, and promote to production."* Rewritten
-  around reaching a working portal immediately and closing open items
-  progressively, with no sandbox tier and no promotion event. Status
-  `planned` → **`in-progress`** (Tracks A and B/B1 have shipped).
-- **OH-2** — named only Opera and AutoClerk as supported; SkyTouch added.
-- **OH-6** — property config, room inventory, and the fiscal calendar have
-  shipped. Status `planned` → **`shipped`**.
-- **OH-7** — core performance statistics have shipped, but GOPPAR and non-labor
-  CPOR are named in its own title and remain deferred to issue #26. Status
-  `planned` → **`in-progress`**, with the exception noted inline.
-
-**Capabilities added** — each was genuinely absent, and each is phrased as a
-user-facing capability because the bot matches on `summary`:
-
-| id | Capability | Status | §ref |
+| # | Work | Id | Why here |
 |---|---|---|---|
-| **OH-16** | Public marketing front door | `shipped` | §1.1 |
-| **OH-17** | Connect your own accounting and payroll accounts | `shipped` | §2.1 |
-| **OH-18** | Onboarding checklist of open setup items | `shipped` | §2.2 |
-| **OH-19** | Subscription plans and billing | `planned` | §4 |
-| **OH-20** | Review and correct USALI transaction-code mapping | `considering` | §4.1 |
-| **OH-21** | Conversational interface to hotel performance | `considering` | §4.4 |
+| 1 | **HotelKey integration** — API + event stream where the property grants credentials; a parser for Hilton PEP's emailed audit pack where the API is franchisor-gated. Include settlement-by-payment-type from day one; bank matching (#6) needs it. | OH-22 | Integration #1 of seven: the largest and fastest-growing brand platform, and the only API-first accounting feed among the brand systems. Credentials are property-initiated and already requested. |
+| 2 | **Ingestion-boundary redaction on the authenticated path** | — | The gate that lets a stranger upload a real audit pack; the first line of every security review. More important, not less, once OH holds bank tokens. Smallest item on the list. |
+| 3 | **General ledger posting core** — USALI chart of accounts with per-org extensions, immutable double-entry journal with source links to staged PMS rows and labor facts, fiscal periods with an audited close, trial balance and balance sheet; the operating statement re-pointed at the journal; the QBO push becomes an export from it. | OH-27 | Everything later posts into it, and it is smaller than it sounds: the fiscal calendar, the USALI dictionary, the staged facts, and the journal generator already exist. Needs the GL posting-model ADR first (§6). |
+| 4 | **Emailed-report intake** — an inbound address per property, detection-registry routed. | OH-23 | Four of the seven target PMSs deliver by scheduled email; until this exists, each is a daily manual upload and self-service onboarding is a slogan. Depends on #2. |
 
-None carry an `issue:` field yet — the field is optional, and no tracking issue
-exists for them. Add one as each is opened.
+### Tier 1 — a tenant that pays; the books become real; the seven fill in
 
-**OH-18 drifted, and is now resynced.** It moved `planned` → `in-progress` in
-this document at `c154d45` without the yml following, so the catalogue read it
-as unstarted for two commits. Both now say `shipped`. Worth naming because §8
-claims the two are kept in sync: nothing enforces that, so a status edit here
-is only half an edit.
+| # | Work | Id | Why here |
+|---|---|---|---|
+| 5 | **Subscription billing and the open-core line** | OH-19 | Turns a tenant into revenue, and forces the Apache-2.0 boundary decision that must precede the hosted bank connection (§1.5, §6). Consumes the checklist for the trial-end open item. |
+| 6 | **Bank feeds and reconciliation** via Plaid, behind a port — daily pulls, matching against PMS settlements, OTA payouts, payroll debits, vendor payments; unmatched queue; reconciliation status per account per period. | OH-28 | The feature that makes OH the books rather than a report about them, and the daily reason an owner or bookkeeper opens the product. First live test of the E5 amendment, starting with the pilot properties' own operating accounts. Depends on #3, the E5 ADR, Plaid production access (needs the legal entity), and settlement feeds from #1. |
+| 7 | **SynXis Property Hub and Visual Matrix parsers** (integrations #4 and #6). | OH-2 | Both stable, both emailed, together 7–8k US properties — the cheapest coverage per parser once #4 exists. Marriott (#5 of seven) waits for the Agilysys Stay report pack to settle, unless a Marriott owner turns up first. Needs sample packs from real properties. |
+| 8 | **Mapping editor**, after the dictionary-tenancy decision — base dictionary plus per-org overrides is the recommended shape; `MappingException` is the worklist and `CoveragePage` the read side already. Bundle the `SKYTOUCH` → `CHOICEADVANTAGE` identifier rename here, since both touch the dictionary keying. | OH-20 | Choice codes are franchise-configurable and HotelKey's will be; once OH is the ledger, a wrong mapping is a misposted entry, not a misfiled statistic. Blocked on the schema ADR (§6). |
+| 9 | **Receivables and payables, basic** — AR mirrors the PMS city ledger with aging and receipts applied against the bank feed; AP is a vendor master, USALI-coded bill entry and approvals, with OCR capture and bill-pay rails through a connected provider rather than built. | OH-29 | Together they are what an owner means by "my books". AR is small and completes #6's matching; AP keeps the boundary the build-vs-integrate record drew — OH owns the coding and the ledger effect, the capture and money movement are bought. Depends on #3, #6. |
+| 10 | **Budget import and variance** | OH-8 | The first column every owner, CPA, and lender reads. Budgets now attach to GL accounts, which is simpler than attaching them to report lines. |
+| 11 | **Night-audit repository with sign-off** — every received pack kept (redacted), searchable by business date, with a review record. | OH-24 | Cheap once #2 and #4 exist, and a standing owner request in this category of product. Ranked below the bank feed because that now supplies the daily reason to open OH. |
 
-**Also updated:** the file's header comment, which claimed `OH-1..OH-5` were the
-whole productization roadmap and `OH-6..OH-14` the analytics backlog — already
-stale once OH-15 was added, and stale again the moment OH-22 was. It no longer
-enumerates productization ids at all: it names the closed analytics range and
-says every other id is productization, which is true without maintenance.
+### Tier 2 — completing the seven and the ledger; the modern stack
+
+| # | Work | Id | Why here |
+|---|---|---|---|
+| 12 | **OPERA Cloud via OHIP** (Oracle Cloud Marketplace listing) and the **Cloudbeds API** (integrations #3 and #7). | OH-22 | Opera files already work, so OHIP is an upgrade and a channel listing; Cloudbeds is the independent-segment template. Both benefit from #1 having settled the API-source pattern; both need the legal entity for partner agreements. |
+| 13 | **Multi-entity books, fixed assets, and year-end** — entities as first-class with intercompany balances and consolidation; asset register, depreciation, FF&E reserve, loan schedules; occupancy/sales tax liability; a CPA export with an accountant role. | OH-30 | Turns "the books for a hotel" into "the books for a hotel company" and earns the CPA's sign-off to leave a general-purpose ledger. Absorbs OH-10 and gives OH-11 an accounting meaning. Test the CPA package with real accountants before building the year-end slice. Depends on #3, #6, #9. |
+| 14 | **Notification delivery** — per-tenant recipients and channels (Slack first), suppression-aware. | OH-26 | The delivery plumbing OH-9 and OH-15 lack, and the channel for "three unmatched bank transactions over $500" and "period ready to close". |
+| 15 | **Integration marketplace growth** — CRM demand feed, more payroll providers, Yodlee as the second bank adapter. | OH-17 ext. | Each is an adapter behind the existing field-spec pattern and each is a standing maintenance cost: one at a time, mock first, when a real hotel asks. |
+| 16 | **Cash forecasting, narrative, chat** — the 13-week cash forecast from AR, AP, payroll runs, and the bank balance; the performance narrative; the conversational interface. | OH-12, OH-21 | With the ledger, bank feed, AR/AP, and payroll in one system, the forecast is a query and the narrative has real material. The standing rule is inherited verbatim: numbers are computed; prose never introduces a figure of its own. |
+
+**Standing work outside the ranking:** observability (OH-3) and CI/CD (OH-4)
+remain planned and grow more urgent as tenants become real; neither gates a
+specific tier item, so they are scheduled by operational pain rather than
+ranked here.
+
+---
+
+## 4. The rename task
+
+`SKYTOUCH` → `CHOICEADVANTAGE` touches the `pms_source` values, the adapter
+module names, `mapping/skytouch.yaml`, fixtures, and every test that names
+them — thirty-plus files. It is bundled with the mapping-editor schema work
+(Tier 1 #8) because both touch dictionary keying, and because a rename that
+lands *before* org-scoped overrides exist would have to be redone against the
+new keying anyway. Until it lands, docs say choiceADVANTAGE and code says
+`SKYTOUCH`; the detection registry is the one place the two meet, and it maps
+report headers, not marketing names, so nothing breaks in the interim.
+
+---
+
+## 5. Readiness items that are not features
+
+Becoming the ledger is a liability shift: when OH is an analytics layer, a
+mapping bug is an annoyance; when OH is the books, a posting bug is a
+misstatement and a bank-token breach is a regulatory event. The engineering
+answer is in OH-27 itself (the immutable journal, the audited close, the audit
+log). The business answers move earlier than they otherwise would: the legal
+entity (also a prerequisite for Plaid production access and the Oracle and
+Cloudbeds partner agreements), the SOC 2 timeline, and cyber insurance.
+
+The other readiness test is the CPA. Owners do not pick their ledger; their
+accountant does. The year-end package (in OH-30) exists to answer this, and it
+should be tested early: ask real owners' CPAs what package they would need to
+accept OH's books *before* the posting core is finished. If the honest answer
+is "just give me a QuickBooks file", the QBO export stays first-class for a
+long time — which it is designed to be either way.
+
+---
+
+## 6. Open decisions
+
+Each should get a decision doc (or a decision line in an existing one) before
+the corresponding build starts:
+
+1. **GL posting model** — chart-of-accounts shape (USALI base plus per-org
+   extensions), period-close semantics, and the immutability rule. Blocks
+   Tier 0 #3 (OH-27).
+2. **The E5 amendment** — the aggregator-token posture of §1.2, written as an
+   amendment to Pillar E5, including the Plaid-vs-Yodlee coverage check for
+   the banks real owners use. Blocks Tier 1 #6 (OH-28).
+3. **Pricing basis and the open-core boundary** — what the Apache-2.0 core
+   always includes versus what the hosted service charges for. The ledger
+   core and the PMS adapters are what make the open core useful; the hosted
+   bank connection (aggregator contract, compliance envelope, insurance) is
+   the natural paid line. Blocks Tier 1 #5 (OH-19) and must precede #6.
+4. **Mapping dictionary tenancy** — org-scoped table, or global base plus
+   per-org override layer (recommended)? Blocks Tier 1 #8 (OH-20).
+5. **SMS vendor** — required for the verified cell (D-B5) and owner alerting;
+   still unchosen. Blocks parts of OH-26.
+6. **Whether redaction is destructive** — does `/ingest` redact before
+   writing to the inbox, or store raw and redact on promote? D8.4 says "at
+   the boundary", which reads as the former. Blocks Tier 0 #2.
+
+Settled since the last revision: per-tenant secret storage (D-OH17.2, ADR-005
+field encryption) — and the decisions in §1, each recorded in the positioning
+analysis.
+
+---
+
+## 7. Deltas applied to `.github/roadmap.yml` (2026-09-06)
+
+Recorded here because the reasoning lives in this document and the positioning
+analysis, not in the yml.
+
+**Entries added:** OH-23 (emailed night-audit intake), OH-24 (night-audit
+repository), OH-26 (notification delivery), OH-27 (GL posting core), OH-28
+(bank feeds and reconciliation), OH-29 (receivables and payables), all
+`planned`; OH-30 (multi-entity, fixed assets, year-end), `considering`. There
+is no OH-25: the id was allocated and retired in the analysis that produced
+these entries — its capability was folded into OH-28 — and ids are never
+reused.
+
+**Entries edited:**
+
+- **OH-2** — now names its targets (SynXis Property Hub, Marriott
+  FOSSE/Agilysys Stay, Visual Matrix, Hilton PEP's emailed pack), corrects
+  SkyTouch to choiceADVANTAGE and names SkyTouch Hotel OS as a separate
+  unbuilt source. Status `considering` → **`planned`**: two of its targets
+  are Tier 1.
+- **OH-22** — now names its targets (HotelKey, OPERA Cloud via OHIP,
+  Cloudbeds).
+- **OH-10, OH-11** — each now references OH-30, which absorbs the first and
+  gives the second its accounting meaning.
+- The header's "every other id is productization" rule widened to cover the
+  GL range.
+
+**Not changed:** every shipped status, and OH-19's `planned` status — its
+movement is in this document's ordering, where §8 of the previous revision
+said such movements belong.
+
+---
+
+## 8. Deliberately not building
+
+Kept explicit so the ledger does not become a general-purpose accounting
+product by accretion, and the platform does not drift upstream:
+
+- **A PMS, a booking engine, or a front-desk UI.** The brand systems that
+  control franchise properties approve a short list of PMSs, and the
+  interface burden of a PMS (locks, payments, phones, POS) is a product in
+  itself — none of it where OH's value is. For independents on API-first
+  platforms, OH connects; it does not replace.
+- **AP capture, OCR, and bill-pay rails.** Bought through a connected
+  provider; OH owns the coding and the ledger effect.
+- **Payroll tax calculation and filing.** The provider's, per the standing
+  Pillar C design.
+- **Inventory and cost accounting beyond F&B COGS lines, guest invoicing,
+  POS, multi-currency.** The QuickBooks-by-accretion risks.
+- **An eighth PMS parser before the seven are done.** Aggregators for the
+  tail.

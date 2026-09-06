@@ -17,7 +17,8 @@
 # OH-6..OH-15 mirror the analytics backlog tracked in issue #17 — one roadmap
 # entry per child issue — so the bot dedups incoming analytics/reporting
 # requests against it. That range is closed: the backlog it mirrors is fixed,
-# and no new entry joins it. EVERY OTHER id is productization.
+# and no new entry joins it. EVERY OTHER id is product capability —
+# productization, connectivity, or (OH-27 and up) the general ledger.
 #
 # Stated as a rule rather than as ranges because the ranges rotted twice —
 # once when OH-15 was added, once when OH-22 was. A rule does not need editing
@@ -43,12 +44,16 @@ roadmap:
     tags: [multi-tenancy, onboarding, billing]
 
   - id: OH-2
-    title: Additional PMS connectors
+    title: Additional PMS report connectors
     summary: >
-      Ingest report/exports from more property-management systems beyond the
-      currently supported set (Opera, AutoClerk, SkyTouch), via the extensible
-      source detection registry. Covers new file shapes and per-property quirks.
-    status: considering
+      Ingest report exports from more property-management systems beyond the
+      currently supported set (Oracle Opera, AutoClerk, and choiceADVANTAGE's
+      audit pack), via the extensible source detection registry. Named targets:
+      Sabre SynXis Property Hub, Marriott FOSSE and its Agilysys Stay
+      successor, Visual Matrix, and Hilton PEP's emailed audit pack. SkyTouch
+      Hotel OS (the non-Choice product sharing choiceADVANTAGE's lineage) is a
+      separate, unbuilt source. Covers new file shapes and per-property quirks.
+    status: planned
     tags: [ingestion, pms, integrations]
 
   - id: OH-3
@@ -129,7 +134,8 @@ roadmap:
       Extend the statement below GOP — management fees, fixed charges, FF&E
       reserve, interest, depreciation — with a per-property debt schedule and
       derived EBITDA, NOI, net income, and debt-service-coverage ratio, each
-      with its definition stated.
+      with its definition stated. Becomes real ledger entries rather than a
+      derived report once the general-ledger work lands (see OH-30).
     status: planned
     tags: [analytics, reporting]
     issue: 12
@@ -140,6 +146,8 @@ roadmap:
       Consolidated operating statement and rooms-weighted statistics across a
       set of properties on a common USALI structure, with per-property
       drill-through and explicit handling of mismatched fiscal calendars.
+      Gains an accounting meaning — consolidated entity books rather than a
+      combined report — with multi-entity support (see OH-30).
     status: planned
     tags: [analytics, reporting]
     issue: 13
@@ -263,7 +271,76 @@ roadmap:
     title: Direct PMS integrations
     summary: >
       Pull data directly from a property management system rather than
-      ingesting an exported report. Distinct from OH-2, which extends the
-      existing file-based path to more report shapes.
+      ingesting an exported report. Named targets: HotelKey (API and event
+      stream), Oracle OPERA Cloud via OHIP, and Cloudbeds. Distinct from OH-2,
+      which extends the existing file-based path to more report shapes.
     status: planned
     tags: [ingestion, pms, integrations]
+
+  - id: OH-23
+    title: Emailed night-audit intake
+    summary: >
+      Each property gets its own inbound email address; the PMS's scheduled
+      night-audit reports are received, redacted, recognized, and processed
+      automatically, with no daily upload.
+    status: planned
+    tags: [ingestion, onboarding]
+
+  - id: OH-24
+    title: Night-audit report repository
+    summary: >
+      Every received audit pack is kept (redacted), searchable by business
+      date and report, with a record of who reviewed it and when.
+    status: planned
+    tags: [reporting, compliance]
+
+  # (There is no OH-25: the id was allocated and retired in the analysis that
+  # produced OH-23..OH-30 — its capability was folded into OH-28 — and per the
+  # rule above an id is never reused.)
+
+  - id: OH-26
+    title: Notification delivery (Slack, email, SMS)
+    summary: >
+      Per-property recipients and channels for alerts, digests, and approvals,
+      honoring the same disclosure rules as the API.
+    status: planned
+    tags: [integrations, notifications]
+
+  - id: OH-27
+    title: "General ledger: posting core"
+    summary: >
+      Keep the books in Open Hospitality: a USALI chart of accounts, a
+      double-entry journal every PMS and labor fact posts into, fiscal periods
+      with a close, trial balance and balance sheet. QuickBooks becomes an
+      optional export.
+    status: planned
+    tags: [gl, accounting]
+
+  - id: OH-28
+    title: Bank feeds and reconciliation
+    summary: >
+      Connect each operating bank account (Plaid, later Yodlee), pull
+      transactions daily, match them to PMS settlements, OTA payouts, payroll
+      and vendor payments, and work an unmatched queue to a reconciled period.
+      No statement uploads, no stored bank credentials.
+    status: planned
+    tags: [gl, reconciliation, integrations]
+
+  - id: OH-29
+    title: Receivables and payables
+    summary: >
+      Mirror the PMS city ledger with aging and receipts, and record vendor
+      bills coded to USALI lines with approvals and due dates; capture and
+      payment rails through a connected provider.
+    status: planned
+    tags: [gl, ap, ar]
+
+  - id: OH-30
+    title: Multi-entity books, fixed assets, and year-end package
+    summary: >
+      Entities per property and company with intercompany balances and
+      consolidation; asset register, depreciation, FF&E and loan schedules;
+      occupancy/sales tax liability and a CPA year-end export with an
+      accountant role.
+    status: considering
+    tags: [gl, accounting, reporting]
