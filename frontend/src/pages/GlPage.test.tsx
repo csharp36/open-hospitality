@@ -26,7 +26,13 @@ vi.mock('../api/gl', () => ({
 }))
 
 import { ApiError, getMe, getProperties } from '../api/client'
-import { getGlPeriods, getJournalEntries, getTrialBalance } from '../api/gl'
+import {
+  closeGlPeriod,
+  getGlPeriods,
+  getJournalEntries,
+  getTrialBalance,
+  reopenGlPeriod,
+} from '../api/gl'
 import type { JournalEntry } from '../api/types'
 import { createAppRouter } from '../router'
 import {
@@ -39,6 +45,8 @@ import {
 } from '../test/fixtures'
 import { AuthContext } from '../auth/authContext'
 
+// Returns the QueryClient so absence assertions can anchor on the ['me']
+// query having resolved (the App.test.tsx renderApp shape).
 function renderPage(initialPath = '/gl') {
   const router = createAppRouter(createMemoryHistory({ initialEntries: [initialPath] }))
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -49,6 +57,7 @@ function renderPage(initialPath = '/gl') {
       </AuthContext.Provider>
     </QueryClientProvider>,
   )
+  return queryClient
 }
 
 // The page's fiscal-year default is derived client-side; computing the same
@@ -248,6 +257,146 @@ describe('GlPage balance sheet', () => {
     expect(within(card).getByText('balanced ✓')).toBeInTheDocument()
     const tbCard = screen.getByRole('region', { name: 'Trial balance 2026-P07' })
     expect(within(tbCard).getByText(/does not equal/)).toBeInTheDocument()
+  })
+})
+
+describe('GlPage period detail', () => {
+  // 2026-P07 open with both gap directions populated.
+  const OPEN_WITH_GAPS = makeGlPeriod({
+    unposted_dates: ['2026-07-02', '2026-07-03', '2026-07-05'],
+    orphaned_dates: ['2026-07-04'],
+  })
+
+  const ORG_ADMIN = { subject: 'u1', username: 'admin', roles: ['org_admin'] }
+
+  it('shows both gap lists with the PMS qualifier and the dates themselves', async () => {
+    vi.mocked(getGlPeriods).mockResolvedValue([OPEN_WITH_GAPS])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    // The count phrase says PMS — the unposted check is pms_daily-only, and
+    // a bare "3 days unposted" would imply the payroll side was checked.
+    expect(within(card).getByText('3 PMS days unposted')).toBeInTheDocument()
+    expect(within(card).getByText(/payroll accruals are not checked here/i)).toBeInTheDocument()
+    expect(within(card).getByText('1 posted entry lost its facts')).toBeInTheDocument()
+    // The dates themselves, not just counts.
+    expect(within(card).getByText(/2026-07-02, 2026-07-03, 2026-07-05/)).toBeInTheDocument()
+    expect(within(card).getByText(/2026-07-04/)).toBeInTheDocument()
+  })
+
+  it('says no gaps without claiming all caught up, qualifier still present', async () => {
+    vi.mocked(getGlPeriods).mockResolvedValue([makeGlPeriod()])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    expect(
+      within(card).getByText('No PMS-day gaps and no orphaned entries.'),
+    ).toBeInTheDocument()
+    // Zero unposted PMS days still says nothing about payroll accruals, so
+    // the qualifier sentence stays.
+    expect(within(card).getByText(/payroll accruals are not checked here/i)).toBeInTheDocument()
+    expect(within(card).queryByText(/all caught up/i)).not.toBeInTheDocument()
+  })
+
+  it('renders no detail card when ?period= matches no period in the rail', async () => {
+    // A stale deep link after a property switch: the rail loads, nothing is
+    // selected in it, and no detail card renders.
+    renderPage('/gl?period=2025-P01')
+    await screen.findByRole('group', { name: 'Fiscal periods' })
+    expect(screen.queryByRole('region', { name: 'Period 2025-P01' })).not.toBeInTheDocument()
+  })
+
+  it('close: confirm names the gaps, then the card shows Closed from the refetch', async () => {
+    const unposted = ['2026-07-02', '2026-07-03', '2026-07-05']
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods)
+      .mockResolvedValueOnce([makeGlPeriod({ unposted_dates: unposted })])
+      .mockResolvedValue([makeGlPeriod({ state: 'closed', unposted_dates: unposted })])
+    vi.mocked(closeGlPeriod).mockResolvedValue({
+      period_key: '2026-P07',
+      state: 'closed',
+      unposted_dates: unposted,
+      orphaned_dates: [],
+    })
+    renderPage('/gl?period=2026-P07')
+
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    // No reopen on an open period.
+    expect(within(card).queryByRole('button', { name: 'Reopen 2026-P07' })).not.toBeInTheDocument()
+    fireEvent.click(within(card).getByRole('button', { name: 'Close 2026-P07' }))
+    // The in-card confirm names the gaps being closed over — never a bare
+    // "Are you sure?", never window.confirm.
+    expect(
+      within(card).getByText(/close 2026-P07 with 3 unposted PMS days\?/i),
+    ).toBeInTheDocument()
+    fireEvent.click(within(card).getByRole('button', { name: 'Yes, close' }))
+
+    await waitFor(() => expect(closeGlPeriod).toHaveBeenCalledWith('HISJ', '2026-P07'))
+    expect(await within(card).findByText('Closed')).toBeInTheDocument()
+    // The confirm is gone and the close control with it — the period is closed.
+    expect(within(card).queryByRole('button', { name: 'Yes, close' })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Close 2026-P07' })).not.toBeInTheDocument()
+    // The invalidated periods query refetched.
+    expect(getGlPeriods).toHaveBeenCalledTimes(2)
+  })
+
+  it('close: cancel backs out without calling the endpoint', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([OPEN_WITH_GAPS])
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.click(within(card).getByRole('button', { name: 'Close 2026-P07' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'Cancel' }))
+    expect(within(card).getByRole('button', { name: 'Close 2026-P07' })).toBeInTheDocument()
+    expect(closeGlPeriod).not.toHaveBeenCalled()
+  })
+
+  it('reopen: the reason is required, then sent verbatim', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([makeGlPeriod({ state: 'closed' })])
+    vi.mocked(reopenGlPeriod).mockResolvedValue(undefined)
+    renderPage('/gl?period=2026-P07')
+
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    // No close on a closed period.
+    expect(within(card).queryByRole('button', { name: 'Close 2026-P07' })).not.toBeInTheDocument()
+    const reopen = within(card).getByRole('button', { name: 'Reopen 2026-P07' })
+    expect(reopen).toBeDisabled()
+    fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
+      target: { value: 'auditor request' },
+    })
+    expect(reopen).toBeEnabled()
+    fireEvent.click(reopen)
+    await waitFor(() =>
+      expect(reopenGlPeriod).toHaveBeenCalledWith('HISJ', '2026-P07', 'auditor request'),
+    )
+  })
+
+  it('property_gm sees state and gaps but no close/reopen controls', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 'u1', username: 'gm', roles: ['property_gm'] })
+    vi.mocked(getGlPeriods).mockResolvedValue([OPEN_WITH_GAPS])
+    const queryClient = renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    expect(within(card).getByText('3 PMS days unposted')).toBeInTheDocument()
+    // Anchor on the role query itself before asserting absence — the card
+    // renders before `me` settles, so an unanchored query would pass against
+    // a still-pending role fetch (the App.test.tsx nav-test shape).
+    await waitFor(() => expect(queryClient.getQueryData(['me'])).toBeDefined())
+    expect(within(card).queryByRole('button', { name: 'Close 2026-P07' })).not.toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Reopen 2026-P07' })).not.toBeInTheDocument()
+  })
+
+  it('surfaces a refused close inline via its detail', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([OPEN_WITH_GAPS])
+    vi.mocked(closeGlPeriod).mockRejectedValue(
+      new ApiError(422, 'close refused: the journal disagrees with the SOS'),
+    )
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.click(within(card).getByRole('button', { name: 'Close 2026-P07' }))
+    fireEvent.click(within(card).getByRole('button', { name: 'Yes, close' }))
+    expect(
+      await within(card).findByText('close refused: the journal disagrees with the SOS'),
+    ).toBeInTheDocument()
   })
 })
 

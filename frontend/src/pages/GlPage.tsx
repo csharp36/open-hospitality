@@ -1,20 +1,35 @@
 // General ledger page: the period rail IS the period picker (selection lives
 // in the ?period= search param so a view is linkable and survives reload),
-// and the trial balance renders for the selected period. All fetching lives
-// here (TanStack Query keyed on property + search params).
+// and the selected period gets a detail card — state, both gap lists, the
+// org_admin close/reopen controls — above its trial balance. All fetching
+// lives here (TanStack Query keyed on property + search params).
 
 import { useEffect, useState } from 'react'
-import { keepPreviousData, skipToken, useQuery } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  skipToken,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { getRouteApi } from '@tanstack/react-router'
 
-import { ApiError } from '../api/client'
-import { getGlPeriods, getJournalEntries, getTrialBalance } from '../api/gl'
+import { ApiError, getMe } from '../api/client'
+import {
+  closeGlPeriod,
+  getGlPeriods,
+  getJournalEntries,
+  getTrialBalance,
+  reopenGlPeriod,
+} from '../api/gl'
+import type { GlPeriod } from '../api/types'
 import BalanceSheetCard from '../components/BalanceSheetCard'
 import JournalDrillPanel from '../components/JournalDrillPanel'
 import TrialBalanceCard from '../components/TrialBalanceCard'
 import { Badge, Card, controlClass, PageHeader } from '../components/ui'
 import { errorMessage } from '../lib/errors'
 import { useGlobalProperty } from '../lib/propertyContext'
+import { hasRole } from '../lib/roles'
 
 // getRouteApi avoids the router.tsx <-> GlPage.tsx circular value import.
 const routeApi = getRouteApi('/gl')
@@ -63,6 +78,18 @@ export default function GlPage() {
     // instead of unmounting to the loading line.
     placeholderData: keepPreviousData,
   })
+
+  const me = useQuery({ queryKey: ['me'], queryFn: getMe })
+  // Mirrors the endpoint's own gate: close and reopen sit behind
+  // require_gl_admin = require_grants(ORG_ADMIN) in gl_api.py:29. Offering
+  // the controls to anyone else would only produce a 403 on click.
+  const canManage = hasRole(me.data, 'org_admin')
+
+  // Derived once at page level: the rail's pressed chip and the detail card
+  // both read this, so the two can never disagree about what is selected. A
+  // stale ?period= (say, after a property switch) matches nothing here and
+  // the detail card simply does not render.
+  const selectedPeriod = periodsQuery.data?.find((p) => p.period_key === period)
 
   const tbQuery = useQuery({
     queryKey: ['gl-trial-balance', property, period],
@@ -140,10 +167,10 @@ export default function GlPage() {
                   <button
                     key={p.period_key}
                     type="button"
-                    aria-pressed={p.period_key === period}
+                    aria-pressed={p.period_key === selectedPeriod?.period_key}
                     onClick={() => selectPeriod(p.period_key)}
                     className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-medium tabular-nums transition-colors ${
-                      p.period_key === period
+                      p.period_key === selectedPeriod?.period_key
                         ? 'bg-accent text-accent-contrast'
                         : 'text-ink-muted hover:bg-surface-sunken hover:text-ink'
                     }`}
@@ -160,6 +187,19 @@ export default function GlPage() {
             <p className="text-sm text-ink-muted">Pick a period to view its trial balance.</p>
           ) : (
             <>
+              {selectedPeriod !== undefined && (
+                <PeriodDetailCard
+                  // Keyed on both scope halves: confirm/reason/mutation state
+                  // (including a held close response) must not survive a
+                  // switch to a different period OR to another property that
+                  // happens to hold the same period key.
+                  key={`${property}:${selectedPeriod.period_key}`}
+                  property={property}
+                  fiscalYear={fiscalYear}
+                  period={selectedPeriod}
+                  canManage={canManage}
+                />
+              )}
               {tbQuery.isPending && (
                 <p className="text-sm text-ink-muted">Loading trial balance…</p>
               )}
@@ -211,5 +251,184 @@ function TrialBalanceError({ error }: { error: unknown }) {
     <p className="text-sm text-danger-red">
       Failed to load trial balance: {errorMessage(error)}
     </p>
+  )
+}
+
+// The selected period's detail: state, both gap lists, and the close/reopen
+// controls. The unposted count always says PMS in the visible copy — the
+// check is pms_daily-only by design (PeriodModel.unposted_dates' docstring in
+// gl_api.py is where that scope is set), and copy that totals up to "all
+// caught up" would claim the payroll side was verified when it was never
+// checked. Close confirms in the card itself, never window.confirm (the
+// ConnectedActions precedent); reopen requires a reason.
+function PeriodDetailCard({
+  property,
+  fiscalYear,
+  period: p,
+  canManage,
+}: {
+  property: string
+  fiscalYear: number
+  period: GlPeriod
+  canManage: boolean
+}) {
+  const queryClient = useQueryClient()
+  const [confirming, setConfirming] = useState(false)
+  const [reason, setReason] = useState('')
+
+  // Both verbs change the period's stored state, and the rail chips render
+  // from the same query — one invalidation moves the chip and this card
+  // together.
+  const invalidatePeriods = () =>
+    queryClient.invalidateQueries({ queryKey: ['gl-periods', property, fiscalYear] })
+  const close = useMutation({
+    mutationFn: () => closeGlPeriod(property, p.period_key),
+    onSuccess: () => {
+      setConfirming(false)
+      void invalidatePeriods()
+    },
+  })
+  const reopen = useMutation({
+    mutationFn: () => reopenGlPeriod(property, p.period_key, reason),
+    onSuccess: () => {
+      setReason('')
+      // The close response stops describing the period the moment it reopens;
+      // dropping it here lets the props below take over again.
+      close.reset()
+      void invalidatePeriods()
+    },
+  })
+
+  // The close response is the freshest picture of state and gaps — render it
+  // while the invalidated periods query refetches.
+  const state = close.data?.state ?? p.state
+  const unposted = close.data?.unposted_dates ?? p.unposted_dates
+  const orphaned = close.data?.orphaned_dates ?? p.orphaned_dates
+
+  const gapPhrases: string[] = []
+  if (unposted.length > 0)
+    gapPhrases.push(`${unposted.length} unposted PMS day${unposted.length === 1 ? '' : 's'}`)
+  if (orphaned.length > 0)
+    gapPhrases.push(`${orphaned.length} orphaned entr${orphaned.length === 1 ? 'y' : 'ies'}`)
+  // With no gaps the confirm degrades to the bare question — there is
+  // nothing to warn about, only the state change itself.
+  const confirmCopy =
+    gapPhrases.length === 0
+      ? `Close ${p.period_key}?`
+      : `Close ${p.period_key} with ${gapPhrases.join(' and ')}?`
+
+  return (
+    <Card role="region" aria-label={`Period ${p.period_key}`} className="space-y-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold text-ink">Period {p.period_key}</h2>
+          {state === 'closed' ? (
+            <Badge tone="neutral">Closed</Badge>
+          ) : (
+            <Badge tone="ok">Open</Badge>
+          )}
+        </div>
+        <p className="text-xs tabular-nums text-ink-muted">
+          {p.date_from} – {p.date_to}
+        </p>
+      </div>
+
+      <div className="space-y-1">
+        {unposted.length > 0 ? (
+          <>
+            <p className="text-sm font-medium text-ink">
+              {unposted.length} PMS day{unposted.length === 1 ? '' : 's'} unposted
+            </p>
+            <p className="text-xs tabular-nums text-ink-muted">{unposted.join(', ')}</p>
+          </>
+        ) : (
+          <p className="text-sm font-medium text-ink">
+            {orphaned.length === 0
+              ? 'No PMS-day gaps and no orphaned entries.'
+              : 'No PMS-day gaps.'}
+          </p>
+        )}
+        {/* Rendered at zero too: an empty unposted list still says nothing
+            about payroll accruals. */}
+        <p className="text-xs text-ink-muted">
+          Days with promoted PMS facts and no posted journal entry. Payroll accruals are not
+          checked here — a day with no accrual is the ordinary no-cost case.
+        </p>
+      </div>
+
+      {orphaned.length > 0 && (
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-ink">
+            {orphaned.length} posted entr{orphaned.length === 1 ? 'y lost its' : 'ies lost their'}{' '}
+            facts
+          </p>
+          <p className="text-xs tabular-nums text-ink-muted">{orphaned.join(', ')}</p>
+          <p className="text-xs text-ink-muted">
+            Days whose entry's source facts were re-transformed away — both sources. Re-posting
+            reverses them.
+          </p>
+        </div>
+      )}
+
+      {canManage && state === 'open' && (
+        confirming ? (
+          <div className="space-y-2">
+            <p className="text-sm text-ink">{confirmCopy}</p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className={controlClass}
+                disabled={close.isPending}
+                onClick={() => close.mutate()}
+              >
+                Yes, close
+              </button>
+              <button
+                type="button"
+                className={controlClass}
+                disabled={close.isPending}
+                onClick={() => setConfirming(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button type="button" className={controlClass} onClick={() => setConfirming(true)}>
+            Close {p.period_key}
+          </button>
+        )
+      )}
+
+      {canManage && state === 'closed' && (
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-ink-muted" htmlFor="gl-reopen-reason">
+            Reason for reopening
+          </label>
+          <textarea
+            id="gl-reopen-reason"
+            className={`${controlClass} block w-full max-w-md`}
+            rows={2}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+          />
+          <button
+            type="button"
+            className={controlClass}
+            disabled={reason.trim() === '' || reopen.isPending}
+            onClick={() => reopen.mutate()}
+          >
+            Reopen {p.period_key}
+          </button>
+        </div>
+      )}
+
+      {close.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(close.error)}</p>
+      )}
+      {reopen.error !== null && (
+        <p className="text-sm text-danger-red">{errorMessage(reopen.error)}</p>
+      )}
+    </Card>
   )
 }
