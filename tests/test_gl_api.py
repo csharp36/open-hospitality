@@ -207,7 +207,7 @@ def test_post_without_a_chart_reports_honest_skips(
     """No chart is not an API error: every grain comes back "skipped" —
     the same answer `post_and_record` gives the CLI and the ingestion hook.
     The calendar IS seeded: without one the endpoint's up-front gate is a
-    422 before any grain is tried (the test below pins that)."""
+    422 before any grain is tried (test_post_refuses_a_property_it_cannot_post pins that)."""
     prop, day = _first_grain(db_session)
     _seed_calendar(db_session, prop)
     db_session.commit()
