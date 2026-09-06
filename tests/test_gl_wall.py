@@ -48,9 +48,12 @@ def _seed_minimal_books(factory, property_id):
         s.add(Property(property_id=property_id, name=f"GL Wall {property_id}",
                        pms_source="opera"))
         s.flush()
-        s.add(GlAccount(account_code="4000", name="Room Revenue",
+        # T-prefixed codes: the Task 4 chart template carries 4000/1210, and
+        # provision_tenant will seed it — bare codes would collide on the
+        # (org_id, account_code) PK once that lands.
+        s.add(GlAccount(account_code="T4000", name="Room Revenue",
                         account_type="income", is_active=True))
-        s.add(GlAccount(account_code="1210", name="Guest Ledger Clearing",
+        s.add(GlAccount(account_code="T1210", name="Guest Ledger Clearing",
                         account_type="asset", is_active=True,
                         system_role="guest_ledger_clearing"))
         s.flush()
@@ -60,9 +63,9 @@ def _seed_minimal_books(factory, property_id):
                              posted_by="test")
         s.add(entry)
         s.flush()
-        s.add(JournalLine(entry_id=entry.entry_id, account_code="4000",
+        s.add(JournalLine(entry_id=entry.entry_id, account_code="T4000",
                           posting="Credit", amount=Decimal("100.0000")))
-        s.add(JournalLine(entry_id=entry.entry_id, account_code="1210",
+        s.add(JournalLine(entry_id=entry.entry_id, account_code="T1210",
                           posting="Debit", amount=Decimal("100.0000")))
         entry_id = entry.entry_id
         s.commit()
@@ -92,14 +95,24 @@ def test_one_org_cannot_read_anothers_journal(app_role_engine, two_tenant_world)
     _seed_minimal_books(org_a, "GLA1")
     _seed_minimal_books(org_b, "GLB2")
 
-    expected = {"gl_account": 2, "journal_entry": 1, "journal_line": 2}
+    tables = ("gl_account", "journal_entry", "journal_line")
     for factory, own_org in ((org_a, FOUNDING_ORG_ID),
                              (org_b, two_tenant_world.org2_id)):
         with factory() as s:
-            # Positive control: this org's OWN books are all visible.
-            assert _counts(s) == expected
+            # Positive control: this org's OWN books are all visible. The
+            # gl_account control names the two seeded codes rather than an
+            # exact total: once Task 4 wires the chart template into
+            # provisioning, an org's account count includes the template.
+            counts = _counts(s)
+            assert counts["journal_entry"] == 1
+            assert counts["journal_line"] == 2
+            seeded = s.execute(
+                text("SELECT count(*) FROM gl_account "
+                     "WHERE account_code IN ('T4000', 'T1210')"),
+            ).scalar_one()
+            assert seeded == 2
             # And nothing from any other org is, in any GL table.
-            for table in expected:
+            for table in tables:
                 n = s.execute(
                     text(f"SELECT count(*) FROM {table} "  # noqa: S608
                          "WHERE org_id <> :org"),
@@ -142,6 +155,21 @@ def test_the_journal_refuses_update_and_delete_by_grant(
         assert n == 2
 
 
+def test_the_append_only_revoke_covers_the_whole_journal(app_role_engine):
+    """The behavioral test above proves the refusal is LIVE on two
+    statement shapes; this one proves the SET is complete — every
+    (immutable table, privilege) pair g1a0glcore revokes stays revoked,
+    so a later migration re-granting one fails here, not in an audit.
+    `has_table_privilege` evaluates as the connecting role: usali_app."""
+    with app_role_engine.connect() as conn:
+        for table in ("journal_entry", "journal_line", "gl_period_event"):
+            for priv in ("UPDATE", "DELETE"):
+                assert not conn.execute(
+                    text("SELECT has_table_privilege(:t, :p)"),
+                    {"t": table, "p": priv},
+                ).scalar_one(), f"{priv} on {table} was re-granted"
+
+
 # ---------------------------------------------------------------- balance
 
 
@@ -159,7 +187,7 @@ def test_an_unbalanced_entry_is_refused_at_commit(app_role_engine, founding_org)
                              posted_by="test")
         s.add(entry)
         s.flush()
-        s.add(JournalLine(entry_id=entry.entry_id, account_code="4000",
+        s.add(JournalLine(entry_id=entry.entry_id, account_code="T4000",
                           posting="Credit", amount=Decimal("100.0000")))
         # No balancing debit: the deferred trigger must refuse at COMMIT.
         with pytest.raises(IntegrityError, match="out of balance"):
@@ -186,7 +214,7 @@ def _insert_unbalanced_entry_raw(conn, org_id, property_id):
     ).scalar_one()
     conn.execute(
         text("INSERT INTO journal_line (org_id, entry_id, account_code,"
-             " posting, amount) VALUES (:org, :e, '4000', 'Credit', 100.0000)"),
+             " posting, amount) VALUES (:org, :e, 'T4000', 'Credit', 100.0000)"),
         {"org": org_id, "e": entry_id},
     )
 
