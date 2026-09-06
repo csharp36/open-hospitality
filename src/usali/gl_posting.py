@@ -659,13 +659,10 @@ class CloseGaps:
     orphaned: list[date]
 
 
-def close_period(
-    session: "Session", *, property_id: str, period_key: str, actor: str
-) -> CloseGaps:
-    """Append a close event; return the period's gaps in both directions
-    (see `CloseGaps`), so closing over either kind of gap is a visible
-    choice. Idempotent: closing an already-closed period is a no-op that
-    still returns the gaps as they stand today."""
+def period_gaps(session: "Session", *, property_id: str, period_key: str) -> CloseGaps:
+    """The period's gaps in both directions (see `CloseGaps`), with no
+    event written — extracted from `close_period` so the API's period
+    listing and the close itself compute the same answer from one query."""
     cfg = fiscal.require_config(fiscal.config_for(session, property_id))
     start, end = fiscal.resolve_period(cfg, period_key)
     fact_dates = set(
@@ -706,7 +703,7 @@ def close_period(
     # The fact side an entry must still be justified by, per source
     # (see CloseGaps).
     fact_side = {"pms_daily": fact_dates, "payroll_accrual": labor_dates}
-    gaps = CloseGaps(
+    return CloseGaps(
         unposted=sorted(fact_dates - posted_dates),
         orphaned=sorted({
             row.business_date
@@ -715,6 +712,16 @@ def close_period(
             and row.business_date not in fact_side[row.source_type]
         }),
     )
+
+
+def close_period(
+    session: "Session", *, property_id: str, period_key: str, actor: str
+) -> CloseGaps:
+    """Append a close event; return the period's gaps in both directions
+    (see `CloseGaps`), so closing over either kind of gap is a visible
+    choice. Idempotent: closing an already-closed period is a no-op that
+    still returns the gaps as they stand today."""
+    gaps = period_gaps(session, property_id=property_id, period_key=period_key)
     if period_state(session, property_id, period_key) != "closed":
         session.add(
             GlPeriodEvent(
