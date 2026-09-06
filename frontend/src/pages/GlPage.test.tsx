@@ -213,6 +213,30 @@ describe('GlPage', () => {
     expect(screen.queryByText('Nothing posted for this period yet.')).not.toBeInTheDocument()
   })
 
+  it('contains a render-time throw: the shell survives and the message shows', async () => {
+    // Deploy skew's realistic shape: the backend emits an amount string that
+    // lib/decimal's parseScaled refuses, and the refusal throws mid-render.
+    // The throw is that module's discipline; what this pins is containment —
+    // router.tsx's defaultErrorComponent is where the swap to RouteErrorCard
+    // is wired, and the nav around the errored page must keep rendering.
+    // The caught throw is noisy on console.error; muted for a readable run.
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      vi.mocked(getTrialBalance).mockResolvedValue(
+        makeTrialBalance({ total_debits: '12,066.37' }),
+      )
+      renderPage('/gl?period=2026-P07')
+      // The thrown message verbatim — the operator debugging the skew needs
+      // this exact string, not a generic apology.
+      expect(
+        await screen.findByText('not a fixed-point decimal: "12,066.37"'),
+      ).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: /general ledger/i })).toBeInTheDocument()
+    } finally {
+      errorSpy.mockRestore()
+    }
+  })
+
   it('preselects the chip named by ?period= in the initial URL', async () => {
     renderPage('/gl?period=2026-P07')
     expect(await screen.findByText('Rooms Revenue')).toBeInTheDocument()

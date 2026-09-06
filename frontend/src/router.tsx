@@ -32,6 +32,7 @@ import SchedulePage from './pages/SchedulePage'
 import PreviewPage from './pages/PreviewPage'
 import SignupPage from './pages/SignupPage'
 import GlPage from './pages/GlPage'
+import RouteErrorCard from './components/RouteErrorCard'
 import { CallbackPage, RootShell } from './RootShell'
 
 const rootRoute = createRootRoute({ component: RootShell })
@@ -346,7 +347,12 @@ export function isServedPath(href: string): boolean {
 }
 
 export function createAppRouter(history?: RouterHistory) {
-  return createRouter({ routeTree, history })
+  // A page whose render throws (deploy skew: lib/decimal and lib/balanceSheet
+  // both throw on payloads the frontend does not know) must not take the shell
+  // down with it. RouteErrorCard keeps the failure inside the errored page's
+  // slot — pinned by GlPage.test.tsx "contains a render-time throw: the shell
+  // survives and the message shows".
+  return createRouter({ routeTree, history, defaultErrorComponent: RouteErrorCard })
 }
 
 declare module '@tanstack/react-router' {
