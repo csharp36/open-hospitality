@@ -106,6 +106,25 @@ export default function PeriodDetailCard({
 
   const { state, unposted_dates: unposted, orphaned_dates: orphaned } = p
 
+  // A confirm is armed only from the open-state button row, so it belongs to
+  // the open spell it was armed in. State changes reach this card in place —
+  // GlPage's key on this card is where only a scope switch forces a remount —
+  // so when the state moves under a primed confirm (a close from elsewhere
+  // landing via refetch, then a reopen), the confirm is discarded here,
+  // during render, rather than re-offered in a later open spell that never
+  // asked for it. Render-time adjustment, not an effect: an effect would
+  // commit the stale confirm to the screen first.
+  const [prevState, setPrevState] = useState(state)
+  if (state !== prevState) {
+    setPrevState(state)
+    if (confirming) setConfirming(false)
+    // Same rule for the red lines: a refusal answers an attempt made in the
+    // spell that just ended, and must not resurface under the next spell's
+    // fresh controls.
+    if (close.error !== null) close.reset()
+    if (reopen.error !== null) reopen.reset()
+  }
+
   const gapPhrases: string[] = []
   if (unposted.length > 0)
     gapPhrases.push(`${unposted.length} unposted PMS day${unposted.length === 1 ? '' : 's'}`)
@@ -203,6 +222,14 @@ export default function PeriodDetailCard({
                 Cancel
               </button>
             </div>
+            {/* In the confirm's own block, beside the pair it answers: a
+                refused close must not land at the card foot, below a month
+                of outcome rows. */}
+            {close.error !== null && (
+              <p role="alert" className="text-sm text-danger-red">
+                {errorMessage(close.error)}
+              </p>
+            )}
           </div>
         ) : (
           // Post before Close: Post is the remedy for the gaps named above,
@@ -226,11 +253,13 @@ export default function PeriodDetailCard({
                 Close {p.period_key}
               </button>
             </div>
-            {/* Rendered here, not with the card-footer errors: a post
-                failure's red line dies with its button — it must not sit
-                unlabeled under the reopen form of a since-closed period. */}
+            {/* A post failure's red line dies with its button — it must not
+                sit unlabeled under the reopen form of a since-closed
+                period. */}
             {post.error !== null && (
-              <p className="text-sm text-danger-red">{errorMessage(post.error)}</p>
+              <p role="alert" className="text-sm text-danger-red">
+                {errorMessage(post.error)}
+              </p>
             )}
           </div>
         )
@@ -256,6 +285,14 @@ export default function PeriodDetailCard({
           >
             Reopen {p.period_key}
           </button>
+          {/* In the form's own block, beside the button it answers: a
+              refused reopen must not land at the card foot, below a month
+              of outcome rows. */}
+          {reopen.error !== null && (
+            <p role="alert" className="text-sm text-danger-red">
+              {errorMessage(reopen.error)}
+            </p>
+          )}
         </div>
       )}
 
@@ -299,13 +336,6 @@ export default function PeriodDetailCard({
             </table>
           </div>
         </div>
-      )}
-
-      {close.error !== null && (
-        <p className="text-sm text-danger-red">{errorMessage(close.error)}</p>
-      )}
-      {reopen.error !== null && (
-        <p className="text-sm text-danger-red">{errorMessage(reopen.error)}</p>
       )}
     </Card>
   )

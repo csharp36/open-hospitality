@@ -464,10 +464,19 @@ describe('GlPage period detail', () => {
     fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
       target: { value: 'auditor request' },
     })
-    fireEvent.click(within(card).getByRole('button', { name: 'Reopen 2026-P07' }))
-    expect(
-      await within(card).findByText('reopen refused: period 2026-P07 is already open'),
-    ).toBeInTheDocument()
+    const reopenBtn = within(card).getByRole('button', { name: 'Reopen 2026-P07' })
+    fireEvent.click(reopenBtn)
+    // Announced, and in the reopen form's own block beside the button it
+    // answers — not loose at the card foot, where containment of the button
+    // would hold trivially.
+    const refusal = await within(card).findByRole('alert')
+    expect(refusal).toHaveTextContent('reopen refused: period 2026-P07 is already open')
+    expect(refusal.parentElement).not.toBe(card)
+    expect(within(refusal.parentElement!).getByRole('button', { name: 'Reopen 2026-P07' })).toBe(
+      reopenBtn,
+    )
+    // And the form is still operable for a retry.
+    expect(reopenBtn).toBeEnabled()
   })
 
   it('property_gm sees state and gaps but no close/reopen controls', async () => {
@@ -494,10 +503,81 @@ describe('GlPage period detail', () => {
     renderPage('/gl?period=2026-P07')
     const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
     fireEvent.click(within(card).getByRole('button', { name: 'Close 2026-P07' }))
-    fireEvent.click(within(card).getByRole('button', { name: 'Yes, close' }))
+    const yesClose = within(card).getByRole('button', { name: 'Yes, close' })
+    fireEvent.click(yesClose)
+    // Announced, and in the confirm's own block beside the pair it answers —
+    // not loose at the card foot, where containment of the pair would hold
+    // trivially.
+    const refusal = await within(card).findByRole('alert')
+    expect(refusal).toHaveTextContent('close refused: the journal disagrees with the SOS')
+    expect(refusal.parentElement).not.toBe(card)
+    expect(within(refusal.parentElement!).getByRole('button', { name: 'Yes, close' })).toBe(
+      yesClose,
+    )
+    // And the confirm pair is still operable — retry or back out.
+    expect(yesClose).toBeEnabled()
+    expect(within(card).getByRole('button', { name: 'Cancel' })).toBeEnabled()
+  })
+
+  it('a state change under a primed confirm discards it: reopening lands on the button row', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([makeGlPeriod()])
+    vi.mocked(reopenGlPeriod).mockResolvedValue(undefined)
+    const queryClient = renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.click(await within(card).findByRole('button', { name: 'Close 2026-P07' }))
+    expect(within(card).getByRole('button', { name: 'Yes, close' })).toBeInTheDocument()
+
+    // A close from elsewhere lands via the periods cache while the confirm
+    // is primed — the card is keyed by scope, not state, so it re-renders
+    // in place.
+    queryClient.setQueryData(
+      ['gl-periods', 'HISJ', THIS_YEAR],
+      [makeGlPeriod({ state: 'closed' })],
+    )
+    const reopenBtn = await within(card).findByRole('button', { name: 'Reopen 2026-P07' })
+    fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
+      target: { value: 'closed by mistake' },
+    })
+    fireEvent.click(reopenBtn)
+
+    // Back open: the ordinary Post/Close row, never a confirm primed for an
+    // open spell that ended underneath it.
     expect(
-      await within(card).findByText('close refused: the journal disagrees with the SOS'),
+      await within(card).findByRole('button', { name: 'Close 2026-P07' }),
     ).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Post 2026-P07' })).toBeInTheDocument()
+    expect(within(card).queryByRole('button', { name: 'Yes, close' })).not.toBeInTheDocument()
+  })
+
+  it('a refused reopen does not haunt the next closed spell', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([makeGlPeriod({ state: 'closed' })])
+    vi.mocked(reopenGlPeriod).mockRejectedValue(
+      new ApiError(422, 'reopen refused: period 2026-P07 is already open'),
+    )
+    const queryClient = renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
+      target: { value: 'auditor request' },
+    })
+    fireEvent.click(await within(card).findByRole('button', { name: 'Reopen 2026-P07' }))
+    await within(card).findByRole('alert')
+
+    // The reopen then lands from elsewhere, and later the period is closed
+    // again — same scope key both times, so the card re-renders in place.
+    queryClient.setQueryData(['gl-periods', 'HISJ', THIS_YEAR], [makeGlPeriod()])
+    await within(card).findByRole('button', { name: 'Close 2026-P07' })
+    queryClient.setQueryData(
+      ['gl-periods', 'HISJ', THIS_YEAR],
+      [makeGlPeriod({ state: 'closed' })],
+    )
+    await within(card).findByRole('button', { name: 'Reopen 2026-P07' })
+
+    // A fresh form: the old refusal answered an attempt from a spell that
+    // ended, and does not resurface under it.
+    expect(within(card).queryByRole('alert')).not.toBeInTheDocument()
+    expect(within(card).queryByText(/reopen refused/)).not.toBeInTheDocument()
   })
 })
 
