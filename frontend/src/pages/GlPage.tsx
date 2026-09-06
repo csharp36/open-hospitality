@@ -49,6 +49,10 @@ export default function GlPage() {
       ? parseInt(search.period.slice(0, 4), 10)
       : new Date().getFullYear(),
   )
+  // The input's own text, so every keystroke stays visible: a half-typed "2"
+  // lands here unconditionally, and only a draft that round-trips to an
+  // in-range year is promoted to fiscalYear (the query key never sees junk).
+  const [yearDraft, setYearDraft] = useState(() => String(fiscalYear))
 
   const period = search.period
 
@@ -129,13 +133,19 @@ export default function GlPage() {
                 id="gl-fiscal-year"
                 type="number"
                 className={`${controlClass} w-24`}
-                value={fiscalYear}
+                value={yearDraft}
                 min={FISCAL_YEAR_MIN}
                 max={FISCAL_YEAR_MAX}
                 onChange={(e) => {
-                  const year = parseInt(e.target.value, 10)
-                  if (year >= FISCAL_YEAR_MIN && year <= FISCAL_YEAR_MAX) setFiscalYear(year)
+                  const draft = e.target.value
+                  setYearDraft(draft)
+                  const year = parseInt(draft, 10)
+                  if (String(year) === draft && year >= FISCAL_YEAR_MIN && year <= FISCAL_YEAR_MAX)
+                    setFiscalYear(year)
                 }}
+                // A draft abandoned invalid or half-typed snaps back to the
+                // year the rail is actually showing.
+                onBlur={() => setYearDraft(String(fiscalYear))}
               />
             </div>
 

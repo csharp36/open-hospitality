@@ -4,6 +4,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createMemoryHistory, RouterProvider } from '@tanstack/react-router'
 
@@ -121,13 +122,33 @@ describe('GlPage', () => {
     expect(getGlPeriods).toHaveBeenCalledWith('HISJ', 2025)
   })
 
-  it('ignores half-typed years instead of fetching them', async () => {
+  it('stays typeable through a retype: partial digits show, the full year fetches', async () => {
     renderPage()
     await screen.findByRole('group', { name: 'Fiscal periods' })
-    // Retyping a year passes through junk states ("2", "20"); none may fetch.
-    fireEvent.change(screen.getByLabelText('Fiscal year'), { target: { value: '2' } })
-    fireEvent.change(screen.getByLabelText('Fiscal year'), { target: { value: '20' } })
+    const input = screen.getByLabelText('Fiscal year')
+    await userEvent.clear(input)
+    await userEvent.type(input, '2')
+    // The keystroke stays on screen — not snapped back to the committed year.
+    expect(input).toHaveValue(2)
     expect(getGlPeriods).not.toHaveBeenCalledWith('HISJ', 2)
+    await userEvent.type(input, '025')
+    // The fourth digit lands and the rail refetches for the typed year.
+    expect(input).toHaveValue(2025)
+    expect(getGlPeriods).toHaveBeenCalledWith('HISJ', 2025)
+    // Exactly the mount fetch and the committed year — no junk state
+    // ("2", "20", "202") along the way fetched.
+    expect(getGlPeriods).toHaveBeenCalledTimes(2)
+  })
+
+  it('blur restores the committed year over an abandoned half-typed draft', async () => {
+    renderPage()
+    await screen.findByRole('group', { name: 'Fiscal periods' })
+    const input = screen.getByLabelText('Fiscal year')
+    await userEvent.clear(input)
+    await userEvent.type(input, '20')
+    expect(input).toHaveValue(20)
+    await userEvent.tab()
+    expect(input).toHaveValue(THIS_YEAR)
     expect(getGlPeriods).not.toHaveBeenCalledWith('HISJ', 20)
     expect(getGlPeriods).toHaveBeenCalledTimes(1)
   })
