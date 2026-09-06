@@ -1,6 +1,6 @@
 # ADR-012: Bank data via aggregator tokens — the Pillar E5 amendment
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Deciders:** Open Hospitality maintainers
 

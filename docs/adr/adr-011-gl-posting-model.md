@@ -1,6 +1,6 @@
 # ADR-011: The general-ledger posting model
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-06
 - **Deciders:** Open Hospitality maintainers
 
