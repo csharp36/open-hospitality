@@ -258,6 +258,23 @@ MOD  frontend/src/App.test.tsx                 # Task 8
 MOD  docs/ROADMAP.md  .github/roadmap.yml      # Task 9
 ```
 
+### Where this diverged from what shipped
+
+Recorded rather than retrofitted, following the B4 plan's practice.
+
+| Planned | Shipped | Why |
+|---|---|---|
+| Task 2's `makeJournalEntry` with "one pms line and one payroll line" | a balanced pms_daily entry — Credit 4100 with full provenance, Debit 1210 with nulls | a payroll line inside a pms_daily entry is a shape the backend never emits; which lines carry provenance is `gl_posting.JeLine`'s multi-fact-group rule |
+| Task 2's test list | plus a single 401 test (the `checklist.test.ts` latch pattern — one per file, never two) | without it the `redirectToLogin` wiring in all six functions was uncovered |
+| Task 3's stepper "defaults to the backend's default (the year containing today)" | the client's calendar year, seeded from a deep-linked `?period=`'s first four digits, always passed explicitly | the query key names the year actually fetched; the comment above `fiscalYear` in `GlPage.tsx` records the divergence from `gl_api.get_periods`' fiscal-year default |
+| Tasks 4–7 "in `GlPage.tsx`" | `TrialBalanceCard`, `BalanceSheetCard`, `PeriodDetailCard` extracted to `components/` in pure-move commits before the features that grew them | the page was passing 400 lines before the mutations moved in |
+| Task 4's dialog name "Rooms revenue" | "Rooms Revenue" | the fixture is the authority for the account's name |
+| `subFixed` tests sketched in `balanceSheet.test.ts` | moved to `decimal.test.ts` beside `addFixed`/`eqFixed` | coverage lives where an auditor of `decimal.ts` will look |
+| Task 6: "render close's response while the refetch lands" | the response is written into the periods cache (`setQueryData`), then invalidated | a held response never yielded back to the query; the cache is the one truth the card reads |
+| Task 6's pinned confirm regex (`?` directly after "days") | the both-gaps copy joins `and {n} orphaned entries`; the close-flow test uses an orphan-free period; the gap heading pre-introduces "(orphaned)" | the regex cannot match the both-gaps string, and a term should not debut inside a destructive confirm |
+| Task 7's outcomes table | labeled "Post outcomes"; `post.error` renders inside the open-state controls | an unlabeled red line was outliving the verb it belonged to |
+| Task 8: "`router.test.ts` already pins served paths from the same array" | it pinned only the four checklist routes; an explicit `isServedPath('/gl')` pin was added — not to `CHECKLIST_ROUTES`, which is closed and twinned with `test_every_item_route_is_pinned` | the registration is automatic; the plan overstated the test coverage it inherits |
+
 ---
 
 ## Task 1 — the drill-through endpoint, `entry_id`, and period bounds
@@ -837,3 +854,18 @@ git add -A && git commit -m "feat(oh27-spa): the books get a door — General Le
   need `scripts/e2e_backend.py` to seed a posted world; the vitest tests
   cover the render logic and `tests/test_gl_api.py` covers the contract.
   Note it, do not force it.
+- **Read-path indexes.** `journal_line` has no index by `account_code` and
+  `journal_entry` none by `(property_id, business_date)`; both
+  `reporting.trial_balance` and `reporting.journal_entries` filter on
+  exactly those — sequential scans that are now user-facing on /gl. One
+  follow-up migration; it serves the shipped trial balance as much as the
+  new drill.
+- **A shared slide-over shell.** `DrillPanel` and `JournalDrillPanel` carry
+  identical dialog shells with the same two omissions — the document-level
+  Escape listener never checks `defaultPrevented`, and focus is not
+  restored to the triggering row on close. Fix once in an extracted shell
+  on the next touch, not piecemeal.
+- **`lineButtonClass` belongs in `ui.tsx`.** Two identical constants
+  (`Statement.tsx`, `TrialBalanceCard.tsx`) whose identity is a design
+  requirement; today the copy names its original in a comment — one
+  direction only — which detects drift only for a reader who greps.
