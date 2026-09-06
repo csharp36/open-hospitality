@@ -149,17 +149,19 @@ describe('GlPage', () => {
       'true',
     )
 
-    // Line cells: code, name, type, amounts via fmtMoney.
-    expect(screen.getByText('1010')).toBeInTheDocument()
-    expect(screen.getByText('Cash - Operating')).toBeInTheDocument()
-    expect(screen.getAllByText('asset')).toHaveLength(2)
-    expect(screen.getByText('10,866.37')).toBeInTheDocument() // 4100 credits
+    // Line cells: code, name, type, amounts via fmtMoney — scoped to the
+    // trial balance card, since the balance sheet below repeats codes/names.
+    const tbCard = screen.getByRole('region', { name: 'Trial balance 2026-P07' })
+    expect(within(tbCard).getByText('1010')).toBeInTheDocument()
+    expect(within(tbCard).getByText('Cash - Operating')).toBeInTheDocument()
+    expect(within(tbCard).getAllByText('asset')).toHaveLength(2)
+    expect(within(tbCard).getByText('10,866.37')).toBeInTheDocument() // 4100 credits
     // Totals row: both totals render 12,066.37 (line-cell 12,066.37 does not
     // exist in the fixture, so exactly two).
-    expect(screen.getAllByText('12,066.37')).toHaveLength(2)
+    expect(within(tbCard).getAllByText('12,066.37')).toHaveLength(2)
     // The period's date range from the response, not the chip.
-    expect(screen.getByText(/2026-07-01 – 2026-07-31/)).toBeInTheDocument()
-    expect(screen.getByText('balanced ✓')).toBeInTheDocument()
+    expect(within(tbCard).getByText(/2026-07-01 – 2026-07-31/)).toBeInTheDocument()
+    expect(within(tbCard).getByText('balanced ✓')).toBeInTheDocument()
   })
 
   it('shows a danger badge, not balanced, when totals differ', async () => {
@@ -168,8 +170,11 @@ describe('GlPage', () => {
     )
     renderPage('/gl?period=2026-P07')
     expect(await screen.findByText('Rooms Revenue')).toBeInTheDocument()
-    expect(screen.queryByText('balanced ✓')).not.toBeInTheDocument()
-    expect(screen.getByText(/does not equal/)).toBeInTheDocument()
+    // Scoped to the trial balance card: the balance sheet below foots from
+    // the lines and keeps its own badge (its describe block covers that).
+    const tbCard = screen.getByRole('region', { name: 'Trial balance 2026-P07' })
+    expect(within(tbCard).queryByText('balanced ✓')).not.toBeInTheDocument()
+    expect(within(tbCard).getByText(/does not equal/)).toBeInTheDocument()
   })
 
   it('renders a 404 as a quiet empty state, not a failure', async () => {
@@ -208,6 +213,41 @@ describe('GlPage', () => {
       expect(chip).toHaveAttribute('aria-pressed', 'false')
     }
     expect(getTrialBalance).not.toHaveBeenCalled()
+  })
+})
+
+describe('GlPage balance sheet', () => {
+  it('renders the net-change balance sheet from the same trial-balance response', async () => {
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Balance sheet 2026-P07' })
+    // The title says what the numbers are — the period's net change, not a
+    // statement of financial position (plan "things to get right" #1).
+    expect(
+      within(card).getByRole('heading', { name: 'Balance sheet — net change for 2026-P07' }),
+    ).toBeInTheDocument()
+    expect(
+      within(card).getByText(/activity for this period, not a cumulative position/i),
+    ).toBeInTheDocument()
+    // Derived in place: one fetch serves the trial balance and this card.
+    expect(getTrialBalance).toHaveBeenCalledTimes(1)
+    // The synthetic equity line, and the fixture's cash net (500 - 1200).
+    expect(within(card).getByText('Net income (this period)')).toBeInTheDocument()
+    expect(within(card).getByText('-700.00')).toBeInTheDocument()
+    // Its own balanced badge, from its own foot.
+    expect(within(card).getByText('balanced ✓')).toBeInTheDocument()
+  })
+
+  it('foots from the lines, so its badge is independent of the totals fields', async () => {
+    // Totals that disagree with each other while the lines still foot: the
+    // trial balance card badges danger, the balance sheet stays balanced.
+    vi.mocked(getTrialBalance).mockResolvedValue(
+      makeTrialBalance({ total_debits: '12066.3700', total_credits: '12000.0000' }),
+    )
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Balance sheet 2026-P07' })
+    expect(within(card).getByText('balanced ✓')).toBeInTheDocument()
+    const tbCard = screen.getByRole('region', { name: 'Trial balance 2026-P07' })
+    expect(within(tbCard).getByText(/does not equal/)).toBeInTheDocument()
   })
 })
 

@@ -36,6 +36,12 @@ export function addFixed(a: string, b: string): string {
   return formatScaled(av + bv, scale)
 }
 
+/** Exact difference (a - b) of two decimal strings; result carries the wider scale. */
+export function subFixed(a: string, b: string): string {
+  const [av, bv, scale] = align(parseScaled(a), parseScaled(b))
+  return formatScaled(av - bv, scale)
+}
+
 /** Exact numeric equality across differing scales ("410.00" == "410.0000"). */
 export function eqFixed(a: string, b: string): boolean {
   const [av, bv] = align(parseScaled(a), parseScaled(b))
