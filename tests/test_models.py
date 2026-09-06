@@ -68,6 +68,11 @@ def test_tables_registered():
         "fiscal_calendar",
         "property_stat_config",
         "ingestion_coverage",
+        "gl_account",
+        "journal_entry",
+        "journal_line",
+        "gl_posting_ledger",
+        "gl_period_event",
     }
 
 

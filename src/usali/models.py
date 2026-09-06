@@ -314,6 +314,188 @@ class QboPushLedger(OrgScoped, Base):
     pushed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
+class GlAccount(OrgScoped, Base):
+    """One chart-of-accounts row per org (ADR-011 §1). Seeded from
+    mapping/gl_accounts_usali.yaml at provisioning; orgs extend by adding
+    rows. `system_role` is how the engine finds structural accounts
+    (D-OH27.2) — unique per org where set, so renumbering is free and
+    deleting a role-bearing account is refused in gl_api, the enforcement
+    point for that rule."""
+
+    __tablename__ = "gl_account"
+    __table_args__ = (
+        CheckConstraint(
+            "account_type IN ('asset', 'contra_asset', 'liability', "
+            "'equity', 'income', 'expense')",
+            name="ck_gl_account_type",
+        ),
+        Index(
+            "uq_gl_account_org_role",
+            "org_id",
+            "system_role",
+            unique=True,
+            postgresql_where=text("system_role IS NOT NULL"),
+        ),
+    )
+
+    org_id: Mapped[int] = mapped_column(
+        ForeignKey("organization.org_id", name="fk_gl_account_org"),
+        primary_key=True,
+    )
+    account_code: Mapped[str] = mapped_column(String(20), primary_key=True)
+    name: Mapped[str] = mapped_column(String(100))
+    account_type: Mapped[str] = mapped_column(String(20))
+    usali_schedule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    usali_major_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    usali_sub_category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    usali_line_item: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    system_role: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class JournalEntry(OrgScoped, Base):
+    """One posting event (ADR-011 §2, §3). Append-only: the g1a0glcore
+    migration REVOKEs UPDATE and DELETE from the application role, so
+    correction is a reversal entry (`reversal_of`), never an edit."""
+
+    __tablename__ = "journal_entry"
+    __table_args__ = (
+        UniqueConstraint("org_id", "entry_id", name="uq_journal_entry_org"),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"],
+            ["property.org_id", "property.property_id"],
+            name="fk_journal_entry_property_org",
+        ),
+    )
+
+    entry_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    property_id: Mapped[str] = mapped_column(String(50))
+    business_date: Mapped[date] = mapped_column(Date)
+    source_type: Mapped[str] = mapped_column(String(30))
+    source_hash: Mapped[str] = mapped_column(String(64))
+    memo: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reversal_of: Mapped[int | None] = mapped_column(
+        ForeignKey("journal_entry.entry_id", name="fk_journal_entry_reversal"),
+        nullable=True,
+    )
+    posted_by: Mapped[str] = mapped_column(String(64))
+    posted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class JournalLine(OrgScoped, Base):
+    """One side of one entry. Direction lives in `posting`, never in the
+    sign — amounts are strictly positive (the JeLine convention, which is
+    also what the QBO export body requires). `fact_id` is the drill-through
+    link for the pms_daily source; payroll_accrual lines carry NULL and
+    name their department in `memo` (design D-OH27.3)."""
+
+    __tablename__ = "journal_line"
+    __table_args__ = (
+        CheckConstraint(
+            "posting IN ('Debit', 'Credit')", name="ck_journal_line_posting"
+        ),
+        CheckConstraint("amount > 0", name="ck_journal_line_amount_positive"),
+        ForeignKeyConstraint(
+            ["org_id", "entry_id"],
+            ["journal_entry.org_id", "journal_entry.entry_id"],
+            name="fk_journal_line_entry_org",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "account_code"],
+            ["gl_account.org_id", "gl_account.account_code"],
+            name="fk_journal_line_account_org",
+        ),
+    )
+
+    line_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    entry_id: Mapped[int] = mapped_column(BigInteger)
+    account_code: Mapped[str] = mapped_column(String(20))
+    posting: Mapped[str] = mapped_column(String(6))
+    amount: Mapped[Decimal] = mapped_column(Numeric(15, 4))
+    memo: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    fact_id: Mapped[int | None] = mapped_column(
+        ForeignKey("usali_financial_fact.fact_id", name="fk_journal_line_fact"),
+        nullable=True,
+    )
+
+
+class GlPostingLedger(OrgScoped, Base):
+    """One row per (property, business date, source) posting outcome — the
+    QboPushLedger precedent (D-OH27.6). `entry_id` is the CURRENT entry for
+    that grain; `source_hash` is its content hash, so an unchanged re-run is
+    a no-op and a changed one reverses-and-reposts. `message` carries the
+    latest refusal and clears on success; `status` says whether a current
+    entry exists. The unique constraint is the concurrency arbiter: the
+    loser of a simultaneous post raises IntegrityError, loudly."""
+
+    __tablename__ = "gl_posting_ledger"
+    __table_args__ = (
+        UniqueConstraint(
+            "org_id", "property_id", "business_date", "source_type",
+            name="uq_gl_posting_ledger_org_row",
+        ),
+        CheckConstraint(
+            "status IN ('posted', 'failed')", name="ck_gl_posting_ledger_status"
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"],
+            ["property.org_id", "property.property_id"],
+            name="fk_gl_posting_ledger_property_org",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "entry_id"],
+            ["journal_entry.org_id", "journal_entry.entry_id"],
+            name="fk_gl_posting_ledger_entry_org",
+        ),
+    )
+
+    posting_ledger_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    property_id: Mapped[str] = mapped_column(String(50))
+    business_date: Mapped[date] = mapped_column(Date)
+    source_type: Mapped[str] = mapped_column(String(30))
+    source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entry_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(10))
+    message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    posted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
+class GlPeriodEvent(OrgScoped, Base):
+    """Close/reopen events per (property, fiscal period) — append-only like
+    the journal; a period's state is the LAST event (D-OH27.7, the D-B4.1
+    derived-not-stored rule). This table IS the audit record for close:
+    actor, reason, timestamp live here, not in a parallel AuditEvent."""
+
+    __tablename__ = "gl_period_event"
+    __table_args__ = (
+        CheckConstraint("event IN ('close', 'reopen')", name="ck_gl_period_event_kind"),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"],
+            ["property.org_id", "property.property_id"],
+            name="fk_gl_period_event_property_org",
+        ),
+    )
+
+    period_event_id: Mapped[int] = mapped_column(
+        BigInteger, primary_key=True, autoincrement=True
+    )
+    property_id: Mapped[str] = mapped_column(String(50))
+    period_key: Mapped[str] = mapped_column(String(10))
+    event: Mapped[str] = mapped_column(String(10))
+    actor_subject: Mapped[str] = mapped_column(String(64))
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class PmsDailySegmentStage(OrgScoped, Base):
     __tablename__ = "pms_daily_segment_stage"
     # org_id discriminator (l8a0tenancyfix / L8-F4): see PmsDailyFinancialStage.
