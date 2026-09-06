@@ -1,11 +1,10 @@
 // Presentational drill-through slide-over: the journal entries behind one
-// trial-balance account, DrillPanel's dialog shell (focus-on-mount, Escape,
-// scrim) retold for the journal. The page owns the fetch; this renders.
-
-import { useEffect, useRef } from 'react'
+// trial-balance account. SlideOverShell owns the dialog chrome and its
+// keyboard contract; the page owns the fetch; this renders.
 
 import type { JournalEntry, JournalLine } from '../api/types'
 import { fmtMoney } from '../lib/format'
+import SlideOverShell from './SlideOverShell'
 import { amountCellClass, amountHeadClass, Badge, cellClass, headCellClass, tableClass } from './ui'
 
 type JournalDrillPanelProps = {
@@ -27,67 +26,35 @@ export default function JournalDrillPanel({
   error,
   onClose,
 }: JournalDrillPanelProps) {
-  const closeRef = useRef<HTMLButtonElement>(null)
-
-  // Modal a11y: focus lands on the Close button when the panel opens, and
-  // Escape closes it from anywhere.
-  useEffect(() => {
-    closeRef.current?.focus()
-  }, [])
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape') onClose()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [onClose])
-
   return (
-    <div className="fixed inset-0 z-10">
-      {/* bg-scrim stays dark in BOTH modes (token has no .dark remap) — a
-          scrim dims the page behind the overlay; bg-ink/40 would invert to a
-          light veil in dark mode. */}
-      <div className="absolute inset-0 bg-scrim" onClick={onClose} aria-hidden="true" />
-      <aside
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Journal entries: ${account} — ${accountName}`}
-        className="absolute inset-y-0 right-0 w-full max-w-2xl overflow-y-auto rounded-l-card border-l border-line bg-surface-raised p-6 shadow-overlay"
-      >
-        <div className="flex items-start justify-between">
-          <h2 className="text-lg font-semibold text-ink">
-            <span className="tabular-nums">{account}</span> — {accountName}
-          </h2>
-          <button
-            ref={closeRef}
-            type="button"
-            aria-label="Close"
-            onClick={onClose}
-            className="rounded-control px-2 text-xl leading-none text-ink-muted hover:bg-surface-sunken hover:text-ink"
-          >
-            ×
-          </button>
-        </div>
-        <p className="mb-4 text-sm text-ink-muted">
-          {property} · {period}
-        </p>
+    <SlideOverShell
+      label={`Journal entries: ${account} — ${accountName}`}
+      title={
+        <>
+          <span className="tabular-nums">{account}</span> — {accountName}
+        </>
+      }
+      onClose={onClose}
+    >
+      <p className="mb-4 text-sm text-ink-muted">
+        {property} · {period}
+      </p>
 
-        {error !== null && (
-          <p className="text-sm text-danger-red">Failed to load journal entries: {error}</p>
-        )}
-        {entries === undefined && error === null && (
-          <p className="text-sm text-ink-muted">Loading journal entries…</p>
-        )}
-        {/* An empty list while open is quiet, not an error: the account can
-            drop out of the journal between the trial-balance fetch and this
-            one (a mid-session repost). */}
-        {entries !== undefined && entries.length === 0 && (
-          <p className="text-sm text-ink-muted">No entries for this account in this period.</p>
-        )}
-        {entries !== undefined &&
-          entries.map((entry) => <EntryBlock key={entry.entry_id} entry={entry} />)}
-      </aside>
-    </div>
+      {error !== null && (
+        <p className="text-sm text-danger-red">Failed to load journal entries: {error}</p>
+      )}
+      {entries === undefined && error === null && (
+        <p className="text-sm text-ink-muted">Loading journal entries…</p>
+      )}
+      {/* An empty list while open is quiet, not an error: the account can
+          drop out of the journal between the trial-balance fetch and this
+          one (a mid-session repost). */}
+      {entries !== undefined && entries.length === 0 && (
+        <p className="text-sm text-ink-muted">No entries for this account in this period.</p>
+      )}
+      {entries !== undefined &&
+        entries.map((entry) => <EntryBlock key={entry.entry_id} entry={entry} />)}
+    </SlideOverShell>
   )
 }
 

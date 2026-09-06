@@ -860,11 +860,11 @@ git add -A && git commit -m "feat(oh27-spa): the books get a door — General Le
   exactly those — sequential scans that are now user-facing on /gl. One
   follow-up migration; it serves the shipped trial balance as much as the
   new drill.
-- **A shared slide-over shell.** `DrillPanel` and `JournalDrillPanel` carry
-  identical dialog shells with the same two omissions — the document-level
-  Escape listener never checks `defaultPrevented`, and focus is not
-  restored to the triggering row on close. Fix once in an extracted shell
-  on the next touch, not piecemeal.
+- **A shared slide-over shell.** DONE on this branch (PR #125 review):
+  `SlideOverShell.tsx` now owns the dialog chrome for both panels —
+  Escape checks `defaultPrevented`, focus returns to the triggering row on
+  every close path, and Tab wraps inside the panel
+  (`SlideOverShell.test.tsx`).
 - **`lineButtonClass` belongs in `ui.tsx`.** Two identical constants
   (`Statement.tsx`, `TrialBalanceCard.tsx`) whose identity is a design
   requirement; today the copy names its original in a comment — one

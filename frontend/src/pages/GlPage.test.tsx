@@ -92,7 +92,12 @@ function journalEnvelope(entries: JournalEntry[]) {
 /** Renders /gl with a period selected, drills 4100, returns the open panel. */
 async function openDrill() {
   renderPage('/gl?period=2026-P07')
-  fireEvent.click(await screen.findByRole('button', { name: 'Rooms Revenue' }))
+  const row = await screen.findByRole('button', { name: 'Rooms Revenue' })
+  // Focus before clicking, the way a keyboard drill arrives — the panel hands
+  // focus back to whatever held it at open, and that is what the focus-restore
+  // test asserts on.
+  row.focus()
+  fireEvent.click(row)
   return await screen.findByRole('dialog', { name: 'Journal entries: 4100 — Rooms Revenue' })
 }
 
@@ -791,11 +796,14 @@ describe('GlPage journal drill', () => {
     expect(within(debitRow).queryByText('—')).not.toBeInTheDocument()
   })
 
-  it('focuses Close on open and closes on Escape', async () => {
+  it('focuses Close on open; Escape closes and hands focus back to the account row', async () => {
     const panel = await openDrill()
     expect(within(panel).getByRole('button', { name: 'Close' })).toHaveFocus()
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    // The auditor lands back on the account cell they drilled from, not at
+    // the top of the page.
+    expect(screen.getByRole('button', { name: 'Rooms Revenue' })).toHaveFocus()
   })
 
   it('renders a failed entries fetch loud inside the panel', async () => {
