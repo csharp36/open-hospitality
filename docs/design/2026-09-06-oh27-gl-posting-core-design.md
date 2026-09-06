@@ -1,6 +1,7 @@
 # OH-27 — general-ledger posting core (design)
 
-Status: **DRAFT — for review (2026-09-06).** Implements
+Status: **DRAFT — for review (2026-09-06).** **EXECUTED (backend) 2026-09-06**
+— see §2's execution amendments and §11. Implements
 [ADR-011](../adr/adr-011-gl-posting-model.md) (accepted 2026-09-06), the first
 GL slice per [`ROADMAP.md`](../ROADMAP.md) Tier 0 #3. Everything ADR-011
 decides is inherited here without re-argument: per-org chart seeded from a
@@ -156,6 +157,49 @@ kind of drift D8.3 forbids.
   RLS inventory and the two-org isolation suite. The inventory is manual by
   design; missing it means the wall is unverified on that table.
 
+- **D-OH27.1 — AMENDED in execution.** `seed_chart` takes an explicit
+  keyword-only `org_id`: `provision_tenant` runs on un-instrumented sessions
+  (owner in tests, `usali_provisioner` in signup — RLS-bound, never
+  org-bound), so `current_org_id` could not work; the absence check filters
+  by org since an owner session reads every org's rows. The template's USALI
+  linkage copies the real dictionary values (major "Operated Departments";
+  schedule 3 for account 4100; no "Labor" major exists so the wages account
+  carries none) — verified against the mapping YAMLs, command recorded in
+  the template header. Seeding inside the provisioner's transaction required
+  migration `g2a0provgl`: the least-privilege provisioner role gains
+  INSERT/SELECT and a permissive policy on `gl_account`, the `b1a0provrole`
+  shape exactly.
+
+- **D-OH27.4 — AMENDED in execution.** Review found the deferred balance
+  trigger failed OPEN when the org GUC was cleared or switched before
+  commit (RLS hid the lines; the sum read empty as balanced — reproduced
+  empirically). The function now carries a visibility sentinel: if it
+  cannot see the line that fired it, it raises. Pinned by
+  `tests/test_gl_wall.py::test_the_balance_trigger_fails_loud_when_rls_blinds_it`.
+  The ledger also gained `ck_gl_posting_ledger_entry_pair` —
+  `(status = 'posted') = (entry_id IS NOT NULL)` — turning a traced
+  invariant into a machine check.
+
+- **D-OH27.6 — AMENDED in execution.** A grain whose facts vanish after
+  posting (timecard reopen; a re-transform emptying a day) now REVERSES its
+  standing entry and deletes its ledger row — outcome `"reversed"` —
+  instead of returning `skipped` and orphaning the entry. A refilled grain
+  later posts fresh (`"posted"`, not `"reposted"`): the ledger's memory is
+  gone by design; the journal's reversal chain is the audit trail.
+
+- **D-OH27.7 — AMENDED in execution.** `close_period` returns gaps in BOTH
+  directions: `unposted` (fact dates with no posted entry — pms_daily-only
+  by design) and `orphaned` (posted entries whose fact side emptied — both
+  sources). Close remains an idempotent append; reopen requires a reason.
+
+- **D-OH27.10 — executed with two refinements.** `plan_for_push` selects the
+  current entry via the ledger row (never a latest-entry heuristic — after
+  reverse-and-repost the newest entry is current only because the ledger
+  says so), and the fact path SURVIVES as the GL-off fallback rather than
+  being removed — it retires only when the push requires a seeded chart.
+  The canonical hash is pinned by a literal in
+  `tests/test_qbo_push.py::test_request_hash_literal_is_pinned`.
+
 ## 3. Architecture
 
 New module `gl_posting.py` owns the engine: the source registry (D-OH27.5),
@@ -279,3 +323,33 @@ Refusals, all loud, none silent (ADR-010):
 ROADMAP §3 Tier 0 table gains its shipped annotation. No new catalogue
 entries — the SOS cutover and the payroll-accrual extensions stay inside
 OH-27's summary as written.
+
+## 11. Execution residuals (2026-09-06)
+
+Known, accepted, and deliberately deferred — recorded so the next slice reads
+this list instead of rediscovering it:
+
+- **The SOS cutover decision must state two things** the parity gate does not
+  cover: parity proves the journal ≡ the *mapped* facts (rows with NULL
+  `gl_account_code` sit on neither side, so mapping coverage is a separate
+  question the coverage report owns), and `sos_journal_parity`'s clearing
+  lookup relies on the per-org unique role index and session org-scoping (no
+  `is_active` filter), a convention to restate there.
+- **`/qbo/preview` and the CLI dry-run still build from facts** (pointer
+  comments at both call sites). They agree with the push unless a fact
+  changes without a re-post — an out-of-band DB edit; the product's own
+  paths re-post on every promotion. Same edit class is the stale-guard's
+  one blind spot post-re-point.
+- **The frontend plan needs**: a journal-entries drill-through endpoint
+  (none exists; `TrialBalanceLineModel` carries `account_code` as the join
+  key) and probably `entry_id` on `PostOutcomeModel` (additive).
+- **`close_period` hard-codes its two sources**; a third posting source
+  must join the gap queries and the `fact_side` map by hand.
+- **Repost attribution**: `posted_by` reflects the LAST actor; a CLI re-run
+  that catches changed hours rewrites the entry as "cli".
+- **Payroll accrual scope**: daily gross-wage ESTIMATES (`est_cost`) per
+  department against two role accounts; employer taxes, benefits,
+  per-department GL accounts, and actual-vs-estimate truing are later
+  slices (§9).
+- **Duplicate close events**: two simultaneous closes can both append;
+  state derivation (last event wins) is unaffected. Tolerated.
