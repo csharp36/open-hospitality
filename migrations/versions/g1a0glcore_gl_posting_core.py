@@ -203,6 +203,11 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "status IN ('posted', 'failed')", name="ck_gl_posting_ledger_status"
         ),
+        # Paired: posted <=> a current entry exists (the ck_fiscal_weekday_pair idiom).
+        sa.CheckConstraint(
+            "(status = 'posted') = (entry_id IS NOT NULL)",
+            name="ck_gl_posting_ledger_entry_pair",
+        ),
         sa.ForeignKeyConstraint(
             ["org_id", "property_id"],
             ["property.org_id", "property.property_id"],

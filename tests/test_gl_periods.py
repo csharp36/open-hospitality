@@ -92,6 +92,31 @@ def test_close_names_the_unposted_fact_dates(db_session, founding_org, seed_six_
     assert [e.event for e in events] == ["close"]
 
 
+def test_closing_a_closed_period_is_a_no_op_that_still_returns_gaps(
+    db_session, founding_org, seed_six_pdfs
+):
+    prop, day = _setup(db_session, seed_six_pdfs)
+    period = gl_posting.period_key_for(db_session, prop, day)
+    first = gl_posting.close_period(db_session, property_id=prop,
+                                    period_key=period, actor="admin")
+    second = gl_posting.close_period(db_session, property_id=prop,
+                                     period_key=period, actor="admin")
+    events = db_session.scalars(select(GlPeriodEvent)).all()
+    assert [e.event for e in events] == ["close"]  # no second event appended
+    assert second == first
+
+
+def test_reopening_an_open_period_writes_no_event(
+    db_session, founding_org, seed_six_pdfs
+):
+    prop, day = _setup(db_session, seed_six_pdfs)
+    period = gl_posting.period_key_for(db_session, prop, day)
+    gl_posting.reopen_period(db_session, property_id=prop, period_key=period,
+                             actor="admin", reason="never closed")
+    events = db_session.scalars(select(GlPeriodEvent)).all()
+    assert events == []
+
+
 def test_close_names_the_orphaned_posted_dates(db_session, founding_org, seed_six_pdfs):
     """A day posted, then emptied by a re-transform: the ledger still says
     posted, but no fact remains to justify it. Close must name it in the

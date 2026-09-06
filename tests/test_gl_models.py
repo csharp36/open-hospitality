@@ -61,3 +61,8 @@ def test_posting_ledger_grain_is_property_date_source():
     assert [c.name for c in uq.columns] == [
         "org_id", "property_id", "business_date", "source_type"
     ]
+
+
+def test_posting_ledger_status_and_entry_are_a_paired_constraint():
+    names = {c.name for c in models.GlPostingLedger.__table__.constraints}
+    assert "ck_gl_posting_ledger_entry_pair" in names
