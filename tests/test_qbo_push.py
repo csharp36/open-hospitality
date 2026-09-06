@@ -20,10 +20,22 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 from typer.testing import CliRunner
 
+from usali import gl_chart, gl_posting
 from usali import qbo_client as qbo_client_module
 from usali import qbo_push
 from usali.cli import app
-from usali.models import QboPushLedger, UsaliFinancialFact
+from usali.models import (
+    Department,
+    Employee,
+    FiscalCalendar,
+    IngestBatch,
+    JournalEntry,
+    PmsDailyFinancialStage,
+    QboPushLedger,
+    Timecard,
+    UsaliFinancialFact,
+    UsaliLaborFact,
+)
 from usali.qbo_client import (
     QboClient,
     QboError,
@@ -39,11 +51,12 @@ from usali.qbo_push import (
     build_journal_entry,
     fact_dates,
     month_bounds,
+    plan_for_push,
     push_day,
     push_month,
     push_ledger_rows,
 )
-from usali.reporting import NoFactsError
+from usali.reporting import SETTLEMENTS_MAJOR, NoFactsError
 
 BASIC_AUTH = {"Authorization": "Basic Y2xpZW50OnNlY3JldA=="}  # client:secret
 REALM = "mock-realm"
@@ -543,6 +556,178 @@ def test_concurrent_posts_on_one_client_refresh_exactly_once(mock_app):
     assert sorted(results.values()) == ["1", "2"]  # both JEs really posted
     assert transport.grants == 1  # one shared lazy refresh, never a raced second grant
     assert len(_stored_jes(mock_app)) == 2
+
+
+# --- journal-first selection (OH-27 Task 10) --------------------------------------
+
+
+def _seed_calendar(session: Session, property_id: str) -> None:
+    """The fiscal-calendar row post_and_record's period resolution requires
+    (fiscal.require_config refuses without one — ADR-010)."""
+    session.add(
+        FiscalCalendar(
+            property_id=property_id,
+            calendar_type="calendar_month",
+            fiscal_year_start_month=1,
+            week_start_weekday=None,
+        )
+    )
+    session.flush()
+
+
+def _seed_labor(session: Session, property_id: str, day: date, dept_costs: dict[str, str]) -> None:
+    """Minimal labor world for the payroll_accrual source (the
+    tests/test_gl_posting.py shape): one employee, one timecard, one
+    department per name, one UsaliLaborFact per department. Written on the
+    owner session, so the composite (org_id, ...) FKs are satisfied by the
+    org-1 default."""
+    emp = Employee(full_name="Payroll Push Worker", pay_type="hourly")
+    session.add(emp)
+    session.flush()
+    card = Timecard(employee_id=emp.employee_id, period_start=day, period_end=day)
+    session.add(card)
+    session.flush()
+    for name, cost in dept_costs.items():
+        dept = Department(property_id=property_id, name=name)
+        session.add(dept)
+        session.flush()
+        session.add(
+            UsaliLaborFact(
+                property_id=property_id,
+                business_date=day,
+                department_id=dept.department_id,
+                hours=Decimal("8.00"),
+                ot_hours=Decimal("0.00"),
+                est_cost=Decimal(cost),
+                timecard_id=card.timecard_id,
+            )
+        )
+    session.flush()
+
+
+def _post(session: Session, property_id: str, day: date, source_type: str) -> int:
+    out = gl_posting.post_and_record(
+        session,
+        property_id=property_id,
+        business_date=day,
+        source_type=source_type,
+        actor="test",
+    )
+    assert out.status == "posted", out.message
+    assert out.entry_id is not None
+    return out.entry_id
+
+
+def test_the_journal_built_body_equals_the_fact_built_body(
+    db_session, founding_org, seed_six_pdfs
+):
+    """D-OH27.10's proof that re-pointing changes plumbing, not books: for
+    the same facts, the Intuit body built from the posted journal entry is
+    line-for-line the body the fact path produced."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    _seed_calendar(db_session, "HISJ")
+    legacy_plan = gl_posting.build_pms_daily_plan(db_session, "HISJ", DAY)
+    entry_id = _post(db_session, "HISJ", DAY, "pms_daily")
+    entry = db_session.get(JournalEntry, entry_id)
+    assert qbo_push.journal_entry_body(
+        gl_posting.plan_of_entry(db_session, entry)
+    ) == qbo_push.journal_entry_body(legacy_plan)
+    # And push_day's own selection picks that journal-built plan: same hash,
+    # so the push ledger's idempotency comparisons are unchanged by the move.
+    selected = plan_for_push(db_session, property_id="HISJ", business_date=DAY)
+    assert selected.request_hash == legacy_plan.request_hash
+
+
+def test_payroll_accrual_entries_are_not_pushed(
+    db_session, founding_org, seed_six_pdfs, mock_app, qbo
+):
+    """D-OH27.10: owners' QBO books get exactly what they got before.
+    push_day must select ONLY the pms_daily entry for the grain, even when a
+    payroll_accrual entry stands posted on the very same (property, date)."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    _seed_calendar(db_session, "HISJ")
+    _seed_labor(db_session, "HISJ", DAY, {"Front Desk": "1200.50"})
+    pms_entry_id = _post(db_session, "HISJ", DAY, "pms_daily")
+    accrual_entry_id = _post(db_session, "HISJ", DAY, "payroll_accrual")
+    assert accrual_entry_id != pms_entry_id
+
+    # The body push_day WOULD build — the selection, before any client call:
+    # no line from the accrual entry. Template roles: labor_wages_expense on
+    # 5000, accrued_payroll on 2200 (the accounts the accrual entry posts to).
+    plan = plan_for_push(db_session, property_id="HISJ", business_date=DAY)
+    body = qbo_push.journal_entry_body(plan)
+    assert all("Accrued payroll" not in li["Description"] for li in body["Line"])
+    accounts = {
+        li["JournalEntryLineDetail"]["AccountRef"]["value"] for li in body["Line"]
+    }
+    assert accounts.isdisjoint({"2200", "5000"})
+
+    # And the real push stores exactly that body's lines — nothing accrual.
+    result = push_day(db_session, qbo, property_id="HISJ", business_date=DAY)
+    assert result.status == "pushed"
+    stored = _stored_jes(mock_app)
+    assert len(stored) == 1
+    stored_accounts = {
+        li["JournalEntryLineDetail"]["AccountRef"]["value"] for li in stored[0]["Line"]
+    }
+    assert stored_accounts == accounts
+
+
+def test_request_hash_literal_is_pinned(db_session, founding_org):
+    """Pins the canonical hash construction to a literal, across refactors.
+
+    QboPushLedger idempotency and Intuit requestid replay both depend on the
+    exact `request_hash` construction (`gl_posting._finish_plan`): if this
+    test breaks, every already-pushed ledger row will misread as changed
+    books (`stale`) on the next push, and Intuit's requestid replay window
+    stops recognizing re-sends. The literal was computed ONCE, while writing
+    this test, from the plan this fixed synthetic fact set builds — property
+    HASHPIN, revenue +100.0000 on 4000, settlement -40.0000 on 1000, so the
+    guest-ledger balancing line is a 60.0000 debit on 1210 — whose canonical
+    string is:
+
+        HASHPIN|2026-07-07
+        1000|Debit|40.0000
+        1210|Debit|60.0000
+        4000|Credit|100.0000
+
+    Change the literal only for a deliberate, migration-planned hash change.
+    """
+    gl_chart.seed_chart(db_session, org_id=1)
+    batch = IngestBatch(
+        pms_source="OPERA", report_type="trial_balance",
+        source_file="hashpin.pdf", file_hash="0" * 64,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    specs = [
+        # (usali_schedule_id, major category, GL code, amount)
+        (1, "Rooms", "4000", Decimal("100.0000")),
+        (None, SETTLEMENTS_MAJOR, "1000", Decimal("-40.0000")),
+    ]
+    for i, (schedule_id, major, code, amount) in enumerate(specs):
+        stage = PmsDailyFinancialStage(
+            property_id="HASHPIN", pms_source="OPERA", report_type="trial_balance",
+            business_date=DAY, pms_trx_code=f"90{i}", raw_amount=amount,
+            source_file="hashpin.pdf", ingest_batch_id=batch.batch_id,
+            row_hash=str(i) * 64,
+        )
+        db_session.add(stage)
+        db_session.flush()
+        db_session.add(
+            UsaliFinancialFact(
+                property_id="HASHPIN", pms_source="OPERA", business_date=DAY,
+                usali_edition=12, usali_schedule_id=schedule_id,
+                usali_major_category=major, usali_sub_category="Pin",
+                usali_line_item="Pin", amount=amount, gl_account_code=code,
+                ingest_batch_id=batch.batch_id, stage_id=stage.stage_id,
+            )
+        )
+    db_session.flush()
+    plan = gl_posting.build_pms_daily_plan(db_session, "HASHPIN", DAY)
+    assert plan.request_hash == (
+        "d815ad19a3f4df48c3bbbf4d81b74860a14571f85734500deb141b30a24ef9ed"
+    )
 
 
 # --- push_month -------------------------------------------------------------------

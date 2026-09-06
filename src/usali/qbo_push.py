@@ -3,10 +3,14 @@
 The journal-entry builder that used to live here moved to
 `usali.gl_posting.build_pms_daily_plan` in OH-27 Task 6 (economics
 unchanged — the bucketing, balancing, and canonical `request_hash` are
-documented there). `build_journal_entry` below delegates to it and keeps
-this module's documented contract: `NoFactsError` on an empty day, and —
-until Task 10 retires the fact path — the `mapping/qbo_accounts.yaml`
-chart as a fallback when the org has no `gl_account` rows.
+documented there). Since Task 10, `push_day` exports the POSTED JOURNAL
+when the grain has a current `pms_daily` entry (`plan_for_push` below);
+`build_journal_entry` — the fact path, with the `mapping/qbo_accounts.yaml`
+chart when the org has no active `gl_account` rows — survives as the
+fallback for orgs that have not seeded a chart (GL off loses nothing it
+had). The fact path retires only when the push requires a seeded chart,
+which no OH-27 task does. Its contract is unchanged: `NoFactsError` on an
+empty day.
 
 `request_hash`'s 50-char prefix doubles as Intuit's `requestid`
 idempotency key, and `qbo_push_ledger` records it per (property,
@@ -36,7 +40,13 @@ from usali.gl_posting import (  # noqa: F401  (re-exports)
     JePlan,
     UnmappedGlError,
 )
-from usali.models import GlAccount, QboPushLedger, UsaliFinancialFact
+from usali.models import (
+    GlAccount,
+    GlPostingLedger,
+    JournalEntry,
+    QboPushLedger,
+    UsaliFinancialFact,
+)
 from usali.qbo_client import QboClient, QboError, QboUnreachable
 # month_bounds lives in usali.reporting (the CPA pack shares it); re-exported here
 # so existing `qbo_push.month_bounds` callers keep working.
@@ -81,12 +91,21 @@ def build_journal_entry(
     account code, and `ValueError` when a fact's GL code (or the balancing
     account) is missing from the chart of accounts.
 
-    Transitional shim (removed in Task 10): when the org has no `gl_account`
-    rows yet, account names fall back to `accounts_path` (the pre-OH27 YAML
-    chart) and the balancing line to `_BALANCING_ACCOUNT` — so pushes for
-    orgs that never seeded a DB chart keep behaving exactly as before.
+    YAML fallback: when the org has no ACTIVE `gl_account` rows, account
+    names come from `accounts_path` (the pre-OH27 YAML chart) and the
+    balancing line posts to `_BALANCING_ACCOUNT` — pushes for orgs that
+    never seeded a DB chart keep behaving exactly as before OH-27. This is
+    the fact path's surviving role after Task 10 (`plan_for_push` prefers
+    the posted journal); it retires only when the push requires a seeded
+    chart, which no OH-27 task does. The probe filters on `is_active`, the
+    same "is GL on" question `gl_posting.post_and_record` asks.
     """
-    if session.scalar(select(GlAccount).limit(1)) is None:
+    if (
+        session.scalar(
+            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
+        )
+        is None
+    ):
         plan = gl_posting.build_pms_daily_plan(
             session,
             property_id,
@@ -127,10 +146,66 @@ def journal_entry_body(plan: JePlan) -> dict[str, Any]:
     }
 
 
+def plan_for_push(session: Session, *, property_id: str, business_date: date) -> JePlan:
+    """Select the plan `push_day` exports: the posted journal, facts as fallback.
+
+    The current entry for the (property, date, pms_daily) grain is the one
+    the `gl_posting_ledger` row names in `entry_id` — never a latest-entry
+    heuristic, because after a reverse-and-repost the newest entry is the
+    correction only BECAUSE the ledger row says so. With such a row (and an
+    active chart), the plan is rebuilt from that entry's stored lines
+    (`gl_posting.plan_of_entry`, which re-derives `request_hash` through the
+    same `_finish_plan` tail every builder uses — so this ledger's
+    idempotency and staleness comparisons are against the same hash space
+    as before).
+
+    The fact path (`build_journal_entry`) is the fallback when:
+
+    - the org has no active chart — GL is off, and the push keeps behaving
+      exactly as it did before OH-27; or
+    - no ledger row names a current entry. That covers grains never posted
+      AND reversed ones: a reversed grain has NO ledger row
+      (`gl_posting.post_and_record`'s plan-is-None branch deletes it;
+      `test_an_emptied_grain_reverses_its_entry` pins that), so it falls
+      back here — and raises `NoFactsError` when the facts really are gone,
+      the honest outcome, rather than pushing an entry the journal has
+      already reversed.
+    """
+    has_chart = (
+        session.scalar(
+            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
+        )
+        is not None
+    )
+    entry_id = (
+        session.scalar(
+            select(GlPostingLedger.entry_id).where(
+                GlPostingLedger.property_id == property_id,
+                GlPostingLedger.business_date == business_date,
+                GlPostingLedger.source_type == "pms_daily",
+                GlPostingLedger.entry_id.is_not(None),
+            )
+        )
+        if has_chart
+        else None
+    )
+    if entry_id is None:
+        return build_journal_entry(
+            session, property_id=property_id, business_date=business_date
+        )
+    return gl_posting.plan_of_entry(session, session.get(JournalEntry, entry_id))
+
+
 def push_day(
     session: Session, client: QboClient, *, property_id: str, business_date: date
 ) -> PushResult:
     """Push one property+date JE idempotently, recording the outcome.
+
+    The plan pushed is `plan_for_push`'s selection: the posted journal entry
+    when the grain has a current one and the org an active chart, the facts
+    otherwise. Only `pms_daily` entries are exported — `payroll_accrual`
+    entries stay internal, so owners' QBO books get exactly what they got
+    before OH-27.
 
     Consults `qbo_push_ledger` first: an identical already-pushed JE is a
     no-op (`already-pushed`); a pushed JE whose facts have since changed is
@@ -144,7 +219,7 @@ def push_day(
     attempts derive the same request_hash, so Intuit's requestid replay
     guarantees at most one journal entry exists.
     """
-    plan = build_journal_entry(session, property_id=property_id, business_date=business_date)
+    plan = plan_for_push(session, property_id=property_id, business_date=business_date)
     row = session.scalar(
         select(QboPushLedger).where(
             QboPushLedger.property_id == property_id,

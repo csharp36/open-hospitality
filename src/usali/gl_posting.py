@@ -163,7 +163,7 @@ def _group_by_gl(facts: list[UsaliFinancialFact]) -> dict[str, Decimal]:
 
 def _finish_plan(property_id: str, business_date: date, lines: list[JeLine]) -> JePlan:
     """Totals + canonical hash, shared by every builder and by
-    `_plan_of_entry`'s reconstruction — one hash derivation, everywhere."""
+    `plan_of_entry`'s reconstruction — one hash derivation, everywhere."""
     total_credits = sum(
         (line.amount for line in lines if line.posting == "Credit"), Decimal("0")
     )
@@ -213,10 +213,13 @@ def build_pms_daily_plan(
     `ChartAccountMissingError` when a fact's GL code is missing from the
     chart.
 
-    `account_names` + `balancing_account` are a transitional shim for
-    `qbo_push.build_journal_entry`'s YAML chart (removed in Task 10):
-    when given, names come from that mapping and the balancing line posts
-    to `balancing_account` instead of the role lookup.
+    `account_names` + `balancing_account` are the YAML-chart shim for
+    `qbo_push.build_journal_entry`'s fact path: when given, names come from
+    that mapping and the balancing line posts to `balancing_account` instead
+    of the role lookup. This is the surviving fallback for orgs that have
+    not seeded a DB chart (the QBO push loses nothing it had before OH-27);
+    it retires only when the push requires a seeded chart, which no task in
+    this plan does.
     """
     facts = session.scalars(
         select(UsaliFinancialFact).where(
@@ -454,9 +457,10 @@ def _write_entry(
     return entry
 
 
-def _plan_of_entry(session: "Session", entry: JournalEntry) -> JePlan:
+def plan_of_entry(session: "Session", entry: JournalEntry) -> JePlan:
     """Rebuild a JePlan from a posted entry's lines — the reversal input,
-    and (Task 10) the QBO export input. The hash is re-derived through
+    and the QBO export input (`qbo_push.plan_for_push`'s journal path).
+    The hash is re-derived through
     `_finish_plan` — the same tail every builder uses — from the stored
     lines (g1a0glcore's REVOKE is where line immutability is enforced)."""
     rows = session.scalars(
@@ -566,7 +570,7 @@ def post_and_record(
             prior = session.get(JournalEntry, row.entry_id)
             reversal = _write_entry(
                 session,
-                _plan_of_entry(session, prior),
+                plan_of_entry(session, prior),
                 source_type=source_type,
                 actor=actor,
                 reversal_of=prior.entry_id,
@@ -587,7 +591,7 @@ def post_and_record(
             prior = session.get(JournalEntry, row.entry_id)
             _write_entry(
                 session,
-                _plan_of_entry(session, prior),
+                plan_of_entry(session, prior),
                 source_type=source_type,
                 actor=actor,
                 reversal_of=prior.entry_id,
