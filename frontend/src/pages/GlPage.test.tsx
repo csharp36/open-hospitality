@@ -277,7 +277,7 @@ describe('GlPage period detail', () => {
     // a bare "3 days unposted" would imply the payroll side was checked.
     expect(within(card).getByText('3 PMS days unposted')).toBeInTheDocument()
     expect(within(card).getByText(/payroll accruals are not checked here/i)).toBeInTheDocument()
-    expect(within(card).getByText('1 posted entry lost its facts')).toBeInTheDocument()
+    expect(within(card).getByText('1 posted entry lost its facts (orphaned)')).toBeInTheDocument()
     // The dates themselves, not just counts.
     expect(within(card).getByText(/2026-07-02, 2026-07-03, 2026-07-05/)).toBeInTheDocument()
     expect(within(card).getByText(/2026-07-04/)).toBeInTheDocument()
@@ -304,7 +304,7 @@ describe('GlPage period detail', () => {
     expect(screen.queryByRole('region', { name: 'Period 2025-P01' })).not.toBeInTheDocument()
   })
 
-  it('close: confirm names the gaps, then the card shows Closed from the refetch', async () => {
+  it('close: the confirm gets focus and names the gaps, the card shows Closed, and the periods query refetches', async () => {
     const unposted = ['2026-07-02', '2026-07-03', '2026-07-05']
     vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
     vi.mocked(getGlPeriods)
@@ -327,7 +327,11 @@ describe('GlPage period detail', () => {
     expect(
       within(card).getByText(/close 2026-P07 with 3 unposted PMS days\?/i),
     ).toBeInTheDocument()
-    fireEvent.click(within(card).getByRole('button', { name: 'Yes, close' }))
+    // Focus follows the swap: the button just pressed is gone, so the
+    // confirm inherits it.
+    const yesClose = within(card).getByRole('button', { name: 'Yes, close' })
+    await waitFor(() => expect(yesClose).toHaveFocus())
+    fireEvent.click(yesClose)
 
     await waitFor(() => expect(closeGlPeriod).toHaveBeenCalledWith('HISJ', '2026-P07'))
     expect(await within(card).findByText('Closed')).toBeInTheDocument()
@@ -359,6 +363,11 @@ describe('GlPage period detail', () => {
     // No close on a closed period.
     expect(within(card).queryByRole('button', { name: 'Close 2026-P07' })).not.toBeInTheDocument()
     const reopen = within(card).getByRole('button', { name: 'Reopen 2026-P07' })
+    expect(reopen).toBeDisabled()
+    // Whitespace is not a reason.
+    fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
+      target: { value: '   ' },
+    })
     expect(reopen).toBeDisabled()
     fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
       target: { value: 'auditor request' },

@@ -4,7 +4,7 @@
 // org_admin close/reopen controls — above its trial balance. All fetching
 // lives here (TanStack Query keyed on property + search params).
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   keepPreviousData,
   skipToken,
@@ -275,6 +275,13 @@ function PeriodDetailCard({
   const queryClient = useQueryClient()
   const [confirming, setConfirming] = useState(false)
   const [reason, setReason] = useState('')
+  // Modal-lite a11y: focus lands on the confirm button when the button row
+  // swaps to the confirm pair (the JournalDrillPanel focus-on-open shape) —
+  // the click target the operator just pressed is gone from under them.
+  const confirmRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => {
+    if (confirming) confirmRef.current?.focus()
+  }, [confirming])
 
   // Both verbs change the period's stored state, and the rail chips render
   // from the same query — one invalidation moves the chip and this card
@@ -283,8 +290,25 @@ function PeriodDetailCard({
     queryClient.invalidateQueries({ queryKey: ['gl-periods', property, fiscalYear] })
   const close = useMutation({
     mutationFn: () => closeGlPeriod(property, p.period_key),
-    onSuccess: () => {
+    onSuccess: (resp) => {
       setConfirming(false)
+      // The close response is the freshest picture of state and gaps, so it
+      // is written straight into the periods cache — the card and the rail
+      // chip re-render from it at once, and the invalidation's refetch can
+      // only ever replace it with something newer. Holding the response in
+      // mutation state instead would shadow every later refetch.
+      queryClient.setQueryData<GlPeriod[]>(['gl-periods', property, fiscalYear], (old) =>
+        old?.map((q) =>
+          q.period_key === p.period_key
+            ? {
+                ...q,
+                state: resp.state,
+                unposted_dates: resp.unposted_dates,
+                orphaned_dates: resp.orphaned_dates,
+              }
+            : q,
+        ),
+      )
       void invalidatePeriods()
     },
   })
@@ -292,18 +316,11 @@ function PeriodDetailCard({
     mutationFn: () => reopenGlPeriod(property, p.period_key, reason),
     onSuccess: () => {
       setReason('')
-      // The close response stops describing the period the moment it reopens;
-      // dropping it here lets the props below take over again.
-      close.reset()
       void invalidatePeriods()
     },
   })
 
-  // The close response is the freshest picture of state and gaps — render it
-  // while the invalidated periods query refetches.
-  const state = close.data?.state ?? p.state
-  const unposted = close.data?.unposted_dates ?? p.unposted_dates
-  const orphaned = close.data?.orphaned_dates ?? p.orphaned_dates
+  const { state, unposted_dates: unposted, orphaned_dates: orphaned } = p
 
   const gapPhrases: string[] = []
   if (unposted.length > 0)
@@ -358,9 +375,13 @@ function PeriodDetailCard({
 
       {orphaned.length > 0 && (
         <div className="space-y-1">
+          {/* "(orphaned)" is introduced here, on the list itself, so the
+              close confirm's "{n} orphaned entries" is a term the operator
+              has already met — never first encountered inside a destructive
+              confirm. */}
           <p className="text-sm font-medium text-ink">
             {orphaned.length} posted entr{orphaned.length === 1 ? 'y lost its' : 'ies lost their'}{' '}
-            facts
+            facts (orphaned)
           </p>
           <p className="text-xs tabular-nums text-ink-muted">{orphaned.join(', ')}</p>
           <p className="text-xs text-ink-muted">
@@ -376,6 +397,7 @@ function PeriodDetailCard({
             <p className="text-sm text-ink">{confirmCopy}</p>
             <div className="flex gap-2">
               <button
+                ref={confirmRef}
                 type="button"
                 className={controlClass}
                 disabled={close.isPending}
@@ -387,7 +409,12 @@ function PeriodDetailCard({
                 type="button"
                 className={controlClass}
                 disabled={close.isPending}
-                onClick={() => setConfirming(false)}
+                onClick={() => {
+                  // A failed attempt's red line must not outlive the confirm
+                  // it belonged to.
+                  close.reset()
+                  setConfirming(false)
+                }}
               >
                 Cancel
               </button>
