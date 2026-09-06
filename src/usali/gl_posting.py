@@ -585,3 +585,89 @@ def post_and_record(
         fiscal.FiscalCalendarNotConfigured,
     ) as exc:
         return _fail(str(exc))
+
+
+def period_key_for(session: "Session", property_id: str, day: date) -> str:
+    """The fiscal period key containing `day`, for use by callers (close/
+    reopen, the API) that need it outside `post_and_record`'s own lookup."""
+    cfg = fiscal.require_config(fiscal.config_for(session, property_id))
+    return fiscal.period_containing(cfg, day)
+
+
+@dataclass(frozen=True)
+class CloseGaps:
+    """The two directions a close can be out of sync with the facts
+    (design D-OH27.7, extended): `unposted` names fact dates in the period
+    with no current posted `pms_daily` entry (nothing was posted, or the
+    standing entry failed); `orphaned` names dates that DO have a current
+    posted entry but no remaining facts — a re-transform that emptied the
+    day after posting. `post_and_record` returns `skipped` on a None plan,
+    so the ledger row for an orphaned date still reads "posted" and would
+    otherwise close silently."""
+
+    unposted: list[date]
+    orphaned: list[date]
+
+
+def close_period(
+    session: "Session", *, property_id: str, period_key: str, actor: str
+) -> CloseGaps:
+    """Append a close event; return the period's gaps in both directions
+    (see `CloseGaps`), so closing over either kind of gap is a visible
+    choice. Idempotent: closing an already-closed period is a no-op that
+    still returns the gaps as they stand today."""
+    cfg = fiscal.require_config(fiscal.config_for(session, property_id))
+    start, end = fiscal.resolve_period(cfg, period_key)
+    fact_dates = set(
+        session.scalars(
+            select(UsaliFinancialFact.business_date)
+            .where(
+                UsaliFinancialFact.property_id == property_id,
+                UsaliFinancialFact.business_date >= start,
+                UsaliFinancialFact.business_date <= end,
+            )
+            .distinct()
+        )
+    )
+    ledger_rows = session.scalars(
+        select(GlPostingLedger).where(
+            GlPostingLedger.property_id == property_id,
+            GlPostingLedger.source_type == "pms_daily",
+            GlPostingLedger.business_date >= start,
+            GlPostingLedger.business_date <= end,
+        )
+    ).all()
+    posted_dates = {row.business_date for row in ledger_rows if row.status == "posted"}
+    entry_dates = {row.business_date for row in ledger_rows if row.entry_id is not None}
+    gaps = CloseGaps(
+        unposted=sorted(fact_dates - posted_dates),
+        orphaned=sorted(entry_dates - fact_dates),
+    )
+    if period_state(session, property_id, period_key) != "closed":
+        session.add(
+            GlPeriodEvent(
+                property_id=property_id, period_key=period_key,
+                event="close", actor_subject=actor,
+            )
+        )
+        session.flush()
+    return gaps
+
+
+def reopen_period(
+    session: "Session", *, property_id: str, period_key: str, actor: str, reason: str
+) -> None:
+    """Append a reopen event; requires a non-empty reason (the audit trail
+    IS this table, per GlPeriodEvent's docstring). Idempotent: reopening an
+    already-open period is a no-op, like the D-B4.5 PUT shape."""
+    if not reason or not reason.strip():
+        raise ValueError("reopening a closed period requires a reason")
+    if period_state(session, property_id, period_key) != "closed":
+        return
+    session.add(
+        GlPeriodEvent(
+            property_id=property_id, period_key=period_key,
+            event="reopen", actor_subject=actor, reason=reason.strip(),
+        )
+    )
+    session.flush()
