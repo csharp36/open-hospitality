@@ -297,8 +297,9 @@ class QboPushLedger(OrgScoped, Base):
     it doubles as the Intuit `requestid` (truncated to 50 chars) so retries of
     the same content replay instead of double-posting. Status lifecycle:
     `pushed` (JE exists in QBO), `failed` (POST attempt rejected — retryable),
-    `stale` (facts changed AFTER a successful push; the posted JE no longer
-    matches the data and needs manual correction — re-pushing is refused).
+    `stale` (the pushed JE no longer matches the current plan — facts changed,
+    or the chart did, after a successful push; needs manual correction —
+    re-pushing is refused).
     """
 
     __tablename__ = "qbo_push_ledger"

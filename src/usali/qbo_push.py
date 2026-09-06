@@ -15,9 +15,9 @@ empty day.
 `request_hash`'s 50-char prefix doubles as Intuit's `requestid`
 idempotency key, and `qbo_push_ledger` records it per (property,
 business_date) so `push_day` can distinguish "already pushed this exact
-JE" (no-op) from "facts changed after pushing" (mark stale, refuse — the
-posted JE needs manual correction first; automated void/amend is out of
-scope for P8).
+JE" (no-op) from "the pushed JE no longer matches the current plan"
+(mark stale, refuse — the posted JE needs manual correction first;
+automated void/amend is out of scope for P8).
 
 Writes: `push_day` commits the session itself — each date's ledger outcome
 must survive later dates failing (`push_month` outcomes are independent).
@@ -41,7 +41,6 @@ from usali.gl_posting import (  # noqa: F401  (re-exports)
     UnmappedGlError,
 )
 from usali.models import (
-    GlAccount,
     GlPostingLedger,
     JournalEntry,
     QboPushLedger,
@@ -97,15 +96,10 @@ def build_journal_entry(
     never seeded a DB chart keep behaving exactly as before OH-27. This is
     the fact path's surviving role after Task 10 (`plan_for_push` prefers
     the posted journal); it retires only when the push requires a seeded
-    chart, which no OH-27 task does. The probe filters on `is_active`, the
+    chart, which no OH-27 task does. `gl_posting.has_active_chart` is the
     same "is GL on" question `gl_posting.post_and_record` asks.
     """
-    if (
-        session.scalar(
-            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
-        )
-        is None
-    ):
+    if not gl_posting.has_active_chart(session):
         plan = gl_posting.build_pms_daily_plan(
             session,
             property_id,
@@ -171,23 +165,17 @@ def plan_for_push(session: Session, *, property_id: str, business_date: date) ->
       the honest outcome, rather than pushing an entry the journal has
       already reversed.
     """
-    has_chart = (
-        session.scalar(
-            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
+    if not gl_posting.has_active_chart(session):
+        return build_journal_entry(
+            session, property_id=property_id, business_date=business_date
         )
-        is not None
-    )
-    entry_id = (
-        session.scalar(
-            select(GlPostingLedger.entry_id).where(
-                GlPostingLedger.property_id == property_id,
-                GlPostingLedger.business_date == business_date,
-                GlPostingLedger.source_type == "pms_daily",
-                GlPostingLedger.entry_id.is_not(None),
-            )
+    entry_id = session.scalar(
+        select(GlPostingLedger.entry_id).where(
+            GlPostingLedger.property_id == property_id,
+            GlPostingLedger.business_date == business_date,
+            GlPostingLedger.source_type == "pms_daily",
+            GlPostingLedger.entry_id.is_not(None),
         )
-        if has_chart
-        else None
     )
     if entry_id is None:
         return build_journal_entry(
@@ -231,8 +219,9 @@ def push_day(
             return PushResult(status="already-pushed", qbo_je_id=row.qbo_je_id, message=None)
         row.status = "stale"
         row.message = (
-            f"facts changed after push: pushed hash {row.request_hash[:12]} != "
-            f"current {plan.request_hash[:12]}; correct the QBO JE manually"
+            f"the pushed JE no longer matches the current plan: pushed hash "
+            f"{row.request_hash[:12]} != current {plan.request_hash[:12]}; "
+            f"correct the QBO JE manually"
         )[:500]
         session.commit()
         return PushResult(status="stale", qbo_je_id=row.qbo_je_id, message=row.message)

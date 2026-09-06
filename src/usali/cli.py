@@ -20,7 +20,7 @@ from usali.mapping.draft_gen import generate_draft
 from usali.mapping.loader import load_mappings
 from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
-from usali.models import GlAccount, Timecard
+from usali.models import Timecard
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from usali.notifications import Notifier, notifier_from_settings
 from usali.photo_store import LocalPhotoStore
@@ -143,9 +143,7 @@ def gl_post_cmd(
         # Same gate post_and_record applies per call, checked once up front
         # so a pre-seed backfill announces itself instead of silently
         # skipping every day.
-        if s.scalar(
-            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
-        ) is None:
+        if not gl_posting.has_active_chart(s):
             typer.echo(
                 "WARNING: no chart of accounts — every post will be skipped; "
                 "run gl-seed-chart first",
@@ -653,6 +651,9 @@ def qbo_push_cmd(
                 assert month is not None
                 dates = qbo_push.fact_dates(s, property_id=property_id, month=month)
             if dry_run:
+                # Previews build from FACTS; the push exports the journal
+                # (plan_for_push). They agree unless facts changed without a
+                # re-post — see plan_for_push's docstring.
                 for d in dates:
                     plan = qbo_push.build_journal_entry(
                         s, property_id=property_id, business_date=d

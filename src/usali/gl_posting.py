@@ -129,6 +129,19 @@ class JePlan:
     request_hash: str
 
 
+def has_active_chart(session: "Session") -> bool:
+    """THE definition of "GL is on" for an org: at least one active
+    gl_account row visible to this session. Every caller asking the
+    question must use this, not its own query — four copies had already
+    grown by the time it was extracted."""
+    return (
+        session.scalar(
+            select(GlAccount.account_code).where(GlAccount.is_active.is_(True)).limit(1)
+        )
+        is not None
+    )
+
+
 def chart(session: "Session") -> dict[str, GlAccount]:
     """Active chart rows by code, for whatever org the session can see
     (the ORM/RLS wall scopes an app session; owner sessions see all)."""
@@ -512,12 +525,7 @@ def post_and_record(
     unposted; `entry_id` names the reversal entry), "skipped" (no chart, or
     no facts and no standing entry), "failed" (a refusal, recorded on the
     ledger row)."""
-    if (
-        session.scalar(
-            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
-        )
-        is None
-    ):
+    if not has_active_chart(session):
         return PostOutcome("skipped", None, "no chart of accounts; GL is off")
 
     source = _SOURCES[source_type]

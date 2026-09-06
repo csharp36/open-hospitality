@@ -277,6 +277,63 @@ def test_request_hash_stable_then_sensitive_to_amounts(db_session, seed_six_pdfs
     assert third.total_credits == Decimal("12440.66")
 
 
+def test_request_hash_literal_is_pinned(db_session, founding_org):
+    """Pins the canonical hash construction to a literal, across refactors.
+
+    QboPushLedger idempotency and Intuit requestid replay both depend on the
+    exact `request_hash` construction (`gl_posting._finish_plan`): if this
+    test breaks, every already-pushed ledger row will misread as changed
+    books (`stale`) on the next push, and Intuit's requestid replay window
+    stops recognizing re-sends. The literal was computed ONCE, while writing
+    this test, from the plan this fixed synthetic fact set builds — property
+    HASHPIN, revenue +100.0000 on 4000, settlement -40.0000 on 1000, so the
+    guest-ledger balancing line is a 60.0000 debit on 1210 — whose canonical
+    string is:
+
+        HASHPIN|2026-07-07
+        1000|Debit|40.0000
+        1210|Debit|60.0000
+        4000|Credit|100.0000
+
+    Change the literal only for a deliberate, migration-planned hash change.
+    """
+    gl_chart.seed_chart(db_session, org_id=1)
+    batch = IngestBatch(
+        pms_source="OPERA", report_type="trial_balance",
+        source_file="hashpin.pdf", file_hash="0" * 64,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    specs = [
+        # (usali_schedule_id, major category, GL code, amount)
+        (1, "Rooms", "4000", Decimal("100.0000")),
+        (None, SETTLEMENTS_MAJOR, "1000", Decimal("-40.0000")),
+    ]
+    for i, (schedule_id, major, code, amount) in enumerate(specs):
+        stage = PmsDailyFinancialStage(
+            property_id="HASHPIN", pms_source="OPERA", report_type="trial_balance",
+            business_date=DAY, pms_trx_code=f"90{i}", raw_amount=amount,
+            source_file="hashpin.pdf", ingest_batch_id=batch.batch_id,
+            row_hash=str(i) * 64,
+        )
+        db_session.add(stage)
+        db_session.flush()
+        db_session.add(
+            UsaliFinancialFact(
+                property_id="HASHPIN", pms_source="OPERA", business_date=DAY,
+                usali_edition=12, usali_schedule_id=schedule_id,
+                usali_major_category=major, usali_sub_category="Pin",
+                usali_line_item="Pin", amount=amount, gl_account_code=code,
+                ingest_batch_id=batch.batch_id, stage_id=stage.stage_id,
+            )
+        )
+    db_session.flush()
+    plan = gl_posting.build_pms_daily_plan(db_session, "HASHPIN", DAY)
+    assert plan.request_hash == (
+        "d815ad19a3f4df48c3bbbf4d81b74860a14571f85734500deb141b30a24ef9ed"
+    )
+
+
 # --- push_day lifecycle -----------------------------------------------------------
 
 
@@ -302,7 +359,7 @@ def test_push_day_lifecycle_pushed_already_pushed_stale(
     _bump_fact(db_session, "HISJ", "Parking", Decimal("1.00"))
     stale = push_day(db_session, qbo, property_id="HISJ", business_date=DAY)
     assert stale.status == "stale" and stale.qbo_je_id == "1"
-    assert stale.message is not None and "changed" in stale.message
+    assert stale.message is not None and "no longer matches" in stale.message
     row = _ledger_row(db_session, "HISJ")
     assert row.status == "stale" and row.request_hash == pushed_hash
     assert len(_stored_jes(mock_app)) == 1
@@ -673,61 +730,9 @@ def test_payroll_accrual_entries_are_not_pushed(
     assert stored_accounts == accounts
 
 
-def test_request_hash_literal_is_pinned(db_session, founding_org):
-    """Pins the canonical hash construction to a literal, across refactors.
-
-    QboPushLedger idempotency and Intuit requestid replay both depend on the
-    exact `request_hash` construction (`gl_posting._finish_plan`): if this
-    test breaks, every already-pushed ledger row will misread as changed
-    books (`stale`) on the next push, and Intuit's requestid replay window
-    stops recognizing re-sends. The literal was computed ONCE, while writing
-    this test, from the plan this fixed synthetic fact set builds — property
-    HASHPIN, revenue +100.0000 on 4000, settlement -40.0000 on 1000, so the
-    guest-ledger balancing line is a 60.0000 debit on 1210 — whose canonical
-    string is:
-
-        HASHPIN|2026-07-07
-        1000|Debit|40.0000
-        1210|Debit|60.0000
-        4000|Credit|100.0000
-
-    Change the literal only for a deliberate, migration-planned hash change.
-    """
-    gl_chart.seed_chart(db_session, org_id=1)
-    batch = IngestBatch(
-        pms_source="OPERA", report_type="trial_balance",
-        source_file="hashpin.pdf", file_hash="0" * 64,
-    )
-    db_session.add(batch)
-    db_session.flush()
-    specs = [
-        # (usali_schedule_id, major category, GL code, amount)
-        (1, "Rooms", "4000", Decimal("100.0000")),
-        (None, SETTLEMENTS_MAJOR, "1000", Decimal("-40.0000")),
-    ]
-    for i, (schedule_id, major, code, amount) in enumerate(specs):
-        stage = PmsDailyFinancialStage(
-            property_id="HASHPIN", pms_source="OPERA", report_type="trial_balance",
-            business_date=DAY, pms_trx_code=f"90{i}", raw_amount=amount,
-            source_file="hashpin.pdf", ingest_batch_id=batch.batch_id,
-            row_hash=str(i) * 64,
-        )
-        db_session.add(stage)
-        db_session.flush()
-        db_session.add(
-            UsaliFinancialFact(
-                property_id="HASHPIN", pms_source="OPERA", business_date=DAY,
-                usali_edition=12, usali_schedule_id=schedule_id,
-                usali_major_category=major, usali_sub_category="Pin",
-                usali_line_item="Pin", amount=amount, gl_account_code=code,
-                ingest_batch_id=batch.batch_id, stage_id=stage.stage_id,
-            )
-        )
-    db_session.flush()
-    plan = gl_posting.build_pms_daily_plan(db_session, "HASHPIN", DAY)
-    assert plan.request_hash == (
-        "d815ad19a3f4df48c3bbbf4d81b74860a14571f85734500deb141b30a24ef9ed"
-    )
+# The hash space both selection paths share (`plan_for_push`'s journal path
+# and the fact path) is pinned to a literal beside the JE-builder tests, not
+# here — see test_request_hash_literal_is_pinned.
 
 
 # --- push_month -------------------------------------------------------------------
