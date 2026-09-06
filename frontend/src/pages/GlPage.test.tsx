@@ -380,6 +380,23 @@ describe('GlPage period detail', () => {
     )
   })
 
+  it('surfaces a refused reopen inline via its detail', async () => {
+    vi.mocked(getMe).mockResolvedValue(ORG_ADMIN)
+    vi.mocked(getGlPeriods).mockResolvedValue([makeGlPeriod({ state: 'closed' })])
+    vi.mocked(reopenGlPeriod).mockRejectedValue(
+      new ApiError(422, 'reopen refused: period 2026-P07 is already open'),
+    )
+    renderPage('/gl?period=2026-P07')
+    const card = await screen.findByRole('region', { name: 'Period 2026-P07' })
+    fireEvent.change(within(card).getByLabelText('Reason for reopening'), {
+      target: { value: 'auditor request' },
+    })
+    fireEvent.click(within(card).getByRole('button', { name: 'Reopen 2026-P07' }))
+    expect(
+      await within(card).findByText('reopen refused: period 2026-P07 is already open'),
+    ).toBeInTheDocument()
+  })
+
   it('property_gm sees state and gaps but no close/reopen controls', async () => {
     vi.mocked(getMe).mockResolvedValue({ subject: 'u1', username: 'gm', roles: ['property_gm'] })
     vi.mocked(getGlPeriods).mockResolvedValue([OPEN_WITH_GAPS])
