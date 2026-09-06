@@ -7,11 +7,14 @@ import type {
   CoverageReport,
   CpaPack,
   Employee,
+  GlPeriod,
   JePlan,
+  JournalEntry,
   PropertyInfo,
   PushLedgerRow,
   SosReport,
   StagedTxn,
+  TrialBalance,
 } from '../api/types'
 import type { AuthContextValue } from '../auth/authContext'
 
@@ -321,3 +324,106 @@ export const PARKING_TXNS: StagedTxn[] = [
     source_file: 'opera-2026-07-07.pdf',
   },
 ]
+
+// --- General ledger (OH-27) --------------------------------------------------
+// Dates sit inside HISJ_PROPERTY's 2026-07-01..2026-07-07 window so property
+// bounds and GL fixtures agree; amounts are Numeric(15, 4)-scale strings like
+// the SOS fixture above.
+
+export function makeGlPeriod(overrides: Partial<GlPeriod> = {}): GlPeriod {
+  return {
+    period_key: '2026-P07',
+    state: 'open',
+    date_from: '2026-07-01',
+    date_to: '2026-07-31',
+    unposted_dates: [],
+    orphaned_dates: [],
+    ...overrides,
+  }
+}
+
+/** A small balanced chart — cash 1010, guest ledger 1210, revenue 4100,
+ *  wages 6100 — with total debits equal to total credits (12066.3700 each),
+ *  so a test asserting the balanced badge is asserting something honest. */
+export function makeTrialBalance(overrides: Partial<TrialBalance> = {}): TrialBalance {
+  return {
+    property_id: 'HISJ',
+    period_key: '2026-P07',
+    date_from: '2026-07-01',
+    date_to: '2026-07-31',
+    lines: [
+      {
+        account_code: '1010',
+        name: 'Cash - Operating',
+        account_type: 'asset',
+        debits: '500.0000',
+        credits: '1200.0000',
+      },
+      {
+        account_code: '1210',
+        name: 'Guest Ledger',
+        account_type: 'asset',
+        debits: '10366.3700',
+        credits: '0.0000',
+      },
+      {
+        account_code: '4100',
+        name: 'Rooms Revenue',
+        account_type: 'income',
+        debits: '0.0000',
+        credits: '10866.3700',
+      },
+      {
+        account_code: '6100',
+        name: 'Wages - Rooms',
+        account_type: 'expense',
+        debits: '1200.0000',
+        credits: '0.0000',
+      },
+    ],
+    total_debits: '12066.3700',
+    total_credits: '12066.3700',
+    ...overrides,
+  }
+}
+
+/** One pms_daily entry with a PMS-provenance line (txn fields set) and a
+ *  payroll-shaped line (provenance fields null, department memo instead). */
+export function makeJournalEntry(overrides: Partial<JournalEntry> = {}): JournalEntry {
+  return {
+    entry_id: 7,
+    business_date: '2026-07-07',
+    source_type: 'pms_daily',
+    memo: 'Daily posting HISJ 2026-07-07',
+    reversal_of: null,
+    posted_by: 'dev-admin',
+    posted_at: '2026-07-08T02:00:00Z',
+    lines: [
+      {
+        line_id: 71,
+        account_code: '4100',
+        account_name: 'Rooms Revenue',
+        posting: 'Credit',
+        amount: '10456.3700',
+        memo: null,
+        fact_id: 9001,
+        pms_trx_code: '1000',
+        pms_trx_desc: 'ROOM REVENUE',
+        source_file: 'opera-2026-07-07.pdf',
+      },
+      {
+        line_id: 72,
+        account_code: '6100',
+        account_name: 'Wages - Rooms',
+        posting: 'Debit',
+        amount: '1200.0000',
+        memo: 'Housekeeping accrual',
+        fact_id: null,
+        pms_trx_code: null,
+        pms_trx_desc: null,
+        source_file: null,
+      },
+    ],
+    ...overrides,
+  }
+}

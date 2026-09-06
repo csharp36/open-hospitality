@@ -1184,3 +1184,103 @@ export type IntegrationsResponse = {
 export type AuthorizeUrl = {
   url: string
 }
+
+// --- General ledger (OH-27) --------------------------------------------------
+// Mirrors PeriodModel/CloseResponse/TrialBalance*/JournalEntriesModel/
+// PostOutcomeModel in src/usali/gl_api.py field-for-field. Every amount is an
+// exact decimal string (str(Decimal)) — never parse to float.
+
+/** One fiscal period with its derived state and both gap directions:
+ *  `unposted_dates` — fact dates with no current posted pms_daily entry;
+ *  `orphaned_dates` — dates with a current entry whose fact side is empty.
+ *  `state` narrows the model's plain str to the pair
+ *  `gl_posting.period_state` derives ("closed" iff the last event closed). */
+export interface GlPeriod {
+  period_key: string
+  state: 'open' | 'closed'
+  date_from: string
+  date_to: string
+  unposted_dates: string[]
+  orphaned_dates: string[]
+}
+
+/** The close's answer: state after the event plus the gaps as they stand —
+ *  the same two directions as GlPeriod, but no date bounds. */
+export interface GlCloseResponse {
+  period_key: string
+  state: 'open' | 'closed'
+  unposted_dates: string[]
+  orphaned_dates: string[]
+}
+
+/** The set ck_gl_account_type (models.py) walls in on the chart column. */
+export type GlAccountType =
+  | 'asset'
+  | 'contra_asset'
+  | 'liability'
+  | 'equity'
+  | 'income'
+  | 'expense'
+
+export interface TrialBalanceLine {
+  account_code: string
+  name: string
+  account_type: GlAccountType
+  debits: string
+  credits: string
+}
+
+export interface TrialBalance {
+  property_id: string
+  period_key: string
+  date_from: string
+  date_to: string
+  lines: TrialBalanceLine[]
+  total_debits: string
+  total_credits: string
+}
+
+/** One journal line. The four nullable provenance fields are set for lines
+ *  posted from staged PMS transactions and null for payroll-accrual lines,
+ *  whose provenance is the department memo instead. */
+export interface JournalLine {
+  line_id: number
+  account_code: string
+  account_name: string
+  posting: 'Debit' | 'Credit'
+  amount: string
+  memo: string | null
+  fact_id: number | null
+  pms_trx_code: string | null
+  pms_trx_desc: string | null
+  source_file: string | null
+}
+
+export interface JournalEntry {
+  entry_id: number
+  business_date: string
+  source_type: string
+  memo: string | null
+  /** The entry this one reverses, or null for an original posting. */
+  reversal_of: number | null
+  posted_by: string
+  posted_at: string
+  lines: JournalLine[]
+}
+
+export interface JournalEntries {
+  property_id: string
+  period_key: string
+  account_code: string
+  entries: JournalEntry[]
+}
+
+/** One (date, source) grain's outcome from POST /api/gl/post. `entry_id` is
+ *  the entry the outcome names, or null when it names none. */
+export interface GlPostOutcome {
+  business_date: string
+  source_type: string
+  status: 'posted' | 'noop' | 'reposted' | 'reversed' | 'skipped' | 'failed'
+  entry_id: number | null
+  message: string | null
+}
