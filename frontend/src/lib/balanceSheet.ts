@@ -1,7 +1,7 @@
 // The balance sheet as a pure derivation over trial-balance lines. It is the
-// period's NET CHANGE, not a cumulative position: the only shipped read is
-// the period-scoped trial balance (plan "things to get right" #1), and the
-// page's title says so. All arithmetic is BigInt fixed-point (lib/decimal) —
+// period's NET CHANGE, not a cumulative position: the only shipped balance
+// read is the period-scoped trial balance (plan "things to get right" #1),
+// and the page's title says so. All arithmetic is BigInt fixed-point (lib/decimal) —
 // amounts stay exact decimal strings end to end.
 
 import type { TrialBalanceLine } from '../api/types'
@@ -37,8 +37,10 @@ export interface BalanceSheetReport {
  * (this period)" — that articulation is what makes the foot visible:
  * total debits == total credits implies totalAssets == liabilities + equity.
  *
- * Zero-net accounts (a fully reversed account) are dropped: a statement line
- * of 0.00 is noise, and the drill for the why lives on the trial balance.
+ * Zero-net lines are dropped — the synthetic net income line under the same
+ * rule as a fully reversed account, a decision, not an accident: a statement
+ * line of 0.00 is noise, and the drill for the why lives on the trial
+ * balance.
  *
  * An unbalanced input is reported (balanced: false), never thrown — the DB
  * trigger owns that wall; its refusal is pinned by

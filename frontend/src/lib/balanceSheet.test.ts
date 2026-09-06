@@ -1,11 +1,11 @@
 // The balance sheet is pure arithmetic over trial-balance lines — no DOM
-// here. subFixed rides along: balanceSheet is the caller it was added for.
+// here. subFixed's own tests live beside its siblings in decimal.test.ts.
 
 import { describe, expect, it } from 'vitest'
 
 import type { TrialBalanceLine } from '../api/types'
 import { balanceSheet } from './balanceSheet'
-import { eqFixed, subFixed } from './decimal'
+import { eqFixed } from './decimal'
 
 function line(
   account_code: string,
@@ -26,23 +26,6 @@ const BALANCED: TrialBalanceLine[] = [
   line('4100', 'Rooms Revenue', 'income', '0.00', '900.00'),
   line('6100', 'Wages - Rooms', 'expense', '500.00', '0.00'),
 ]
-
-describe('subFixed', () => {
-  it('subtracts exactly, result at the wider scale (like addFixed)', () => {
-    expect(subFixed('100.00', '30.0000')).toBe('70.0000')
-    expect(eqFixed(subFixed('100.00', '30.0000'), '70')).toBe(true)
-  })
-
-  it('crosses zero without float drift', () => {
-    // 0.1 - 0.3 !== -0.2 in binary floating point.
-    expect(subFixed('0.1', '0.3')).toBe('-0.2')
-    expect(subFixed('500.0000', '1200.0000')).toBe('-700.0000')
-  })
-
-  it('rejects non-decimal input', () => {
-    expect(() => subFixed('abc', '1')).toThrow(/not a fixed-point decimal/)
-  })
-})
 
 describe('balanceSheet', () => {
   it('groups by account_type, each side netted toward its section', () => {
@@ -88,5 +71,26 @@ describe('balanceSheet', () => {
     expect(bs.assets.map((l) => l.account_code)).toEqual(['1010', '1510'])
     // Its zero also moves the foot by nothing.
     expect(eqFixed(bs.foot.totalAssets, '900')).toBe(true)
+  })
+
+  it('drops a zero net income line under the same zero-net rule', () => {
+    // Income fully offset by expense: the synthetic line nets to zero and is
+    // dropped like any zero-net account line — the uniform rule, a decision,
+    // not an accident.
+    const bs = balanceSheet([
+      line('4100', 'Rooms Revenue', 'income', '0.00', '500.00'),
+      line('6100', 'Wages - Rooms', 'expense', '500.00', '0.00'),
+    ])
+    expect(bs.equity).toEqual([])
+    expect(bs.foot.balanced).toBe(true)
+  })
+
+  it('returns empty sections and a balanced foot for no lines at all', () => {
+    expect(balanceSheet([])).toEqual({
+      assets: [],
+      liabilities: [],
+      equity: [],
+      foot: { totalAssets: '0', totalLiabilitiesAndEquity: '0', balanced: true },
+    })
   })
 })

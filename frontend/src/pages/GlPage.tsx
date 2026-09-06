@@ -231,9 +231,9 @@ function TrialBalanceError({ error }: { error: unknown }) {
   )
 }
 
-// Titled "net change", not "Balance sheet": these are period-scoped numbers
-// (the derivation's own header comment in lib/balanceSheet.ts says why), and
-// a bare "Balance sheet" over them would be a false statement of position.
+// The heading names these as the period's net change — period-scoped numbers
+// (the derivation's header comment in lib/balanceSheet.ts says why), and a
+// bare "Balance sheet" over them would be a false statement of position.
 function BalanceSheetCard({ tb }: { tb: TrialBalance }) {
   const bs = balanceSheet(tb.lines)
 
