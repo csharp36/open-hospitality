@@ -19,5 +19,5 @@ supersedes the old one and update the old one's status — don't edit history.
 | [008](adr-008-gcp-scale-to-zero-no-lb.md) | GCP deployment: scale-to-zero, no load balancer | Accepted |
 | [009](adr-009-ports-and-adapters-dual-adapters.md) | Ports-and-adapters with dual adapters + a mock per integration | Accepted |
 | [010](adr-010-fail-closed-loud-posture.md) | Fail-closed / loud-over-silent posture + three-lens review | Accepted |
-| [011](adr-011-gl-posting-model.md) | GL posting model: per-org chart, append-only journal, exact amounts, audited close | Proposed |
-| [012](adr-012-bank-aggregator-tokens.md) | Bank data via read-only aggregator tokens (Pillar E5 amendment) | Proposed |
+| [011](adr-011-gl-posting-model.md) | GL posting model: per-org chart, append-only journal, exact amounts, audited close | Accepted |
+| [012](adr-012-bank-aggregator-tokens.md) | Bank data via read-only aggregator tokens (Pillar E5 amendment) | Accepted |
