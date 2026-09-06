@@ -205,8 +205,11 @@ def test_post_without_a_chart_reports_honest_skips(
     gl_client, db_session, founding_org, seed_six_pdfs
 ):
     """No chart is not an API error: every grain comes back "skipped" —
-    the same answer `post_and_record` gives the CLI and the ingestion hook."""
+    the same answer `post_and_record` gives the CLI and the ingestion hook.
+    The calendar IS seeded: without one the endpoint's up-front gate is a
+    422 before any grain is tried (the test below pins that)."""
     prop, day = _first_grain(db_session)
+    _seed_calendar(db_session, prop)
     db_session.commit()
     rows = _post_range(gl_client, prop, day, day + timedelta(days=1))
     assert len(rows) == 2 * len(gl_posting.POSTING_SOURCES)
@@ -232,6 +235,48 @@ def test_post_reports_reversed_when_the_facts_are_gone(
 
     second = _post_range(gl_client, prop, day)
     assert {r["source_type"]: r["status"] for r in second}["pms_daily"] == "reversed"
+
+    # The reversal returned the grain to unposted: a third post over the
+    # still-empty day is an ordinary skip, not a second reversal.
+    third = _post_range(gl_client, prop, day)
+    assert {r["source_type"]: r["status"] for r in third}["pms_daily"] == "skipped"
+
+
+def test_post_refuses_a_property_it_cannot_post(gl_client, gl_world):
+    """A typo'd property is a 422, not a stack trace: the endpoint's
+    up-front gate is one `period_key_for` call, so a nonexistent property
+    (which can never have a FiscalCalendar row) and a real-but-calendarless
+    property get the SAME refusal — deliberately indistinguishable, since
+    both mean "not postable" and telling them apart would say which
+    property ids exist. Without the gate, `post_and_record`'s failure
+    ledger would insert a row for the bogus property and 500 on its
+    property FK."""
+    _prop, day = gl_world
+    resp = gl_client.post(
+        "/api/gl/post",
+        json={
+            "property_id": "NOPE",
+            "date_from": day.isoformat(),
+            "date_to": day.isoformat(),
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert "fiscal calendar" in resp.json()["detail"]
+
+
+def test_post_caps_the_date_range(gl_client, gl_world):
+    prop, day = gl_world
+    resp = gl_client.post(
+        "/api/gl/post",
+        json={
+            "property_id": prop,
+            "date_from": day.isoformat(),
+            "date_to": (day + timedelta(days=401)).isoformat(),
+        },
+    )
+    assert resp.status_code == 422
+    assert "400 days" in resp.json()["detail"]
+    assert "gl-post" in resp.json()["detail"]  # the CLI is the backfill path
 
 
 # ------------------------------------------------------------- trial balance

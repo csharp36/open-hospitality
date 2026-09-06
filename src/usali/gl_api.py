@@ -220,6 +220,10 @@ def put_account(
                 ),
             )
         if row is None:
+            # Read-then-add races a concurrent PUT of the same code (a PK
+            # violation, 500) — accepted for this low-concurrency admin
+            # surface; `integrations_api._store_credential`'s
+            # on_conflict_do_update is the upgrade path if it ever matters.
             session.add(
                 GlAccount(
                     org_id=current_org_id(session),
@@ -347,8 +351,27 @@ def post_range(
             status_code=422,
             detail=f"{body.date_from.isoformat()} is after {body.date_to.isoformat()}",
         )
+    if (body.date_to - body.date_from).days > 400:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "date range exceeds 400 days; run larger backfills through "
+                "the CLI (usali gl-post)"
+            ),
+        )
     outcomes: list[PostOutcomeModel] = []
     with _session(request) as session:
+        # The property-existence AND calendar gate in one call: a property
+        # with no FiscalCalendar row — which a nonexistent property can
+        # never have — is a 422 here, the same refusal the GET endpoints
+        # give. Without it, `post_and_record`'s failure ledger would try
+        # to insert a row for the bogus property and die on
+        # fk_gl_posting_ledger_property_org as a 500.
+        _run(
+            lambda: gl_posting.period_key_for(
+                session, body.property_id, body.date_from
+            )
+        )
         day = body.date_from
         while day <= body.date_to:
             for source in gl_posting.POSTING_SOURCES:
