@@ -136,8 +136,9 @@ def gl_post_cmd(
     end = _parse_date(date_to, "DATE_TO")
     if start > end:
         raise typer.BadParameter(f"{date_from} is after {date_to}")
-    counts = {status: 0 for status in ("posted", "reposted", "reversed",
-                                       "noop", "failed", "skipped")}
+    # Closed over the engine's own status set, so a new OutcomeStatus can
+    # never KeyError a mid-backfill tally.
+    counts = {status: 0 for status in get_args(gl_posting.OutcomeStatus)}
     with _session_factory()() as s:
         # Same gate post_and_record applies per call, checked once up front
         # so a pre-seed backfill announces itself instead of silently

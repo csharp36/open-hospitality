@@ -501,7 +501,7 @@ def post_and_record(
     arbiter — see GlPostingLedger's docstring) and invariant violations
     such as `_finish_plan`'s out-of-balance ValueError.
 
-    Outcomes: "posted" (first entry for the grain), "noop" (standing entry,
+    Outcomes: "posted" (first current entry for the grain), "noop" (standing entry,
     same source hash), "reposted" (facts changed — reversal plus a fresh
     entry), "reversed" (the facts are GONE but an entry stands — a reversal
     is written, the ledger row is deleted, and the grain returns to
