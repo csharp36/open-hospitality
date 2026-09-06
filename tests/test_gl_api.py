@@ -11,7 +11,7 @@ property_gm client for the 403s, and an employee token for the outer
 operator gate.
 """
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -21,7 +21,7 @@ from sqlalchemy import select
 from tests.authkit import make_authkit
 from tests.grants import grant_role
 from tests.test_gl_posting import _first_grain, _seed_calendar
-from usali import gl_chart, gl_posting, reporting
+from usali import fiscal, gl_chart, gl_posting, reporting
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
 from usali.models import GlAccount, UsaliFinancialFact
@@ -311,6 +311,129 @@ def test_trial_balance_endpoint_mirrors_reporting(gl_client, gl_world, db_sessio
             "credits": str(line.credits),
         }
         for line in report.lines
+    ]
+
+
+def test_entries_endpoint_mirrors_reporting(gl_client, gl_world, db_session):
+    """GET /api/gl/entries mirrors reporting.journal_entries field-for-field,
+    amounts as str(Decimal) — the trial-balance test's shape. Drill an
+    account taken from the trial-balance response so the join key the page
+    will use (TrialBalanceLineModel.account_code) is the one exercised."""
+    prop, day = gl_world
+    _post_range(gl_client, prop, day)
+    period = gl_posting.period_key_for(db_session, prop, day)
+
+    tb = gl_client.get(
+        "/api/gl/trial-balance", params={"property": prop, "period": period}
+    )
+    assert tb.status_code == 200, tb.text
+    account = tb.json()["lines"][0]["account_code"]
+
+    resp = gl_client.get(
+        "/api/gl/entries",
+        params={"property": prop, "period": period, "account": account},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["property_id"] == prop
+    assert body["period_key"] == period
+    assert body["account_code"] == account
+
+    db_session.expire_all()
+    entries = reporting.journal_entries(
+        db_session, property_id=prop, period_key=period, account_code=account
+    )
+    assert entries  # the drill saw the entry the post wrote
+    # posted_at compares as a parsed datetime: the wire spells UTC "Z",
+    # datetime.isoformat spells it "+00:00", and the instant is the claim.
+    assert [
+        datetime.fromisoformat(e["posted_at"]) for e in body["entries"]
+    ] == [e.posted_at for e in entries]
+    assert [
+        {k: v for k, v in e.items() if k != "posted_at"} for e in body["entries"]
+    ] == [
+        {
+            "entry_id": e.entry_id,
+            "business_date": e.business_date.isoformat(),
+            "source_type": e.source_type,
+            "memo": e.memo,
+            "reversal_of": e.reversal_of,
+            "posted_by": e.posted_by,
+            "lines": [
+                {
+                    "line_id": ln.line_id,
+                    "account_code": ln.account_code,
+                    "account_name": ln.account_name,
+                    "posting": ln.posting,
+                    "amount": str(ln.amount),
+                    "memo": ln.memo,
+                    "fact_id": ln.fact_id,
+                    "pms_trx_code": ln.pms_trx_code,
+                    "pms_trx_desc": ln.pms_trx_desc,
+                    "source_file": ln.source_file,
+                }
+                for ln in e.lines
+            ],
+        }
+        for e in entries
+    ]
+
+
+def test_entries_endpoint_of_nothing_is_nothing(gl_client, gl_world, db_session):
+    """No lines on the account -> an empty entries list, 200 — the
+    line_transactions precedent on the wire."""
+    prop, day = gl_world
+    _post_range(gl_client, prop, day)
+    period = gl_posting.period_key_for(db_session, prop, day)
+    resp = gl_client.get(
+        "/api/gl/entries",
+        params={"property": prop, "period": period, "account": "9999"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["entries"] == []
+
+
+def test_post_outcomes_carry_the_entry_id(gl_client, gl_world, db_session):
+    """Every 'posted' outcome names its entry_id, and that id appears in the
+    entries drill for the same period — the wire-level link the page uses."""
+    prop, day = gl_world
+    rows = _post_range(gl_client, prop, day)
+    by_source = {row["source_type"]: row for row in rows}
+    posted = by_source["pms_daily"]
+    assert posted["status"] == "posted"
+    assert isinstance(posted["entry_id"], int)
+    # A skip stands for nothing, so it names no entry.
+    assert by_source["payroll_accrual"]["status"] == "skipped"
+    assert by_source["payroll_accrual"]["entry_id"] is None
+
+    period = gl_posting.period_key_for(db_session, prop, day)
+    tb = gl_client.get(
+        "/api/gl/trial-balance", params={"property": prop, "period": period}
+    )
+    account = tb.json()["lines"][0]["account_code"]
+    drill = gl_client.get(
+        "/api/gl/entries",
+        params={"property": prop, "period": period, "account": account},
+    )
+    assert drill.status_code == 200, drill.text
+    assert posted["entry_id"] in {e["entry_id"] for e in drill.json()["entries"]}
+
+
+def test_periods_carry_their_date_bounds(gl_client, gl_world, db_session):
+    """PeriodModel gains date_from/date_to from periods_in_year's own tuple —
+    the same source resolve_period uses, so the rail and the post range can
+    never disagree with the backend's period arithmetic."""
+    prop, day = gl_world
+    resp = gl_client.get(
+        "/api/gl/periods", params={"property": prop, "fiscal_year": day.year}
+    )
+    assert resp.status_code == 200, resp.text
+    cfg = fiscal.require_config(fiscal.config_for(db_session, prop))
+    assert [
+        (p["period_key"], p["date_from"], p["date_to"]) for p in resp.json()
+    ] == [
+        (key, start.isoformat(), end.isoformat())
+        for key, start, end in fiscal.periods_in_year(cfg, day.year)
     ]
 
 
