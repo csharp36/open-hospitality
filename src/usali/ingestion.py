@@ -302,8 +302,8 @@ def _process_section(
     record_coverage(session, det.property_id, business_date, det.report_type)
     batch.status = "transformed"
     # OH-27: promotion and posting land in the caller's one transaction.
-    # post_and_record's docstring is the contract enforced here: the five
-    # typed GL refusals become failed ledger rows rather than exceptions, so
+    # post_and_record's docstring is the contract enforced here: the typed
+    # GL refusals become failed ledger rows rather than exceptions, so
     # a books problem never quarantines a parsed file (what deliberately
     # still escapes is IntegrityError and invariant violations); with no
     # chart seeded it returns "skipped" and writes nothing (GL is off).

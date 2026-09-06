@@ -329,7 +329,9 @@ def approve_timecard(
             session, card, anchor=get_settings().payroll_period_anchor
         )
         # OH-27: accrue payroll for each grain the promotion wrote, in the
-        # same transaction as the approval. post_and_record's docstring is
+        # same transaction as the approval. The plan re-aggregates EVERY
+        # fact on the grain, not just this card's — so a later card's
+        # approval reposts the combined day. post_and_record's docstring is
         # the contract: GL refusals become failed ledger rows, never
         # exceptions, so a books problem cannot fail the approval; with no
         # chart seeded it skips and writes nothing.

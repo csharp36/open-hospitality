@@ -20,7 +20,7 @@ from usali.mapping.draft_gen import generate_draft
 from usali.mapping.loader import load_mappings
 from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
-from usali.models import Timecard
+from usali.models import GlAccount, Timecard
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from usali.notifications import Notifier, notifier_from_settings
 from usali.photo_store import LocalPhotoStore
@@ -136,8 +136,20 @@ def gl_post_cmd(
     end = _parse_date(date_to, "DATE_TO")
     if start > end:
         raise typer.BadParameter(f"{date_from} is after {date_to}")
-    failures = 0
+    counts = {status: 0 for status in ("posted", "reposted", "reversed",
+                                       "noop", "failed", "skipped")}
     with _session_factory()() as s:
+        # Same gate post_and_record applies per call, checked once up front
+        # so a pre-seed backfill announces itself instead of silently
+        # skipping every day.
+        if s.scalar(
+            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
+        ) is None:
+            typer.echo(
+                "WARNING: no chart of accounts — every post will be skipped; "
+                "run gl-seed-chart first",
+                err=True,
+            )
         day = start
         while day <= end:
             for source in gl_posting.POSTING_SOURCES:
@@ -145,15 +157,15 @@ def gl_post_cmd(
                     s, property_id=property_id, business_date=day,
                     source_type=source.source_type, actor="cli",
                 )
+                counts[out.status] += 1
                 if out.status != "skipped":
                     typer.echo(f"{day} {source.source_type}: {out.status}"
                                + (f" — {out.message}" if out.message else ""))
-                if out.status == "failed":
-                    failures += 1
             day += timedelta(days=1)
         s.commit()
-    if failures:
-        typer.echo(f"FAILED: {failures} posting(s) refused", err=True)
+    typer.echo(" ".join(f"{status} {n}" for status, n in counts.items()))
+    if counts["failed"]:
+        typer.echo(f"FAILED: {counts['failed']} posting(s) refused", err=True)
         raise typer.Exit(code=1)
 
 

@@ -207,6 +207,26 @@ def test_payroll_accrual_posts_per_department_and_is_idempotent(
     assert credits[0].account_code == "2200"
     assert credits[0].amount == Decimal("2000.75")
 
+    # Re-promotion is delete-then-rewrite (promote_timecard's shape): fresh
+    # fact rows, same aggregates. build_payroll_accrual_plan reads only
+    # (department_id, est_cost), so the rewrite must hash identically and
+    # the follow-up post must be a noop, not a repost.
+    facts = db_session.scalars(select(UsaliLaborFact)).all()
+    rewrites = [
+        UsaliLaborFact(
+            property_id=f.property_id, business_date=f.business_date,
+            department_id=f.department_id, hours=f.hours,
+            ot_hours=f.ot_hours, est_cost=f.est_cost,
+            timecard_id=f.timecard_id,
+        )
+        for f in facts
+    ]
+    for f in facts:
+        db_session.delete(f)
+    db_session.flush()
+    db_session.add_all(rewrites)
+    db_session.flush()
+
     second = gl_posting.post_and_record(
         db_session, property_id=prop, business_date=day,
         source_type="payroll_accrual", actor="test",
@@ -285,11 +305,11 @@ def test_unmapped_gl_records_a_failed_row(db_session, founding_org, seed_six_pdf
 
 
 def test_process_file_posts_when_the_chart_exists(db_session, founding_org, tmp_path):
-    """The ingestion hook (design §3): promotion and posting land in ONE
-    transaction — process_pack commits the pack's facts and their journal
-    entries together. Mirrors test_skytouch_end_to_end's seeding, plus the
-    chart and a fiscal calendar so the posts land as posted rows, not the
-    fiscal refusal's failed ones."""
+    """The ingestion hook: posted ledger rows exist after process_pack.
+    Atomicity with promotion is _process_section's caller's transaction
+    (design §3) — not asserted here. Mirrors test_skytouch_end_to_end's
+    seeding, plus the chart and a fiscal calendar so the posts land as
+    posted rows, not the fiscal refusal's failed ones."""
     import shutil
     from pathlib import Path
 

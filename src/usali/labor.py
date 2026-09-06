@@ -191,8 +191,8 @@ def promote_timecard(
             written.add((property_id, row.business_date))
     # E4: sick leave accrues off the same approved hours, in the same
     # idempotent pass (its delete-then-rewrite keys on this card, like the
-    # facts above). Excluded staff never reach here (the skip returned 0),
-    # matching their no-facts treatment.
+    # facts above). Excluded staff never reach here (the skip returned an
+    # empty set), matching their no-facts treatment.
     accrue_for_card(
         session, card, day_hours=day_hours, exempt=exempt,
         jurisdiction=_jurisdiction_for_card(
