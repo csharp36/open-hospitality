@@ -8,11 +8,15 @@ from sqlalchemy import select
 
 from usali import gl_chart, gl_posting
 from usali.models import (
+    Department,
+    Employee,
     FiscalCalendar,
     GlPostingLedger,
     JournalEntry,
     JournalLine,
+    Timecard,
     UsaliFinancialFact,
+    UsaliLaborFact,
 )
 
 
@@ -42,6 +46,38 @@ def _seed_calendar(session, property_id: str) -> None:
         )
     )
     session.flush()
+
+
+def _seed_labor(session, property_id: str, day: date, dept_costs: dict[str, str]) -> dict[str, int]:
+    """Minimal labor world for the payroll_accrual source: one employee, one
+    timecard, one department per name, one UsaliLaborFact per department.
+    Returns {department name: department_id}. Written on the owner session,
+    so the composite (org_id, ...) FKs are satisfied by the org-1 default."""
+    emp = Employee(full_name="Payroll Test Worker", pay_type="hourly")
+    session.add(emp)
+    session.flush()
+    card = Timecard(employee_id=emp.employee_id, period_start=day, period_end=day)
+    session.add(card)
+    session.flush()
+    dept_ids: dict[str, int] = {}
+    for name, cost in dept_costs.items():
+        dept = Department(property_id=property_id, name=name)
+        session.add(dept)
+        session.flush()
+        session.add(
+            UsaliLaborFact(
+                property_id=property_id,
+                business_date=day,
+                department_id=dept.department_id,
+                hours=Decimal("8.00"),
+                ot_hours=Decimal("0.00"),
+                est_cost=Decimal(cost),
+                timecard_id=card.timecard_id,
+            )
+        )
+        dept_ids[name] = dept.department_id
+    session.flush()
+    return dept_ids
 
 
 def _post(session, property_id, business_date):
@@ -143,6 +179,95 @@ def test_the_journal_nets_to_a_fresh_plan_after_any_repost(
         got[line.account_code] = got.get(line.account_code, Decimal("0")) + signed
     got = {k: v for k, v in got.items() if v != 0}
     assert got == want
+
+
+def test_payroll_accrual_posts_per_department_and_is_idempotent(
+    db_session, founding_org, seed_six_pdfs
+):
+    gl_chart.seed_chart(db_session, org_id=1)
+    prop, day = _first_grain(db_session)
+    _seed_calendar(db_session, prop)
+    _seed_labor(db_session, prop, day, {"Front Desk": "1200.50", "Housekeeping": "800.25"})
+
+    first = gl_posting.post_and_record(
+        db_session, property_id=prop, business_date=day,
+        source_type="payroll_accrual", actor="test",
+    )
+    assert first.status == "posted"
+    lines = db_session.scalars(
+        select(JournalLine).order_by(JournalLine.line_id)
+    ).all()
+    debits = [ln for ln in lines if ln.posting == "Debit"]
+    credits = [ln for ln in lines if ln.posting == "Credit"]
+    assert len(debits) == 2 and len(credits) == 1
+    # Template roles: labor_wages_expense on 5000, accrued_payroll on 2200.
+    assert {ln.account_code for ln in debits} == {"5000"}
+    assert {ln.amount for ln in debits} == {Decimal("1200.50"), Decimal("800.25")}
+    assert all("dept" in ln.memo for ln in debits)
+    assert credits[0].account_code == "2200"
+    assert credits[0].amount == Decimal("2000.75")
+
+    second = gl_posting.post_and_record(
+        db_session, property_id=prop, business_date=day,
+        source_type="payroll_accrual", actor="test",
+    )
+    assert second.status == "noop" and second.entry_id == first.entry_id
+    assert len(db_session.scalars(select(JournalEntry)).all()) == 1
+
+
+def test_payroll_accrual_negative_department_net_flips_to_credit(
+    db_session, founding_org, seed_six_pdfs
+):
+    """A correction outweighing a department's day: that department's line
+    moves to the credit side (positive amount), the accrued-payroll credit
+    shrinks to the net total, and the entry still balances at COMMIT (the
+    deferred ck_journal_entry_balanced trigger runs there)."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    prop, day = _first_grain(db_session)
+    _seed_calendar(db_session, prop)
+    _seed_labor(db_session, prop, day, {"Front Desk": "1000.00", "Spa": "-200.00"})
+
+    out = gl_posting.post_and_record(
+        db_session, property_id=prop, business_date=day,
+        source_type="payroll_accrual", actor="test",
+    )
+    assert out.status == "posted"
+    db_session.commit()  # the balance trigger is deferred to commit
+    lines = db_session.scalars(
+        select(JournalLine).order_by(JournalLine.line_id)
+    ).all()
+    wage_lines = [ln for ln in lines if ln.account_code == "5000"]
+    accrual_lines = [ln for ln in lines if ln.account_code == "2200"]
+    assert {(ln.posting, ln.amount) for ln in wage_lines} == {
+        ("Debit", Decimal("1000.00")),
+        ("Credit", Decimal("200.00")),
+    }
+    assert [(ln.posting, ln.amount) for ln in accrual_lines] == [
+        ("Credit", Decimal("800.00"))
+    ]
+    assert all(ln.amount > 0 for ln in lines)
+
+
+def test_failed_row_recovers_to_posted_once_the_calendar_exists(
+    db_session, founding_org, seed_six_pdfs
+):
+    """The refusal is not a dead end: fixing the named problem and re-posting
+    flips the SAME ledger row to posted and clears the message."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    prop, day = _first_grain(db_session)
+    first = _post(db_session, prop, day)
+    assert first.status == "failed"
+    failed_row = db_session.scalar(select(GlPostingLedger))
+    assert failed_row.status == "failed" and failed_row.message is not None
+
+    _seed_calendar(db_session, prop)
+    second = _post(db_session, prop, day)
+    assert second.status == "posted"
+    rows = db_session.scalars(select(GlPostingLedger)).all()
+    assert len(rows) == 1
+    assert rows[0].posting_ledger_id == failed_row.posting_ledger_id
+    assert rows[0].status == "posted" and rows[0].message is None
+    assert rows[0].entry_id == second.entry_id
 
 
 def test_unmapped_gl_records_a_failed_row(db_session, founding_org, seed_six_pdfs):

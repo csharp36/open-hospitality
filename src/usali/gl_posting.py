@@ -27,9 +27,8 @@ back to it):
   credit side. Zero-net GL groups are omitted.
 
 `request_hash` is a sha256 fingerprint of the plan's economic content
-(property, date, and every (account, posting, amount) line), the same
-canonical form `qbo_push` has always used — so hashes recorded before
-the move still compare equal for unchanged facts.
+(property, date, and every (account, posting, amount) line) — the
+canonical construction is unchanged by the move (see `_finish_plan`).
 """
 
 import hashlib
@@ -73,6 +72,16 @@ class UnmappedGlError(Exception):
             f"{len(lines)} fact line(s) have no GL account code "
             f"(curate gl_account_code in the mapping YAML, re-seed, re-transform): {listed}"
         )
+
+
+class ChartAccountMissingError(ValueError):
+    """A fact's GL code has no active row in the chart of accounts.
+
+    A ValueError subclass so pre-move callers catching ValueError from
+    `qbo_push.build_journal_entry` (e.g. `push_month`) keep working; typed
+    so `post_and_record` can turn it into a failed ledger row without
+    swallowing `_finish_plan`'s out-of-balance ValueError, which must
+    escape loudly."""
 
 
 class SystemRoleMissingError(Exception):
@@ -200,8 +209,9 @@ def build_pms_daily_plan(
     facts — "nothing to post" is a source outcome, not an error, in the
     engine. Raises `UnmappedGlError` when any fact in scope lacks a GL
     account code, `SystemRoleMissingError` when a balancing line is needed
-    and no account carries `guest_ledger_clearing`, and `ValueError` when
-    a fact's GL code is missing from the chart.
+    and no account carries `guest_ledger_clearing`, and
+    `ChartAccountMissingError` when a fact's GL code is missing from the
+    chart.
 
     `account_names` + `balancing_account` are a transitional shim for
     `qbo_push.build_journal_entry`'s YAML chart (removed in Task 10):
@@ -254,7 +264,7 @@ def build_pms_daily_plan(
             by_code.setdefault(str(f.gl_account_code), []).append(f)
         for gl, net in sorted(_group_by_gl(bucket).items()):
             if net == 0:
-                continue  # zero-amount lines are rejected downstream (QBO and mock)
+                continue  # a zero line adds nothing to either side; omitted
             if gl not in names:
                 missing_accounts.add(gl)
                 continue
@@ -304,7 +314,7 @@ def build_pms_daily_plan(
                 )
             )
     if missing_accounts:
-        raise ValueError(
+        raise ChartAccountMissingError(
             f"GL account(s) {sorted(missing_accounts)} are not in the chart of "
             f"accounts — add them (gl_account rows; on the transitional YAML "
             f"path, qbo_accounts.yaml)"
@@ -331,29 +341,37 @@ def build_payroll_accrual_plan(
     by_dept: dict[int | None, Decimal] = {}
     for dept, cost in rows:
         by_dept[dept] = by_dept.get(dept, Decimal("0")) + Decimal(str(cost))
-    expense = role_account(session, "labor_wages_expense")
-    liability = role_account(session, "accrued_payroll")
     total = sum(by_dept.values(), Decimal("0"))
     if total == 0:
+        # Nothing to post — decided BEFORE the role lookups, so a zero-net
+        # labor day on a roleless chart is a skip, not a failed row.
         return None
+    expense = role_account(session, "labor_wages_expense")
+    liability = role_account(session, "accrued_payroll")
+    # A negative department net (a correction outweighing the day's cost)
+    # flips the line to the credit side — the same abs/side convention the
+    # pms builder applies to negative GL nets. Line amounts stay positive;
+    # direction lives in `posting`.
     lines = [
         JeLine(
             gl_account_code=expense.account_code,
             account_name=expense.name,
-            posting="Debit",
-            amount=cost,
+            posting="Debit" if cost > 0 else "Credit",
+            amount=abs(cost),
             memo=f"Labor accrual dept {dept if dept is not None else 'unassigned'} "
                  f"{business_date.isoformat()}",
         )
-        for dept, cost in sorted(by_dept.items(), key=lambda kv: str(kv[0]))
+        for dept, cost in sorted(
+            by_dept.items(), key=lambda kv: (kv[0] is None, kv[0] or 0)
+        )
         if cost != 0
     ]
     lines.append(
         JeLine(
             gl_account_code=liability.account_code,
             account_name=liability.name,
-            posting="Credit",
-            amount=total,
+            posting="Credit" if total > 0 else "Debit",
+            amount=abs(total),
             memo=f"Accrued payroll {business_date.isoformat()}",
         )
     )
@@ -473,10 +491,21 @@ def post_and_record(
     source_type: str,
     actor: str,
 ) -> PostOutcome:
-    """The one entry point. Refusals become failed ledger rows, never
-    exceptions — the ingestion hook commits in the same transaction as
-    promotion, so a GL problem must not quarantine a parsed file."""
-    if session.scalar(select(GlAccount).limit(1)) is None:
+    """The one entry point. The named refusal types (`UnmappedGlError`,
+    `SystemRoleMissingError`, `PeriodClosedError`,
+    `ChartAccountMissingError`, `FiscalCalendarNotConfigured`) become
+    failed ledger rows rather than exceptions — the ingestion hook commits
+    in the same transaction as promotion, so a GL refusal must not
+    quarantine a parsed file. What deliberately still escapes:
+    `IntegrityError` from the ledger's unique constraint (the concurrency
+    arbiter — see GlPostingLedger's docstring) and invariant violations
+    such as `_finish_plan`'s out-of-balance ValueError."""
+    if (
+        session.scalar(
+            select(GlAccount).where(GlAccount.is_active.is_(True)).limit(1)
+        )
+        is None
+    ):
         return PostOutcome("skipped", None, "no chart of accounts; GL is off")
 
     source = _SOURCES[source_type]
@@ -552,6 +581,7 @@ def post_and_record(
         UnmappedGlError,
         SystemRoleMissingError,
         PeriodClosedError,
+        ChartAccountMissingError,
         fiscal.FiscalCalendarNotConfigured,
     ) as exc:
         return _fail(str(exc))
