@@ -1,6 +1,7 @@
 """Fiscal-calendar period resolution (issue #8).
 
-Pure functions over a property's fiscal-calendar config. Two calendar types:
+Pure functions over a property's fiscal-calendar config, plus config_for, the
+one DB loader. Two calendar types:
 
 * `calendar_month` — period N is the Nth calendar month counting from
   `fiscal_year_start_month`.
@@ -125,3 +126,22 @@ def period_containing(config: FiscalConfig, day: date) -> str:
             return key
     # Unreachable for a well-formed calendar; guard loudly rather than return "".
     raise ValueError(f"no fiscal period contains {day.isoformat()}")
+
+
+def config_for(session, property_id: str) -> "FiscalConfig | None":
+    """Load a property's FiscalCalendar row as a FiscalConfig, or None.
+
+    The one impure function in this module, so every caller (property
+    config API, the GL posting engine) shares a single row->config mapping.
+    Pair with require_config() for the loud-refusal shape.
+    """
+    from usali.models import FiscalCalendar  # local: keep module import-light
+
+    row = session.get(FiscalCalendar, property_id)
+    if row is None:
+        return None
+    return FiscalConfig(
+        calendar_type=row.calendar_type,
+        fiscal_year_start_month=row.fiscal_year_start_month,
+        week_start_weekday=row.week_start_weekday,
+    )

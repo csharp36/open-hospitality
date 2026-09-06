@@ -41,6 +41,7 @@ from usali.auth import (
     require_grants,
     require_operator,
 )
+from usali import fiscal
 from usali.fiscal import (
     FiscalCalendarNotConfigured,
     FiscalConfig,
@@ -80,14 +81,7 @@ def _session(request: Request) -> Session:
 
 
 def _fiscal_config(session: Session, property_id: str) -> FiscalConfig | None:
-    row = session.get(FiscalCalendar, property_id)
-    if row is None:
-        return None
-    return FiscalConfig(
-        calendar_type=row.calendar_type,
-        fiscal_year_start_month=row.fiscal_year_start_month,
-        week_start_weekday=row.week_start_weekday,
-    )
+    return fiscal.config_for(session, property_id)
 
 
 def _adr_room_basis(session: Session, property_id: str) -> str:
