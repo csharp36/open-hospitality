@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from tests.authkit import make_authkit
 from tests.grants import grant_role
+from tests.test_gl_parity import _post_all_grains
+from usali import gl_chart
 from usali.db import make_session_factory
 from usali.server import create_app
 
@@ -43,6 +45,14 @@ def client(
 ) -> TestClient:
     # L4: the minted accountant's authority is its org-wide DB grant.
     grant_role(db_session, "accountant")
+    # The SOS totals render from posted pms_daily journal history since the
+    # cutover (`summary_operating_statement_from_journal` refuses a range
+    # without it), so the world posts every seeded grain — the same chart +
+    # calendar + backfill an operator runs. Committed: the endpoint reads
+    # through its own session factory, not db_session.
+    gl_chart.seed_chart(db_session, org_id=1)
+    _post_all_grains(db_session)
+    db_session.commit()
     return _make_client(db_engine, tmp_path)
 
 

@@ -479,7 +479,7 @@ def report_cmd(
     parsed_to = _parse_date(date_to, "--to") if date_to else None
     with _session_factory()() as s:
         try:
-            sos = reporting.summary_operating_statement(
+            sos = reporting.summary_operating_statement_from_journal(
                 s,
                 property_id=property_id,
                 business_date=parsed_date,

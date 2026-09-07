@@ -920,6 +920,10 @@ def summary_operating_statement(
 ) -> SosReport:
     """Build the Summary Operating Statement for one property.
 
+    Since the SOS cutover this is the fact-read layer, not the rendered
+    statement: `summary_operating_statement_from_journal` (below) delegates
+    here for everything but the journal-owned totals it replaces.
+
     Exactly one mode must be given: `business_date` (single day) or both
     `date_from`/`date_to` (inclusive range; financial and segment facts are SUMmed,
     statistics come from the latest business date in the range).
