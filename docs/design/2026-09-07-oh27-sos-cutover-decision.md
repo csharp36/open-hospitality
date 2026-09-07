@@ -7,14 +7,18 @@ whether, and in what shape, the Summary Operating Statement stops reading
 is re-pointed until this note is agreed; the design doc's §11 requires the
 note to state two specific limits of that gate, and §2 does.
 
-## 1. The decision (PROPOSED)
+## 1. The decision (ACCEPTED; AMENDED 2026-09-07 in execution — see §5)
 
-Re-point the SOS to a journal-derived statement, classified by the chart
-(§5's shape B), scoped to `source_type = 'pms_daily'` entries only. The
-statement's shape, totals, and error behavior are unchanged for operators;
-what changes is which table is the source of truth. The fact tables remain
-the staging/mapping layer and the coverage report's subject — they stop
-being what the statement renders from.
+Re-point the SOS's **numbers** to the journal: every total an operator
+totals against — section totals, bucket totals, total operating revenue —
+is computed from journal nets classified by the chart (§5's shape C),
+scoped to `source_type = 'pms_daily'` entries only. The line rows inside
+each section keep rendering from the fact tables, which remain the
+staging/mapping layer and the only holder of trx-code-grain detail (§4
+records why the journal cannot carry that grain). In normal operation the
+two agree to the cent — that is what the parity gate proves; after an
+out-of-band fact edit the totals stay true and the detail visibly
+disagrees, turning that drift class from silent into detectable.
 
 Why now and not earlier: the journal carries labor (`payroll_accrual`)
 that today's SOS deliberately does not show. A statement that silently
@@ -91,41 +95,81 @@ Honest limits of that run, which the CI gate does not share:
 D-OH27.9 sketched a diff "per (property, period, USALI line)". What
 shipped diffs per **(property, range, GL account)** — finer on the
 account axis, but classification-blind: per-account equality implies
-per-USALI-line equality only if a fact's USALI classification is a
+per-USALI-bucket equality only if a fact's USALI classification is a
 function of its GL account. Checked on 2026-09-07: across all three
 dictionaries (opera, skytouch, autoclerk) every GL account carries
 exactly one `(usali_schedule_id, usali_major_category)` pair, so the
-implication holds today. The cutover must pin it: a test asserting no
-two dictionary entries share a `gl_account` with different USALI
-classification (at the full grain the SOS renders, line labels included).
-If that invariant ever breaks, per-account parity stops guaranteeing the
-statement, and the test is what says so before an operator does.
+implication holds today **at that grain**, and the cutover pins it with a
+test: no two dictionary entries may share a `gl_account` with different
+`(schedule, major)` classification. If that invariant ever breaks,
+per-account parity stops guaranteeing the statement's totals, and the
+test is what says so before an operator does.
 
-## 5. Cutover shape (PROPOSED: B)
+**The invariant does NOT extend to the line grain, and cannot** —
+established 2026-09-07, and the reason §5 was amended. The SOS renders
+line rows at `(major, sub_category, line_item)`, which is trx-code grain:
+account 1100 alone fans out to eleven line tuples across the
+dictionaries (Visa, MasterCard, EFT, Cash Paid Out, …), 2100 to ten,
+4000 to three. Nor can the journal recover that grain through its fact
+linkage: `gl_posting` buckets lines per account, and `journal_line.fact_id`
+is set only when a bucket collapsed to a single fact — a multi-fact
+bucket carries NULL (verified on a real posting: three credit-card facts,
+one 1100 line, no fact link). No journal-only statement can reproduce
+today's line detail; only its totals.
+
+## 5. Cutover shape (ACCEPTED: C — chosen 2026-09-07, amending the
+original proposal)
+
+As first accepted this section proposed **B — classify by the chart**:
+the whole statement, line rows included, derived from journal nets. §4's
+line-grain finding killed that the same day — the journal cannot carry
+trx-code grain, by bucketing and by design — and the user chose C from
+the honest option set. The section now records all four options as
+weighed at amendment time:
 
 - **A — classify through the fact link.** Journal lines join back to
-  their facts (`journal_line.fact_id`) for USALI classification. Rejected:
-  the statement would still depend on the fact rows for its structure, so
-  nothing real has been cut over — an out-of-band fact edit still moves
-  the statement, which is the exact class of drift the journal exists to
-  end.
-- **B — classify by the chart.** `gl_account` already carries
-  `usali_schedule_id` / `usali_major_category` for income accounts; the
-  statement groups journal nets by account and buckets them exactly as
-  today (operated/misc by schedule; taxes, settlements, other by major
-  category for unscheduled accounts). Two things B requires:
-  1. The template's settlement and tax accounts (`1000`, `1100`, `1200`
-     cash/card/AR clearing; `2100` tax payable) currently carry NULL
-     USALI fields; the dictionaries classify those same accounts as
-     "Settlements" / "Taxes (Pass-Through)". The template gains those
-     major categories, and — since `seed_chart` is insert-only by design
-     (the OH-17 lesson) — existing orgs need an explicit, idempotent
-     backfill that fills **only NULL** USALI columns and never overwrites
-     an operator's edit.
-  2. §4's dictionary invariant test, in CI beside the parity test.
-- **C — rewrite parity to USALI-line grain first.** Rejected as
-  unnecessary given B's invariant test, and strictly weaker: account
-  grain catches misposts that line grain would net away.
+  their facts for USALI classification. Dead twice over: the statement's
+  structure would still ride the fact rows, and `fact_id` is NULL on any
+  multi-fact bucket, so the join does not even exist where it is needed.
+- **B — classify by the chart, full statement.** Reproduces totals but
+  collapses line rows to account grain — a visible reporting regression
+  (Room Revenue and No-Show Revenue become one row). Rejected for the
+  line rows, retained for the totals (that half survives inside C).
+- **B′ — make `gl_posting` emit one line per fact.** Restores the grain
+  in the journal itself, at the price of rewriting the engine's
+  aggregation, reshaping every future entry and the QBO export built
+  from entries (D-OH27.10: owners' JEs would grow to per-transaction),
+  and reverse-reposting open history on next touch. Accounting storage
+  bent to reporting grain. Rejected.
+- **C — the journal owns every number; facts own only the row
+  breakdown.** Section totals, bucket totals, and total operating
+  revenue come from journal nets classified by the chart (schedule for
+  operated/misc; major category for taxes/settlements/other; clearing
+  excluded by role). Line rows inside each section keep coming from the
+  facts, exactly as rendered today. Parity green means they agree to the
+  cent; an out-of-band fact edit leaves every total true and makes the
+  detail visibly disagree — the drift becomes detectable instead of
+  silent, a strictly better failure mode than the fact-read statement
+  has. **Chosen.** As built, an operated section's journal total attaches
+  per schedule through the facts' schedule→sub-category mapping over the
+  range; a schedule whose facts fan out to more than one sub-category has
+  no journal-derivable split and is refused loudly rather than
+  approximated
+  (`test_a_schedule_fanned_across_subs_refuses_rather_than_splits`).
+
+What C requires — unchanged from B's list, since the chart still
+classifies every total:
+
+1. The template's settlement and tax accounts (`1000`, `1100`, `1200`
+   cash/card/AR clearing; `2100` tax payable) currently carry NULL
+   USALI fields; the dictionaries classify those same accounts as
+   "Settlements" / "Taxes (Pass-Through)". The template gains those
+   major categories, and — since `seed_chart` is insert-only by design
+   (the OH-17 lesson) — existing orgs need an explicit, idempotent
+   backfill that fills **only NULL** USALI columns and never overwrites
+   an operator's edit.
+2. §4's dictionary invariant test at `(schedule, major)` grain, in CI
+   beside the parity test.
 
 ## 6. What does not change
 
@@ -136,9 +180,10 @@ statement, and the test is what says so before an operator does.
 - The QBO push, `/qbo/preview`, and the CLI dry-run: untouched. The
   preview/dry-run fact-build residual (design §11) neither improves nor
   worsens.
-- `NoFactsError` semantics: a property/date range with no posted entries
-  must fail the same loud way an empty fact range does today — the SPA
-  and CLI already render that refusal.
+- Loud refusals stay loud. An empty fact range refuses exactly as today
+  (`NoFactsError`). New under C: a range with facts but **no posted
+  entries** — history nobody ran `gl-post` over — must refuse loudly too,
+  naming the backfill as the remedy, never render a statement of zeros.
 - The parity tool and `tests/test_gl_parity.py` stay: the gate becomes a
   regression tripwire instead of a precondition.
 

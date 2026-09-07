@@ -770,7 +770,7 @@ def sos(
     if ranged and (date_from is None or date_to is None):
         raise HTTPException(status_code=422, detail="from and to must be given together")
     report = _run(
-        lambda: reporting.summary_operating_statement(
+        lambda: reporting.summary_operating_statement_from_journal(
             session,
             property_id=property_id,
             business_date=business_date,

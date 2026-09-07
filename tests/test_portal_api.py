@@ -18,6 +18,8 @@ from sqlalchemy.orm import Session
 
 from tests.authkit import make_authkit
 from tests.grants import grant_role
+from tests.test_gl_parity import _post_all_grains
+from usali import gl_chart
 from usali.db import make_session_factory
 from usali.server import create_app
 
@@ -43,6 +45,14 @@ def client(
 ) -> TestClient:
     # L4: the minted accountant's authority is its org-wide DB grant.
     grant_role(db_session, "accountant")
+    # The SOS totals render from posted pms_daily journal history since the
+    # cutover (`summary_operating_statement_from_journal` refuses a range
+    # without it), so the world posts every seeded grain — the same chart +
+    # calendar + backfill an operator runs. Committed: the endpoint reads
+    # through its own session factory, not db_session.
+    gl_chart.seed_chart(db_session, org_id=1)
+    _post_all_grains(db_session)
+    db_session.commit()
     return _make_client(db_engine, tmp_path)
 
 
@@ -419,3 +429,55 @@ def test_api_only_without_dist(db_engine, db_session, founding_org, tmp_path):
     client = _make_spa_client(db_engine, tmp_path, tmp_path / "missing-dist")
     assert client.get("/").status_code == 404
     assert client.get("/api/properties").status_code == 200
+
+
+@pytest.fixture
+def unposted_client(
+    db_engine: Engine, db_session: Session, seed_six_pdfs: None, tmp_path: Path
+) -> TestClient:
+    """Facts seeded but the journal never posted — the world the flipped
+    endpoint must refuse (`summary_operating_statement_from_journal` raises
+    `NoPostedEntriesError` on it), unlike `client`, whose backfill makes the
+    two derivations agree."""
+    grant_role(db_session, "accountant")
+    return _make_client(db_engine, tmp_path)
+
+
+def test_sos_refuses_unposted_history_naming_gl_post(unposted_client):
+    # Facts exist for the day, no posted pms_daily entries cover it: the
+    # fact-read function would happily render here, so this 404 is what
+    # distinguishes the flipped call site from a regression back to it.
+    r = unposted_client.get("/api/sos", params={"property": "HISJ", "date": "2026-07-07"})
+    assert r.status_code == 404, r.text
+    assert "gl-post" in r.json()["detail"]
+
+
+def test_sos_totals_hold_through_the_endpoint_after_an_out_of_band_fact_edit(
+    client, db_session
+):
+    # The drift guarantee at the HTTP boundary (the cutover's payoff, pinned
+    # at the library grain by tests/test_sos_journal.py::
+    # test_out_of_band_fact_edit_moves_the_rows_but_not_the_totals): mutate a
+    # fact WITHOUT re-posting and the response's bucket total must stay the
+    # journal's value while the fact-derived line visibly moves off it. A
+    # call site regressed to fact-read reports 510.00 for both.
+    from sqlalchemy import select
+
+    from usali.models import UsaliFinancialFact
+
+    fact = db_session.scalars(
+        select(UsaliFinancialFact).where(
+            UsaliFinancialFact.property_id == "HISJ",
+            UsaliFinancialFact.usali_sub_category == "Parking",
+            UsaliFinancialFact.business_date == date(2026, 7, 7),
+        )
+    ).one()
+    fact.amount = float(Decimal(str(fact.amount)) + Decimal("100.00"))
+    db_session.commit()
+
+    r = client.get("/api/sos", params={"property": "HISJ", "date": "2026-07-07"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert Decimal(body["misc_income_total"]) == Decimal("410.00")
+    parking = next(m for m in body["misc_income"] if m["line_item"] == "Parking")
+    assert Decimal(parking["total"]) == Decimal("510.00")
