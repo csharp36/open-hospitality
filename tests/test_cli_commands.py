@@ -72,3 +72,12 @@ def test_process_command_runs_full_pipeline(db_url, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert "OPERA" in result.output and "HISJ" in result.output
+
+
+def test_gl_seed_chart_fill_usali_reports_counts(db_url):
+    # seed-properties find-or-creates org 1, which the chart rows FK onto.
+    runner.invoke(app, ["seed-properties", "mapping/properties.yaml"])
+    result = runner.invoke(app, ["gl-seed-chart", "--fill-usali"])
+    assert result.exit_code == 0, result.output
+    assert "Seeded" in result.output
+    assert "filled" in result.output and "left alone" in result.output

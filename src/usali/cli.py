@@ -114,14 +114,28 @@ def seed_properties_cmd(
 
 
 @app.command("gl-seed-chart")
-def gl_seed_chart_cmd() -> None:
+def gl_seed_chart_cmd(
+    fill_usali: bool = typer.Option(
+        False,
+        "--fill-usali",
+        help="Also fill NULL usali_* columns on existing accounts from the "
+        "template; a value an operator set is never overwritten.",
+    ),
+) -> None:
     """Seed the USALI chart for the org (insert-only; edits survive)."""
     # The CLI is the org-1 operator surface (see _session_factory's L3 note),
     # so the chart seeds under FOUNDING_ORG_ID like every other command.
     with _session_factory()() as s:
         n = gl_chart.seed_chart(s, org_id=FOUNDING_ORG_ID)
+        out = (
+            gl_chart.fill_usali(s, org_id=FOUNDING_ORG_ID) if fill_usali else None
+        )
         s.commit()
     typer.echo(f"Seeded {n} account(s)")
+    if out is not None:
+        typer.echo(
+            f"USALI backfill: {out.filled} filled, {out.unchanged} left alone"
+        )
 
 
 @app.command("gl-post")
