@@ -1,3 +1,4 @@
+import re
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -165,10 +166,20 @@ def test_gl_parity_command_all_properties_on_an_empty_db_fails(db_url, db_sessio
     assert "nothing was checked" in result.output
 
 
+def _squashed(output: str) -> str:
+    """Rich wraps the BadParameter panel to the terminal width, splitting
+    long tokens (at their hyphens) across box-bordered lines and, on CI,
+    threading ANSI codes through — so a substring match against the raw
+    output depends on where the wrap landed. Strip the decoration and ALL
+    whitespace; needles must be squashed the same way."""
+    text = re.sub(r"\x1b\[[^m]*m", "", output)
+    return re.sub(r"[\s│╭╮╰╯─]+", "", text)
+
+
 def test_gl_parity_command_rejects_partial_args():
     result = runner.invoke(app, ["gl-parity", "HISJ", "2026-07-01"])
     assert result.exit_code != 0
-    assert "PROPERTY, DATE_FROM, and DATE_TO" in result.output
+    assert "PROPERTY,DATE_FROM,andDATE_TO" in _squashed(result.output)
 
 
 def test_gl_parity_command_rejects_args_with_all_properties():
@@ -176,10 +187,10 @@ def test_gl_parity_command_rejects_args_with_all_properties():
         app, ["gl-parity", "HISJ", "2026-07-01", "2026-07-01", "--all-properties"]
     )
     assert result.exit_code != 0
-    assert "--all-properties" in result.output
+    assert "--all-properties" in _squashed(result.output)
 
 
 def test_gl_parity_command_rejects_start_after_end():
     result = runner.invoke(app, ["gl-parity", "HISJ", "2026-07-02", "2026-07-01"])
     assert result.exit_code != 0
-    assert "is after" in result.output
+    assert "isafter" in _squashed(result.output)
