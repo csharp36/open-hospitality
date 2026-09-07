@@ -6,7 +6,8 @@ from typing import TypeVar, cast, get_args
 
 import httpx
 import typer
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from usali import gl_chart, gl_posting, invites, qbo_push, render, reporting
 from usali.adaptors import autoclerk_transaction_summary as autoclerk
@@ -20,7 +21,7 @@ from usali.mapping.draft_gen import generate_draft
 from usali.mapping.loader import load_mappings
 from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
-from usali.models import Timecard
+from usali.models import JournalEntry, Timecard
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError
 from usali.notifications import Notifier, notifier_from_settings
 from usali.photo_store import LocalPhotoStore
@@ -180,6 +181,100 @@ def gl_post_cmd(
     if counts["failed"]:
         typer.echo(f"FAILED: {counts['failed']} posting(s) refused", err=True)
         raise typer.Exit(code=1)
+
+
+def _posted_property_ranges(s: Session) -> list[tuple[str, date, date]]:
+    """Every property with at least one posted `pms_daily` journal entry,
+    paired with its OWN posted min/max business_date — the per-property
+    ranges `--all-properties` walks, since one property's posted history
+    can start or end on a day another property never posted."""
+    rows = s.execute(
+        select(
+            JournalEntry.property_id,
+            func.min(JournalEntry.business_date),
+            func.max(JournalEntry.business_date),
+        )
+        .where(JournalEntry.source_type == "pms_daily")
+        .group_by(JournalEntry.property_id)
+        .order_by(JournalEntry.property_id)
+    ).all()
+    return [(property_id, lo, hi) for property_id, lo, hi in rows]
+
+
+@app.command("gl-parity")
+def gl_parity_cmd(
+    property_id: str | None = typer.Argument(None, help="Property identifier"),
+    date_from: str | None = typer.Argument(None, help="YYYY-MM-DD"),
+    date_to: str | None = typer.Argument(None, help="YYYY-MM-DD"),
+    all_properties: bool = typer.Option(
+        False, "--all-properties",
+        help="Walk every property with posted pms_daily history, each over "
+        "its own posted min/max business_date; PROPERTY/DATE_FROM/DATE_TO "
+        "must then be omitted.",
+    ),
+) -> None:
+    """The D-OH27.9 parity gate, runnable against production (cutover note
+    §7.3): wraps `reporting.sos_journal_parity` — no logic of its own.
+
+    Prints one line per disagreeing GL account, naming its property and
+    range, and exits nonzero if any exist. Zero diffs exits 0 and says what
+    was checked; zero PROPERTIES checked (an empty `--all-properties` walk)
+    is not the same claim and exits nonzero too — the gate's contract is
+    "green means verified", so nothing-checked cannot read as green. Zero
+    diffs over every property's full posted history is the flip condition
+    the note sets for T6.
+    """
+    if all_properties:
+        if property_id is not None or date_from is not None or date_to is not None:
+            raise typer.BadParameter(
+                "--all-properties walks every property's own posted "
+                "history; give it no PROPERTY/DATE_FROM/DATE_TO"
+            )
+        ranges: list[tuple[str, date, date]] = []
+    else:
+        if property_id is None or date_from is None or date_to is None:
+            raise typer.BadParameter(
+                "PROPERTY, DATE_FROM, and DATE_TO are required without "
+                "--all-properties"
+            )
+        start = _parse_date(date_from, "DATE_FROM")
+        end = _parse_date(date_to, "DATE_TO")
+        if start > end:
+            raise typer.BadParameter(f"{date_from} is after {date_to}")
+        ranges = [(property_id, start, end)]
+
+    diff_count = 0
+    with _session_factory()() as s:
+        if all_properties:
+            ranges = _posted_property_ranges(s)
+        for prop, start, end in ranges:
+            for d in reporting.sos_journal_parity(
+                s, property_id=prop, date_from=start, date_to=end
+            ):
+                diff_count += 1
+                # The range rides on every diff line so an operator can
+                # re-run this exact grain with the single-property form
+                # without re-deriving dates from --all-properties's walk.
+                typer.echo(
+                    f"{prop} {start} to {end} {d.gl_account_code}: "
+                    f"fact={d.fact_total} journal={d.journal_total}"
+                )
+
+    if all_properties and not ranges:
+        typer.echo(
+            "FAILED: no property has posted pms_daily history; "
+            "nothing was checked",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    if diff_count:
+        typer.echo(f"FAILED: {diff_count} account(s) diverge", err=True)
+        raise typer.Exit(code=1)
+    if all_properties:
+        typer.echo(f"parity holds: {len(ranges)} property(ies) checked")
+    else:
+        prop, start, end = ranges[0]
+        typer.echo(f"parity holds: {prop} {start} to {end}")
 
 
 @app.command("invite")
