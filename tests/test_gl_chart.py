@@ -40,3 +40,26 @@ def test_seeding_does_not_resurrect_an_edited_account(db_session, founding_org):
     db_session.flush()
     gl_chart.seed_chart(db_session, org_id=1)
     assert db_session.get(GlAccount, (1, "4000")).name == "Rooms Revenue (renamed)"
+
+
+def test_seeding_classifies_the_settlement_and_tax_buckets(db_session, founding_org):
+    """The unscheduled buckets the SOS renders from the chart: majors set,
+    schedules NULL — the values verified by the template header's grep line."""
+    gl_chart.seed_chart(db_session, org_id=1)
+    expected = {
+        "1000": "Settlements",
+        "1100": "Settlements",
+        "1200": "Settlements",
+        "2100": "Taxes (Pass-Through)",
+    }
+    for code, major in expected.items():
+        row = db_session.get(GlAccount, (1, code))
+        assert row is not None
+        assert row.usali_major_category == major
+        assert row.usali_schedule_id is None
+    # The clearing and accrual rows stay unclassified: 1210 is excluded from
+    # the statement by system_role, 2200 is a balance-sheet accrual.
+    for code in ("1210", "2200"):
+        row = db_session.get(GlAccount, (1, code))
+        assert row.usali_major_category is None
+        assert row.usali_schedule_id is None

@@ -3,8 +3,12 @@
 #
 # system_role is how the posting engine finds structural accounts
 # (design D-OH27.2): renumber freely, the roles travel with the rows.
-# usali_* fields are the join keys the SOS parity gate uses; income and
-# expense accounts should carry them, clearing/liability accounts do not.
+# usali_* fields are the join keys the SOS parity gate uses. Income and
+# expense accounts carry schedule+major; the settlement clearings
+# (1000/1100/1200) and tax payable (2100) carry a major with NULL schedule —
+# the unscheduled SOS buckets. The role-bearing rows (1210, 2200) stay
+# entirely NULL: 1210 is excluded from the statement by system_role, not
+# classified into it, and 2200 is a balance-sheet accrual.
 #
 # usali_major_category / usali_schedule_id are COPIED from the values actually
 # present in the mapping dictionaries — re-verify with:
@@ -21,12 +25,15 @@
 - account_code: "1000"
   name: "Cash Clearing"
   account_type: asset
+  usali_major_category: "Settlements"
 - account_code: "1100"
   name: "Credit Card Clearing"
   account_type: asset
+  usali_major_category: "Settlements"
 - account_code: "1200"
   name: "Accounts Receivable Clearing"
   account_type: asset
+  usali_major_category: "Settlements"
 - account_code: "1210"
   name: "Guest Ledger Clearing"
   account_type: asset
@@ -34,6 +41,7 @@
 - account_code: "2100"
   name: "Sales & Occupancy Tax Payable"
   account_type: liability
+  usali_major_category: "Taxes (Pass-Through)"
 - account_code: "2200"
   name: "Accrued Payroll"
   account_type: liability
