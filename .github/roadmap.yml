@@ -313,7 +313,7 @@ roadmap:
       double-entry journal every PMS and labor fact posts into, fiscal periods
       with a close, trial balance and balance sheet. QuickBooks becomes an
       optional export.
-    status: in-progress
+    status: shipped  # backend #123, /gl page #125, SOS cutover per docs/design/2026-09-07-oh27-sos-cutover-decision.md
     tags: [gl, accounting]
 
   - id: OH-28

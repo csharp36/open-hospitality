@@ -150,7 +150,12 @@ weighed at amendment time:
   cent; an out-of-band fact edit leaves every total true and makes the
   detail visibly disagree — the drift becomes detectable instead of
   silent, a strictly better failure mode than the fact-read statement
-  has. **Chosen.**
+  has. **Chosen.** As built, an operated section's journal total attaches
+  per schedule through the facts' schedule→sub-category mapping over the
+  range; a schedule whose facts fan out to more than one sub-category has
+  no journal-derivable split and is refused loudly rather than
+  approximated
+  (`test_a_schedule_fanned_across_subs_refuses_rather_than_splits`).
 
 What C requires — unchanged from B's list, since the chart still
 classifies every total:
