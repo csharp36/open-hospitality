@@ -47,7 +47,7 @@ import logging
 import re
 from calendar import monthrange
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
@@ -105,6 +105,18 @@ class NoFactsError(ValueError):
     Subclasses ValueError so existing `except ValueError` callers (the CLI) are
     unaffected; typed callers (the portal API) can distinguish "nothing there"
     (HTTP 404) from a bad request (HTTP 422) without matching on message text.
+    """
+
+
+class NoPostedEntriesError(NoFactsError):
+    """Facts exist for the window but no posted `pms_daily` journal entries do.
+
+    Raised by `summary_operating_statement_from_journal` instead of rendering
+    a statement of zeros (cutover note §6): history nobody ran `gl-post` over
+    is a missing backfill, not an empty hotel. Subclasses `NoFactsError` so
+    the existing catch sites (`portal_api._run`, the CLI's `except ValueError`
+    around `report_cmd`) handle it the way they handle "no facts"; the message
+    names the remedy.
     """
 
 
@@ -882,6 +894,22 @@ def _labor_variance(
     )
 
 
+def _sos_window(
+    business_date: date | None, date_from: date | None, date_to: date | None
+) -> tuple[date, date]:
+    """Resolve the SOS date-mode arguments to an inclusive (start, end):
+    exactly one of `business_date` (single day) or both `date_from`/`date_to`."""
+    if business_date is not None:
+        if date_from is not None or date_to is not None:
+            raise ValueError("pass either business_date or a date_from/date_to range, not both")
+        return business_date, business_date
+    if date_from is not None and date_to is not None:
+        if date_from > date_to:
+            raise ValueError(f"date_from {date_from} is after date_to {date_to}")
+        return date_from, date_to
+    raise ValueError("pass business_date, or both date_from and date_to")
+
+
 def summary_operating_statement(
     session: Session,
     *,
@@ -896,16 +924,7 @@ def summary_operating_statement(
     `date_from`/`date_to` (inclusive range; financial and segment facts are SUMmed,
     statistics come from the latest business date in the range).
     """
-    if business_date is not None:
-        if date_from is not None or date_to is not None:
-            raise ValueError("pass either business_date or a date_from/date_to range, not both")
-        start, end = business_date, business_date
-    elif date_from is not None and date_to is not None:
-        if date_from > date_to:
-            raise ValueError(f"date_from {date_from} is after date_to {date_to}")
-        start, end = date_from, date_to
-    else:
-        raise ValueError("pass business_date, or both date_from and date_to")
+    start, end = _sos_window(business_date, date_from, date_to)
 
     facts = (
         session.execute(
@@ -1009,6 +1028,193 @@ def summary_operating_statement(
         sick_unpriced_hours=sick_unpriced_hours,
         labor_variance=labor_variance,
     )
+
+
+# The revenue-side totals shape C hands to the journal (cutover note §5).
+# `summary_operating_statement_from_journal` accumulates and replaces exactly
+# these fields (plus each DeptSection.total inside operated_departments);
+# tests/test_sos_journal.py::test_the_journal_owned_totals_set_is_closed holds
+# this tuple equal to SosReport's revenue-side total fields, so a new revenue
+# total cannot silently stay fact-derived.
+_JOURNAL_OWNED_TOTALS = (
+    "misc_income_total",
+    "total_operating_revenue",
+    "taxes_total",
+    "settlements_total",
+    "other_total",
+)
+
+
+def _journal_nets(
+    session: Session, property_id: str, start: date, end: date
+) -> dict[str, Decimal]:
+    """Per-account net of posted `pms_daily` journal lines over the inclusive
+    range, credits positive. The guest-ledger-clearing account is excluded —
+    found by `system_role` with NO `is_active` filter (cutover note §2.2: a
+    deactivated role-bearing account is still the exclusion). Shared by
+    `sos_journal_parity` and `summary_operating_statement_from_journal` so the
+    sign and exclusion conventions live once."""
+    clearing = session.scalar(
+        select(GlAccount.account_code).where(
+            GlAccount.system_role == "guest_ledger_clearing"
+        )
+    )
+    rows = session.execute(
+        select(JournalLine.account_code, JournalLine.posting, JournalLine.amount)
+        .join(JournalEntry, JournalEntry.entry_id == JournalLine.entry_id)
+        .where(
+            JournalEntry.property_id == property_id,
+            JournalEntry.source_type == "pms_daily",
+            JournalEntry.business_date >= start,
+            JournalEntry.business_date <= end,
+        )
+    ).all()
+    nets: dict[str, Decimal] = {}
+    for code, posting, amount in rows:
+        if code == clearing:
+            continue
+        signed = Decimal(str(amount)) if posting == "Credit" else -Decimal(str(amount))
+        nets[code] = nets.get(code, Decimal("0")) + signed
+    return nets
+
+
+def summary_operating_statement_from_journal(
+    session: Session,
+    *,
+    property_id: str,
+    business_date: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> SosReport:
+    """The SOS whose numbers are the journal's — shape C of the cutover note
+    (docs/design/2026-09-07-oh27-sos-cutover-decision.md §5).
+
+    Same `SosReport` shape as `summary_operating_statement`, split by
+    provenance:
+
+    - **Journal-derived**: every total an operator totals against —
+      `total_operating_revenue`, `misc_income_total`, `taxes_total`,
+      `settlements_total`, `other_total`, and each `DeptSection.total`.
+      Computed from per-account nets (credits positive, the
+      `sos_journal_parity` convention) of posted `pms_daily` entries over the
+      range, classified by the chart: operated/misc by `usali_schedule_id`,
+      taxes/settlements/other by `usali_major_category` for unscheduled
+      accounts, the guest-ledger-clearing account excluded by `system_role`.
+    - **Fact-derived**, unchanged from the fact-read function (which builds
+      the rest of this report): the line rows inside every section and
+      bucket, plus segments, statistics, and the labor block. The journal
+      cannot carry `(major, sub_category, line_item)` grain (note §4) and
+      does not pretend to.
+
+    The chart classifies to `(schedule, major)` and no finer (note §4), so an
+    operated section's journal total is its SCHEDULE's net, attached to the
+    section via the facts' schedule→sub-category mapping over the range. A
+    schedule whose facts fan out to more than one sub-category cannot be
+    split by the journal and is refused loudly rather than approximated. A
+    schedule with journal nets but no facts in the range contributes to
+    `total_operating_revenue` and to no section — the sections render from
+    the facts, and the shortfall is visible as sections that do not sum to
+    the headline.
+
+    After an out-of-band fact edit the totals here hold still while the
+    fact-derived rows visibly stop summing to them (note §1) — which is why
+    no operated+misc==TOR self-check runs here: it would turn that visible
+    drift into a crash.
+    """
+    start, end = _sos_window(business_date, date_from, date_to)
+    report = summary_operating_statement(
+        session, property_id=property_id, business_date=business_date,
+        date_from=date_from, date_to=date_to,
+    )
+
+    nets = _journal_nets(session, property_id, start, end)
+    if not nets:
+        raise NoPostedEntriesError(
+            f"facts exist for property {property_id} between {start} and {end} "
+            f"but no posted pms_daily journal entries cover them; run "
+            f"`usali gl-post` over the range to backfill the journal first"
+        )
+
+    chart: dict[str, tuple[int | None, str | None]] = {
+        code: (schedule, major)
+        for code, schedule, major in session.execute(
+            select(
+                GlAccount.account_code,
+                GlAccount.usali_schedule_id,
+                GlAccount.usali_major_category,
+            )
+        ).all()
+    }
+
+    per_schedule: dict[int, Decimal] = {}
+    totals: dict[str, Decimal] = dict.fromkeys(_JOURNAL_OWNED_TOTALS, Decimal("0"))
+    for code, net in nets.items():
+        schedule, major = chart[code]
+        if schedule is not None and schedule not in _ALLOWED_SCHEDULES:
+            raise ValueError(
+                f"posted pms_daily entries for property {property_id} touch account "
+                f"{code} on USALI schedule {schedule}; the revenue-side SOS only "
+                f"classifies schedules {sorted(_ALLOWED_SCHEDULES)} (plus NULL for "
+                f"taxes/settlements/other)"
+            )
+        if schedule in _OPERATED_SCHEDULES:
+            per_schedule[schedule] = per_schedule.get(schedule, Decimal("0")) + net
+        elif schedule == _MISC_INCOME_SCHEDULE:
+            totals["misc_income_total"] += net
+        elif major == TAXES_MAJOR:
+            totals["taxes_total"] += net
+        elif major == SETTLEMENTS_MAJOR:
+            totals["settlements_total"] += net
+        else:
+            totals["other_total"] += net
+    totals["total_operating_revenue"] = (
+        sum(per_schedule.values(), Decimal("0")) + totals["misc_income_total"]
+    )
+
+    # Attach per-schedule nets to the rendered sections. The sections are
+    # keyed by sub-category (a fact-side word); the schedule→sub mapping over
+    # this range is what connects the chart-grain number to it. Two schedules
+    # sharing one sub merge additively; one schedule fanning out to several
+    # subs has no journal-derivable split and refuses.
+    subs_of: dict[int, set[str]] = {}
+    for schedule, sub in session.execute(
+        select(
+            UsaliFinancialFact.usali_schedule_id,
+            UsaliFinancialFact.usali_sub_category,
+        )
+        .where(
+            UsaliFinancialFact.property_id == property_id,
+            UsaliFinancialFact.business_date >= start,
+            UsaliFinancialFact.business_date <= end,
+            UsaliFinancialFact.usali_schedule_id.in_(sorted(_OPERATED_SCHEDULES)),
+        )
+        .distinct()
+    ).all():
+        subs_of.setdefault(schedule, set()).add(sub)
+    fanned = {s: subs for s, subs in subs_of.items() if len(subs) > 1}
+    if fanned:
+        described = "; ".join(
+            f"schedule {s} -> {sorted(subs)}" for s, subs in sorted(fanned.items())
+        )
+        raise ValueError(
+            f"cannot derive operated section totals from the journal for property "
+            f"{property_id}: the chart classifies to (schedule, major) and no finer "
+            f"(cutover note §4), but facts in this range fan out — {described}"
+        )
+    total_by_sub: dict[str, Decimal] = {}
+    for schedule, subs in subs_of.items():
+        (sub,) = subs
+        total_by_sub[sub] = (
+            total_by_sub.get(sub, Decimal("0"))
+            + per_schedule.get(schedule, Decimal("0"))
+        )
+
+    changes: dict[str, Any] = dict(totals)
+    changes["operated_departments"] = [
+        replace(section, total=total_by_sub.get(section.sub_category, Decimal("0")))
+        for section in report.operated_departments
+    ]
+    return replace(report, **changes)
 
 
 # --- Mapping coverage and confidence report -------------------------------------
@@ -2068,27 +2274,7 @@ def sos_journal_parity(
     facts = {code: Decimal(str(total)).quantize(Decimal("0.0001"))
              for code, total in fact_rows}
 
-    clearing = session.scalar(
-        select(GlAccount.account_code).where(
-            GlAccount.system_role == "guest_ledger_clearing"
-        )
-    )
-    journal_rows = session.execute(
-        select(JournalLine.account_code, JournalLine.posting, JournalLine.amount)
-        .join(JournalEntry, JournalEntry.entry_id == JournalLine.entry_id)
-        .where(
-            JournalEntry.property_id == property_id,
-            JournalEntry.source_type == "pms_daily",
-            JournalEntry.business_date >= date_from,
-            JournalEntry.business_date <= date_to,
-        )
-    ).all()
-    journal: dict[str, Decimal] = {}
-    for code, posting, amount in journal_rows:
-        if code == clearing:
-            continue
-        signed = Decimal(str(amount)) if posting == "Credit" else -Decimal(str(amount))
-        journal[code] = journal.get(code, Decimal("0")) + signed
+    journal = _journal_nets(session, property_id, date_from, date_to)
 
     diffs = []
     for code in sorted(set(facts) | set(journal)):
