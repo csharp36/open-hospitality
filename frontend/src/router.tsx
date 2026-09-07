@@ -31,6 +31,8 @@ import PayrollDashboardPage from './pages/PayrollDashboardPage'
 import SchedulePage from './pages/SchedulePage'
 import PreviewPage from './pages/PreviewPage'
 import SignupPage from './pages/SignupPage'
+import GlPage from './pages/GlPage'
+import RouteErrorCard from './components/RouteErrorCard'
 import { CallbackPage, RootShell } from './RootShell'
 
 const rootRoute = createRootRoute({ component: RootShell })
@@ -245,6 +247,27 @@ const tryRoute = createRoute({
 })
 
 /**
+ * GL period selection lives in the URL so a trial-balance view is linkable:
+ * `?period=2026-P07`. A malformed value clamps to "not picked" (the
+ * `validatePropertyMonth` shape) instead of firing a doomed request.
+ */
+export type GlSearch = {
+  period?: string
+}
+
+const PERIOD_RE = /^\d{4}-P\d{2}$/
+
+const glRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/gl',
+  component: GlPage,
+  validateSearch: (search: Record<string, unknown>): GlSearch => {
+    const period = search.period
+    return { period: typeof period === 'string' && PERIOD_RE.test(period) ? period : undefined }
+  },
+})
+
+/**
  * The signup invite token lives in the URL: `/signup?token=…`. It is the whole
  * credential an invited owner arrives with (no session yet), so the page reads
  * it from search and fails closed when it is absent or invalid.
@@ -282,6 +305,7 @@ const childRoutes = [
   scheduleRoute,
   tryRoute,
   signupRoute,
+  glRoute,
 ]
 
 const routeTree = rootRoute.addChildren(childRoutes)
@@ -323,7 +347,12 @@ export function isServedPath(href: string): boolean {
 }
 
 export function createAppRouter(history?: RouterHistory) {
-  return createRouter({ routeTree, history })
+  // A page whose render throws (deploy skew: lib/decimal and lib/balanceSheet
+  // both throw on payloads the frontend does not know) must not take the shell
+  // down with it. RouteErrorCard keeps the failure inside the errored page's
+  // slot — pinned by GlPage.test.tsx "contains a render-time throw: the shell
+  // survives and the message shows".
+  return createRouter({ routeTree, history, defaultErrorComponent: RouteErrorCard })
 }
 
 declare module '@tanstack/react-router' {

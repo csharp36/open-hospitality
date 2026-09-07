@@ -7,11 +7,14 @@ import type {
   CoverageReport,
   CpaPack,
   Employee,
+  GlPeriod,
   JePlan,
+  JournalEntry,
   PropertyInfo,
   PushLedgerRow,
   SosReport,
   StagedTxn,
+  TrialBalance,
 } from '../api/types'
 import type { AuthContextValue } from '../auth/authContext'
 
@@ -321,3 +324,112 @@ export const PARKING_TXNS: StagedTxn[] = [
     source_file: 'opera-2026-07-07.pdf',
   },
 ]
+
+// --- General ledger (OH-27) --------------------------------------------------
+// Business dates sit inside HISJ_PROPERTY's 2026-07-01..2026-07-07 window so property
+// bounds and GL fixtures agree; amounts are Numeric(15, 4)-scale strings like
+// the SOS fixture above.
+
+export function makeGlPeriod(overrides: Partial<GlPeriod> = {}): GlPeriod {
+  return {
+    period_key: '2026-P07',
+    state: 'open',
+    date_from: '2026-07-01',
+    date_to: '2026-07-31',
+    unposted_dates: [],
+    orphaned_dates: [],
+    ...overrides,
+  }
+}
+
+/** A small balanced chart — cash 1010, guest ledger 1210, revenue 4100,
+ *  wages 6100 — with total debits equal to total credits (12066.3700 each),
+ *  so a test asserting the balanced badge is asserting something honest.
+ *  Overriding `lines` means overriding both totals too — the maker spreads
+ *  the override in verbatim and recomputes nothing. */
+export function makeTrialBalance(overrides: Partial<TrialBalance> = {}): TrialBalance {
+  return {
+    property_id: 'HISJ',
+    period_key: '2026-P07',
+    date_from: '2026-07-01',
+    date_to: '2026-07-31',
+    lines: [
+      {
+        account_code: '1010',
+        name: 'Cash - Operating',
+        account_type: 'asset',
+        debits: '500.0000',
+        credits: '1200.0000',
+      },
+      {
+        account_code: '1210',
+        name: 'Guest Ledger',
+        account_type: 'asset',
+        debits: '10366.3700',
+        credits: '0.0000',
+      },
+      {
+        account_code: '4100',
+        name: 'Rooms Revenue',
+        account_type: 'income',
+        debits: '0.0000',
+        credits: '10866.3700',
+      },
+      {
+        account_code: '6100',
+        name: 'Wages - Rooms',
+        account_type: 'expense',
+        debits: '1200.0000',
+        credits: '0.0000',
+      },
+    ],
+    total_debits: '12066.3700',
+    total_credits: '12066.3700',
+    ...overrides,
+  }
+}
+
+/** One balanced pms_daily entry: a Credit revenue line carrying single-fact
+ *  provenance (fact_id and the three txn fields set) and a Debit guest-ledger
+ *  line of the same amount with those four fields null. The null-provenance
+ *  line is ordinary pms_daily reality, not a payroll marker —
+ *  `gl_posting.JeLine` (`_emit`) sets `fact_id` only when exactly one fact
+ *  makes up the line. Payroll-shaped entries come from overrides. */
+export function makeJournalEntry(overrides: Partial<JournalEntry> = {}): JournalEntry {
+  return {
+    entry_id: 7,
+    business_date: '2026-07-07',
+    source_type: 'pms_daily',
+    memo: 'Daily posting HISJ 2026-07-07',
+    reversal_of: null,
+    posted_by: 'dev-admin',
+    posted_at: '2026-07-08T02:00:00Z',
+    lines: [
+      {
+        line_id: 71,
+        account_code: '4100',
+        account_name: 'Rooms Revenue',
+        posting: 'Credit',
+        amount: '10456.3700',
+        memo: 'Daily revenue 2026-07-07',
+        fact_id: 9001,
+        pms_trx_code: '1000',
+        pms_trx_desc: 'ROOM REVENUE',
+        source_file: 'opera-2026-07-07.pdf',
+      },
+      {
+        line_id: 72,
+        account_code: '1210',
+        account_name: 'Guest Ledger',
+        posting: 'Debit',
+        amount: '10456.3700',
+        memo: 'Daily revenue 2026-07-07',
+        fact_id: null,
+        pms_trx_code: null,
+        pms_trx_desc: null,
+        source_file: null,
+      },
+    ],
+    ...overrides,
+  }
+}

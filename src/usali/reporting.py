@@ -48,7 +48,7 @@ import re
 from calendar import monthrange
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -1921,6 +1921,118 @@ def trial_balance(
         total_debits=sum((line.debits for line in lines), Decimal("0")),
         total_credits=sum((line.credits for line in lines), Decimal("0")),
     )
+
+
+# --- Journal-entry drill-through (OH-27 §11) ---------------------------------------
+
+
+@dataclass(frozen=True)
+class JournalLineDetail:
+    line_id: int
+    account_code: str
+    account_name: str
+    posting: str
+    amount: Decimal
+    memo: str | None
+    fact_id: int | None
+    pms_trx_code: str | None
+    pms_trx_desc: str | None
+    source_file: str | None
+
+
+@dataclass(frozen=True)
+class JournalEntryDetail:
+    entry_id: int
+    business_date: date
+    source_type: str
+    memo: str | None
+    reversal_of: int | None
+    posted_by: str
+    posted_at: datetime
+    lines: list[JournalLineDetail]
+
+
+def journal_entries(
+    session: Session, *, property_id: str, period_key: str, account_code: str
+) -> list[JournalEntryDetail]:
+    """Drill through one account to the journal entries behind its period
+    activity: every entry in the period with at least one line on the
+    account, each carrying ALL its lines — the double-entry context, not
+    half of it. Lines with a `fact_id` are joined through fact -> stage for
+    the PMS transaction code, description, and source file (the
+    `line_transactions` fields); lines without one carry None for all three
+    — which lines carry a fact_id is `gl_posting`'s decision (`JeLine`),
+    and test_journal_entries_drill_joins_the_staged_txn pins both halves.
+    Ordered by (business_date, entry_id, line_id) so re-reads are stable
+    and a reversal renders beside what it reverses. An account with no
+    lines in the period returns an empty list — the `line_transactions`
+    precedent: drill-through of nothing is nothing, not an error.
+    """
+    cfg = fiscal.require_config(fiscal.config_for(session, property_id))
+    date_from, date_to = fiscal.resolve_period(cfg, period_key)
+    hit_entries = (
+        select(JournalLine.entry_id)
+        .join(JournalEntry, JournalEntry.entry_id == JournalLine.entry_id)
+        .where(
+            JournalEntry.property_id == property_id,
+            JournalEntry.business_date >= date_from,
+            JournalEntry.business_date <= date_to,
+            JournalLine.account_code == account_code,
+        )
+    )
+    rows = session.execute(
+        select(
+            JournalEntry,
+            JournalLine,
+            GlAccount.name,
+            PmsDailyFinancialStage.pms_trx_code,
+            PmsDailyFinancialStage.pms_trx_desc,
+            PmsDailyFinancialStage.source_file,
+        )
+        .join(JournalLine, JournalLine.entry_id == JournalEntry.entry_id)
+        .join(GlAccount, GlAccount.account_code == JournalLine.account_code)
+        .outerjoin(
+            UsaliFinancialFact, UsaliFinancialFact.fact_id == JournalLine.fact_id
+        )
+        .outerjoin(
+            PmsDailyFinancialStage,
+            PmsDailyFinancialStage.stage_id == UsaliFinancialFact.stage_id,
+        )
+        .where(JournalEntry.entry_id.in_(hit_entries))
+        .order_by(
+            JournalEntry.business_date, JournalEntry.entry_id, JournalLine.line_id
+        )
+    ).all()
+    out: list[JournalEntryDetail] = []
+    for entry, line, account_name, trx_code, trx_desc, source_file in rows:
+        if not out or out[-1].entry_id != entry.entry_id:
+            out.append(
+                JournalEntryDetail(
+                    entry_id=entry.entry_id,
+                    business_date=entry.business_date,
+                    source_type=entry.source_type,
+                    memo=entry.memo,
+                    reversal_of=entry.reversal_of,
+                    posted_by=entry.posted_by,
+                    posted_at=entry.posted_at,
+                    lines=[],
+                )
+            )
+        out[-1].lines.append(
+            JournalLineDetail(
+                line_id=line.line_id,
+                account_code=line.account_code,
+                account_name=account_name,
+                posting=line.posting,
+                amount=Decimal(str(line.amount)),
+                memo=line.memo,
+                fact_id=line.fact_id,
+                pms_trx_code=trx_code,
+                pms_trx_desc=trx_desc,
+                source_file=source_file,
+            )
+        )
+    return out
 
 
 # --- Parity gate: journal vs SOS facts (OH-27 D-OH27.9) ----------------------------

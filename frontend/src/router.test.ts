@@ -24,4 +24,10 @@ describe('checklist routes', () => {
       expect(isServedPath(path), path).toBe(true)
     }
   })
+
+  // Not a checklist `where` value, so it stays out of CHECKLIST_ROUTES: the
+  // General Ledger nav entry in Layout.tsx SECTIONS is what points here.
+  it('serves /gl, which the nav links to', () => {
+    expect(isServedPath('/gl')).toBe(true)
+  })
 })

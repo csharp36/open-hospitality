@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { addFixed, eqFixed, sumFixed } from './decimal'
+import { addFixed, eqFixed, subFixed, sumFixed } from './decimal'
 
 describe('addFixed', () => {
   it('adds same-scale storage strings exactly', () => {
@@ -27,6 +27,23 @@ describe('addFixed', () => {
   it('rejects non-decimal input', () => {
     expect(() => addFixed('abc', '1')).toThrow(/not a fixed-point decimal/)
     expect(() => addFixed('1e3', '1')).toThrow(/not a fixed-point decimal/)
+  })
+})
+
+describe('subFixed', () => {
+  it('subtracts exactly, result at the wider scale (like addFixed)', () => {
+    expect(subFixed('100.00', '30.0000')).toBe('70.0000')
+    expect(eqFixed(subFixed('100.00', '30.0000'), '70')).toBe(true)
+  })
+
+  it('crosses zero without float drift', () => {
+    // 0.1 - 0.3 !== -0.2 in binary floating point.
+    expect(subFixed('0.1', '0.3')).toBe('-0.2')
+    expect(subFixed('500.0000', '1200.0000')).toBe('-700.0000')
+  })
+
+  it('rejects non-decimal input', () => {
+    expect(() => subFixed('abc', '1')).toThrow(/not a fixed-point decimal/)
   })
 })
 

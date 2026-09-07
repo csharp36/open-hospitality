@@ -11,8 +11,8 @@ Amounts serialize as `str(Decimal)` — the `journal_entry_body`
 precedent: exact through JSON, no float round-trip.
 """
 
-from datetime import date, timedelta
-from typing import Callable, TypeVar
+from datetime import date, datetime, timedelta
+from typing import Callable, TypeVar, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, ConfigDict
@@ -90,12 +90,16 @@ class PeriodModel(BaseModel):
     accrual is the ordinary no-chart/no-cost case, not a gap);
     `orphaned_dates` — dates with a current entry whose fact side is
     empty, covering BOTH sources (`usali_financial_fact` for `pms_daily`,
-    `usali_labor_fact` for `payroll_accrual`)."""
+    `usali_labor_fact` for `payroll_accrual`). `date_from`/`date_to` are
+    the period's inclusive calendar bounds — `get_periods` fills them from
+    the same `fiscal.periods_in_year` tuple it iterates for the keys."""
 
     model_config = ConfigDict(extra="forbid")
 
     period_key: str
     state: str
+    date_from: date
+    date_to: date
     unposted_dates: list[date]
     orphaned_dates: list[date]
 
@@ -136,6 +140,9 @@ class PostOutcomeModel(BaseModel):
     # Annotated with the engine's own Literal, so the admitted set can
     # never drift from `gl_posting.OutcomeStatus` — the authority.
     status: gl_posting.OutcomeStatus
+    # `gl_posting.PostOutcome.entry_id`, copied through whole: the entry
+    # the outcome names, or None when it names none.
+    entry_id: int | None
     message: str | None
 
 
@@ -159,6 +166,47 @@ class TrialBalanceModel(BaseModel):
     lines: list[TrialBalanceLineModel]
     total_debits: str
     total_credits: str
+
+
+class JournalLineModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    line_id: int
+    account_code: str
+    account_name: str
+    # Annotated with the engine's own Literal, so the admitted pair can
+    # never drift from `gl_posting.Posting` — the authority (the
+    # `PostOutcomeModel.status` shape); ck_journal_line_posting is the DB
+    # wall for the same pair.
+    posting: gl_posting.Posting
+    amount: str
+    memo: str | None
+    fact_id: int | None
+    pms_trx_code: str | None
+    pms_trx_desc: str | None
+    source_file: str | None
+
+
+class JournalEntryModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    entry_id: int
+    business_date: date
+    source_type: str
+    memo: str | None
+    reversal_of: int | None
+    posted_by: str
+    posted_at: datetime
+    lines: list[JournalLineModel]
+
+
+class JournalEntriesModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    property_id: str
+    period_key: str
+    account_code: str
+    entries: list[JournalEntryModel]
 
 
 # --- The chart ---------------------------------------------------------------
@@ -263,7 +311,7 @@ def get_periods(
                 today_key = fiscal.period_containing(cfg, date.today())
                 year = int(today_key.split("-P")[0])
             out: list[PeriodModel] = []
-            for key, _start, _end in fiscal.periods_in_year(cfg, year):
+            for key, start, end in fiscal.periods_in_year(cfg, year):
                 gaps = gl_posting.period_gaps(
                     session, property_id=property_id, period_key=key
                 )
@@ -271,6 +319,8 @@ def get_periods(
                     PeriodModel(
                         period_key=key,
                         state=gl_posting.period_state(session, property_id, key),
+                        date_from=start,
+                        date_to=end,
                         unposted_dates=gaps.unposted,
                         orphaned_dates=gaps.orphaned,
                     )
@@ -387,6 +437,7 @@ def post_range(
                         business_date=day,
                         source_type=source.source_type,
                         status=out.status,
+                        entry_id=out.entry_id,
                         message=out.message,
                     )
                 )
@@ -428,4 +479,62 @@ def get_trial_balance(
         ],
         total_debits=str(report.total_debits),
         total_credits=str(report.total_credits),
+    )
+
+
+# --- Journal-entry drill-through ---------------------------------------------
+
+
+@router.get("/entries")
+def get_entries(
+    request: Request,
+    property_id: str = Query(alias="property"),
+    period: str = Query(),
+    account_code: str = Query(alias="account"),
+) -> JournalEntriesModel:
+    """`reporting.journal_entries`, field-for-field; Decimals as strings.
+    An account with no lines in the period is an empty list, not an error
+    (the query's own contract — see its docstring)."""
+    with _session(request) as session:
+        entries = _run(
+            lambda: reporting.journal_entries(
+                session,
+                property_id=property_id,
+                period_key=period,
+                account_code=account_code,
+            )
+        )
+    return JournalEntriesModel(
+        property_id=property_id,
+        period_key=period,
+        account_code=account_code,
+        entries=[
+            JournalEntryModel(
+                entry_id=entry.entry_id,
+                business_date=entry.business_date,
+                source_type=entry.source_type,
+                memo=entry.memo,
+                reversal_of=entry.reversal_of,
+                posted_by=entry.posted_by,
+                posted_at=entry.posted_at,
+                lines=[
+                    JournalLineModel(
+                        line_id=line.line_id,
+                        account_code=line.account_code,
+                        account_name=line.account_name,
+                        # Narrowing the column's str to the pair
+                        # ck_journal_line_posting enforces on it.
+                        posting=cast(gl_posting.Posting, line.posting),
+                        amount=str(line.amount),
+                        memo=line.memo,
+                        fact_id=line.fact_id,
+                        pms_trx_code=line.pms_trx_code,
+                        pms_trx_desc=line.pms_trx_desc,
+                        source_file=line.source_file,
+                    )
+                    for line in entry.lines
+                ],
+            )
+            for entry in entries
+        ],
     )
