@@ -35,10 +35,10 @@ from sqlalchemy.orm import Session
 from usali import gl_posting
 # The builder types moved to the engine in OH-27 Task 6; re-exported so
 # P8-era callers keep working (the month_bounds re-export precedent below).
-from usali.gl_posting import (  # noqa: F401  (re-exports)
-    JeLine,
-    JePlan,
-    UnmappedGlError,
+from usali.gl_posting import (
+    JeLine as JeLine,
+    JePlan as JePlan,
+    UnmappedGlError as UnmappedGlError,
 )
 from usali.models import (
     GlPostingLedger,
@@ -181,7 +181,7 @@ def plan_for_push(session: Session, *, property_id: str, business_date: date) ->
         return build_journal_entry(
             session, property_id=property_id, business_date=business_date
         )
-    return gl_posting.plan_of_entry(session, session.get(JournalEntry, entry_id))
+    return gl_posting.plan_of_entry(session, session.get_one(JournalEntry, entry_id))
 
 
 def push_day(

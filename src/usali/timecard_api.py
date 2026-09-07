@@ -335,9 +335,9 @@ def approve_timecard(
         # the contract: GL refusals become failed ledger rows, never
         # exceptions, so a books problem cannot fail the approval; with no
         # chart seeded it skips and writes nothing.
-        for prop, day in sorted(written):
+        for prop_id, day in sorted(written):
             gl_posting.post_and_record(
-                session, property_id=prop, business_date=day,
+                session, property_id=prop_id, business_date=day,
                 source_type="payroll_accrual", actor=principal.subject,
             )
         model = _to_model(session, card)

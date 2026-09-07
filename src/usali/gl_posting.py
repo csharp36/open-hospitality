@@ -318,12 +318,12 @@ def build_pms_daily_plan(
             )
             if bal_code is None or bal_name is None:
                 missing_accounts.add(bal_code or "<balancing>")
-                bal_code = None
+                bal_code = bal_name = None
         else:
             bal = role_account(session, "guest_ledger_clearing")
             bal_code, bal_name = bal.account_code, bal.name
-        if bal_code is not None:
-            posting = "Debit" if remainder > 0 else "Credit"
+        if bal_code is not None and bal_name is not None:
+            posting: Posting = "Debit" if remainder > 0 else "Credit"
             lines.append(
                 JeLine(
                     gl_account_code=bal_code,
@@ -579,7 +579,7 @@ def post_and_record(
                     f"are gone but period {period} is closed; the standing "
                     "entry cannot be reversed"
                 )
-            prior = session.get(JournalEntry, row.entry_id)
+            prior = session.get_one(JournalEntry, row.entry_id)
             reversal = _write_entry(
                 session,
                 plan_of_entry(session, prior),
@@ -600,7 +600,7 @@ def post_and_record(
         if period_state(session, property_id, period) == "closed":
             raise PeriodClosedError(property_id, period)
         if row is not None and row.entry_id is not None:
-            prior = session.get(JournalEntry, row.entry_id)
+            prior = session.get_one(JournalEntry, row.entry_id)
             _write_entry(
                 session,
                 plan_of_entry(session, prior),
