@@ -337,7 +337,10 @@ this list instead of rediscovering it:
   `gl_account_code` sit on neither side, so mapping coverage is a separate
   question the coverage report owns), and `sos_journal_parity`'s clearing
   lookup relies on the per-org unique role index and session org-scoping (no
-  `is_active` filter), a convention to restate there.
+  `is_active` filter), a convention to restate there. DONE (2026-09-07):
+  [`2026-09-07-oh27-sos-cutover-decision.md`](2026-09-07-oh27-sos-cutover-decision.md)
+  states both in its §2, and the cutover it gates has executed as that
+  note's shape C.
 - **`/qbo/preview` and the CLI dry-run still build from facts** (pointer
   comments at both call sites). They agree with the push unless a fact
   changes without a re-post — an out-of-band DB edit; the product's own
