@@ -12,15 +12,16 @@ with the SOS still fact-read; T6 is the flip, one commit, revertible alone.
 
 ## T1 — the dictionary invariant test
 
-The §4 bridge: per-account parity guarantees the statement only while a
-fact's USALI classification is a function of its GL account. Add a CI test
-(beside `tests/test_gl_parity.py`) that loads every mapping dictionary
-(opera, skytouch, autoclerk — enumerate by glob so an eighth dictionary
-cannot dodge it) and asserts no `gl_account` carries two distinct USALI
-classification tuples **at the full grain the SOS renders** (schedule,
-major, and the sub/line labels `_grouped_lines` groups by), across files as
-well as within one. Holds today (verified 2026-09-07); the test exists to
-say so the day it stops.
+The §4 bridge: per-account parity guarantees the statement's totals only
+while a fact's `(usali_schedule_id, usali_major_category)` pair is a
+function of its GL account. Add a CI test (beside `tests/test_gl_parity.py`)
+that loads every mapping dictionary (opera, skytouch, autoclerk — enumerate
+so an eighth dictionary cannot dodge it) and asserts no `gl_account`
+carries two distinct `(schedule, major)` pairs, across files as well as
+within one. **That grain exactly — not sub/line**: §4 records that the
+line grain fans out per trx code by design (eleven tuples on one account)
+and must not be asserted. Holds today at `(schedule, major)` (verified
+2026-09-07); the test exists to say so the day it stops.
 
 - Accept: test fails when a copied dictionary entry is given a second
   classification for an existing account (prove by temporary mutation);
@@ -51,25 +52,44 @@ value or any other column. Report counts (filled / left alone).
   USALI field keeps both after the backfill while its NULL fields fill;
   running twice is a no-op the second time.
 
-## T4 — the journal-derived statement
+## T4 — the statement whose numbers are the journal's (shape C)
 
-A new `reporting` function producing the same `SosReport` shape from
-journal lines: entries where `source_type = 'pms_daily'` for the property
-and range, nets per account (credit-positive, the parity convention),
-classified via the chart per shape B — operated/misc by schedule,
-taxes/settlements/other by major for unscheduled accounts, clearing
-excluded by `system_role`. Empty result raises the same loud refusal the
-fact path's `NoFactsError` gives (same class or a sibling the callers
-already render). Pure read, `reporting.py` style.
+A new `reporting` function producing the same `SosReport` shape, with the
+note's §5 C split:
 
-The pinning test is statement-level, not just totals: on the seeded
-samples, render the fact-read SOS and the journal-read SOS after a full
-`gl-post` backfill and assert the reports are **equal field-for-field**
-— the strongest form of the parity claim, at the grain operators see.
+- **Every total** — section totals, bucket totals, total operating
+  revenue — computed from journal nets per account (credit-positive, the
+  parity convention) over entries where `source_type = 'pms_daily'` for
+  the property and range, classified via the chart: operated/misc by
+  `usali_schedule_id`, taxes/settlements/other by `usali_major_category`
+  for unscheduled accounts, clearing excluded by `system_role`.
+- **Line rows** inside each section keep rendering from the facts at
+  `(major, sub_category, line_item)` grain, exactly as `_grouped_lines`
+  does today — the journal cannot carry that grain (note §4) and does not
+  pretend to.
 
-- Accept: equality test green on seeded samples and survives the
-  reversal-chain scenario from `test_gl_parity.py`; empty range refuses
-  loudly; labor entries posted for the same range change nothing.
+Refusals: an empty fact range raises `NoFactsError` as today; a range
+with facts but no posted `pms_daily` entries refuses loudly naming
+`gl-post` as the remedy (note §6) — never a statement of zeros. Pure
+read, `reporting.py` style.
+
+Two pinning tests:
+
+1. **Totals equality**: on the seeded samples after a full `gl-post`
+   backfill, the fact-read SOS and the C-shaped SOS are equal
+   field-for-field (line rows come from the same facts; totals must
+   agree because parity holds). Survives the reversal-chain scenario
+   from `test_gl_parity.py`.
+2. **Drift visibility**: edit one fact's amount out-of-band WITHOUT
+   re-posting — every total in the C-shaped statement is unchanged
+   (journal-owned), while the affected section's line rows no longer sum
+   to its total. The test asserts both halves: the totals' immunity and
+   the visible disagreement. This is the property the cutover exists
+   for; it must be pinned, not narrated.
+
+- Accept: both tests green; empty range and unposted-history refusals
+  behave as specified; labor entries posted for the same range change
+  nothing in the statement.
 
 ## T5 — `usali gl-parity`
 
@@ -98,6 +118,6 @@ read beside `usali coverage` per the note's §2.1 — parity green AND
 coverage read consciously. Recorded in the PR description.
 
 - Accept: SPA `/reports` and `usali report` render identical statements
-  before and after on the seeded samples; a fact edited out-of-band no
-  longer moves the statement (a test proves the decoupling — the exact
-  drift class the journal exists to end).
+  before and after on the seeded samples; T4's drift-visibility test —
+  the totals' immunity to an out-of-band fact edit — holds through the
+  re-pointed call sites.

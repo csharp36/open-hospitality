@@ -13,6 +13,7 @@ from pathlib import Path
 from typer.testing import CliRunner
 
 from usali.cli import app
+from usali.models import FiscalCalendar
 
 runner = CliRunner()
 
@@ -43,10 +44,31 @@ def _seed_via_cli(tmp_path: Path) -> None:
         assert result.exit_code == 0, result.output
 
 
+def _post_via_cli(db_session) -> None:
+    """Chart + fiscal calendar + `gl-post` over the seeded day: since the
+    cutover, `report` renders its totals from posted journal history
+    (`summary_operating_statement_from_journal` refuses a range without it).
+    Only the calendar row is written directly — no CLI command creates one."""
+    result = runner.invoke(app, ["gl-seed-chart"])
+    assert result.exit_code == 0, result.output
+    db_session.add(
+        FiscalCalendar(
+            property_id="HISJ",
+            calendar_type="calendar_month",
+            fiscal_year_start_month=1,
+            week_start_weekday=None,
+        )
+    )
+    db_session.commit()
+    result = runner.invoke(app, ["gl-post", "HISJ", "2026-07-07", "2026-07-07"])
+    assert result.exit_code == 0, result.output
+
+
 def test_report_coverage_export_happy_paths(db_session, tmp_path):
     # db_session truncates the shared test database; CLI commands connect via
     # USALI_DB_URL (set by the session-scoped db_url fixture underneath).
     _seed_via_cli(tmp_path)
+    _post_via_cli(db_session)
 
     # report --format json to stdout
     result = runner.invoke(

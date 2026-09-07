@@ -35,6 +35,17 @@ from usali.models import GlAccount
 
 _TEMPLATE = Path(__file__).resolve().parents[2] / "mapping" / "gl_accounts_usali.yaml"
 
+# The columns fill_usali may write, and the only ones it may write.
+# test_usali_fields_tuple_matches_the_models_usali_columns pins this to
+# GlAccount's usali_* column set, so a new usali_ column cannot be
+# silently skipped here.
+_USALI_FIELDS = (
+    "usali_schedule_id",
+    "usali_major_category",
+    "usali_sub_category",
+    "usali_line_item",
+)
+
 
 @dataclass(frozen=True)
 class TemplateAccount:
@@ -85,3 +96,49 @@ def seed_chart(session: Session, *, org_id: int, path: Path = _TEMPLATE) -> int:
         inserted += 1
     session.flush()
     return inserted
+
+
+@dataclass(frozen=True)
+class UsaliBackfill:
+    filled: int  # accounts where at least one NULL usali_* column was filled
+    unchanged: int  # template accounts present in the chart, left as they were
+
+
+def fill_usali(session: Session, *, org_id: int, path: Path = _TEMPLATE) -> UsaliBackfill:
+    """Fill NULL ``usali_*`` columns on `org_id`'s existing accounts from the
+    template, matched by ``account_code``.
+
+    The complement of :func:`seed_chart`: seeding inserts and never updates,
+    so a chart seeded before the template carried a classification never
+    receives it — this fills exactly that gap and nothing else. Per column,
+    a value is written only where the row holds NULL and the template holds
+    one; a non-NULL value is never replaced, columns outside
+    ``_USALI_FIELDS`` are never written, chart rows the template lacks are
+    never touched, and template rows the chart lacks are never inserted
+    (inserting is `seed_chart`'s job). Explicit `org_id` for the same
+    unbound-session reason `seed_chart` documents above.
+    """
+    rows = {
+        row.account_code: row
+        for row in session.scalars(
+            select(GlAccount).where(GlAccount.org_id == org_id)
+        )
+    }
+    filled = 0
+    unchanged = 0
+    for acct in load_template(path):
+        row = rows.get(acct.account_code)
+        if row is None:
+            continue
+        touched = False
+        for field in _USALI_FIELDS:
+            template_value = getattr(acct, field)
+            if template_value is not None and getattr(row, field) is None:
+                setattr(row, field, template_value)
+                touched = True
+        if touched:
+            filled += 1
+        else:
+            unchanged += 1
+    session.flush()
+    return UsaliBackfill(filled=filled, unchanged=unchanged)
