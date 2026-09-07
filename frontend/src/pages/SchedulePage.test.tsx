@@ -881,24 +881,34 @@ describe('SchedulePage', () => {
 
 describe('SchedulePage CRM demand', () => {
   it('renders demand beside the forecast and as a grid chip, from the latest snapshot', async () => {
-    vi.mocked(getDemand).mockResolvedValue(DEMAND)
-    renderPage()
-    await pickWeek()
+    // Pin "today" inside the fixture week (Wed 07-22) so THIS render asks for
+    // 2026-07-20..26 and the argument assertion below is about this render's
+    // own request. Unpinned, the page asks for the real current week, and the
+    // assertion could only ever match a call some other test left behind.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date(2026, 6, 22, 9, 0, 0))
+    try {
+      vi.mocked(getDemand).mockResolvedValue(DEMAND)
+      renderPage()
+      await pickWeek()
 
-    const panel = await screen.findByRole('region', { name: 'occupancy forecast' })
-    await waitFor(() =>
-      expect(panel.textContent).toContain(
-        '132 on books · 50 group — Acme Corp Annual, Delta Sigma Reunion',
-      ),
-    )
-    // The as-of line says WHEN and from WHICH provider.
-    expect(panel.textContent).toContain('CRM demand as of 2026-07-20 (delphi)')
-    expect(getDemand).toHaveBeenCalledWith('HISJ', '2026-07-20', '2026-07-26')
+      const panel = await screen.findByRole('region', { name: 'occupancy forecast' })
+      await waitFor(() =>
+        expect(panel.textContent).toContain(
+          '132 on books · 50 group — Acme Corp Annual, Delta Sigma Reunion',
+        ),
+      )
+      // The as-of line says WHEN and from WHICH provider.
+      expect(panel.textContent).toContain('CRM demand as of 2026-07-20 (delphi)')
+      expect(getDemand).toHaveBeenCalledWith('HISJ', '2026-07-20', '2026-07-26')
 
-    const grid = await screen.findByRole('region', { name: 'week grid' })
-    expect(within(grid).getByText('132 on books · 50 group')).toBeInTheDocument()
-    // The grid chip carries FIGURES only — labels live in the forecast panel.
-    expect(within(grid).queryByText(/Acme Corp Annual/)).not.toBeInTheDocument()
+      const grid = await screen.findByRole('region', { name: 'week grid' })
+      expect(within(grid).getByText('132 on books · 50 group')).toBeInTheDocument()
+      // The grid chip carries FIGURES only — labels live in the forecast panel.
+      expect(within(grid).queryByText(/Acme Corp Annual/)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('renders an absent dimension as absent — never 0', async () => {
