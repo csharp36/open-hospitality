@@ -20,6 +20,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from usali.attendance import business_date_for
@@ -100,10 +101,17 @@ class LedgerCheck:
 
 
 def get_or_init_state(session: Session, prop: Property) -> NightAuditState:
-    """Lazy get-or-create (the property-config upsert idiom: ORM path so the
-    org_id before_flush stamp applies). Initial date = the day AFTER the last
-    fact on record — that day's audit already happened, by definition — or the
-    property-local business date today when the property has no data yet."""
+    """Lazy get-or-create. Initial date = the day AFTER the last fact on
+    record — that day's audit already happened, by definition — or the
+    property-local business date today when the property has no data yet.
+
+    The create is INSERT .. ON CONFLICT DO NOTHING + re-read (the
+    checklist_api dismiss idiom), not get→add→flush: every dashboard GET runs
+    this, so two tabs' concurrent FIRST reads both find no row, and the plain
+    insert's loser would die on the duplicate PK as a 500. With ON CONFLICT
+    the loser re-reads the winner's row instead. The Core insert bypasses the
+    before_flush org stamp (the property_config_api note), so org_id comes
+    explicitly from the property row read under this same session."""
     state = session.get(NightAuditState, prop.property_id)
     if state is not None:
         return state
@@ -117,9 +125,20 @@ def get_or_init_state(session: Session, prop: Property) -> NightAuditState:
         if last_fact is not None
         else business_date_for(datetime.now(UTC), prop.timezone)
     )
-    state = NightAuditState(property_id=prop.property_id, current_business_date=initial)
-    session.add(state)
-    session.flush()
+    session.execute(
+        pg_insert(NightAuditState)
+        .values(
+            org_id=prop.org_id, property_id=prop.property_id,
+            current_business_date=initial,
+        )
+        .on_conflict_do_nothing(index_elements=["property_id"])
+    )
+    state = session.get(NightAuditState, prop.property_id)
+    if state is None:  # this session just wrote or found the row
+        raise RuntimeError(
+            f"night_audit_state row for {prop.property_id} vanished between "
+            "insert and re-read"
+        )
     return state
 
 
@@ -313,9 +332,16 @@ def segment_reconciliation(
     if pms_source.upper() not in _SEGMENT_SOURCES:
         return None
 
+    # All three reads keyed by pms_source, like _balances and the segments
+    # save path: a property-day can hold rows from two sources (a PMS
+    # migration, or a backfill through the unrestricted /ingest path), and an
+    # unkeyed read would mix a second source's rows into this table, its
+    # occupied-rooms reference, or its revenue sum — and the ROLL gates on the
+    # result.
     stage_rows = session.execute(
         select(PmsDailySegmentStage).where(
             PmsDailySegmentStage.property_id == property_id,
+            PmsDailySegmentStage.pms_source == pms_source,
             PmsDailySegmentStage.business_date == day,
             PmsDailySegmentStage.period_label == "DAY",
         ).order_by(PmsDailySegmentStage.segment_code)
@@ -324,6 +350,7 @@ def segment_reconciliation(
     rooms_ref = session.execute(
         select(UsaliStatisticFact.value).where(
             UsaliStatisticFact.property_id == property_id,
+            UsaliStatisticFact.pms_source == pms_source,
             UsaliStatisticFact.business_date == day,
             UsaliStatisticFact.metric_code == "ROOMS_OCCUPIED",
             UsaliStatisticFact.period == "DAY",
@@ -333,6 +360,7 @@ def segment_reconciliation(
     revenue_ref = session.execute(
         select(func.sum(UsaliFinancialFact.amount)).where(
             UsaliFinancialFact.property_id == property_id,
+            UsaliFinancialFact.pms_source == pms_source,
             UsaliFinancialFact.business_date == day,
             UsaliFinancialFact.usali_sub_category == "Rooms",
         )
