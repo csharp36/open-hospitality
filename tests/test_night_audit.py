@@ -418,7 +418,9 @@ def test_opera_empty_ledger_block_blocks_roll(db_session, db_engine, tmp_path, m
     _freeze_window(monkeypatch, open_now=True)
     r = client.post("/api/properties/HISJ/night-audit/roll", headers=headers)
     assert r.status_code == 409
-    assert "ledger_block" in r.json()["detail"]
+    # A deltaless fail (ledger_block carries no Δ) names the check bare —
+    # never "(Δ None)".
+    assert r.json()["detail"] == "cannot roll: ledger checks failed — ledger_block"
     db_session.expire_all()
     assert db_session.get(NightAuditState, "HISJ").current_business_date == day
 
@@ -906,3 +908,305 @@ def test_ledger_reads_are_keyed_by_pms_source(db_session):
 
     assert _balances(db_session, "HISJ", day, "OPERA")["AR_LEDGER"] == Decimal("210")
     assert _balances(db_session, "HISJ", day, "AUTOCLERK")["AR_LEDGER"] == Decimal("999999")
+
+
+def test_segment_reconciliation_is_keyed_by_pms_source(db_session):
+    """The _balances scenario, for the market-code reconciliation: decoy rows
+    from a SECOND source on the same property-day. An unfiltered stage scan
+    would pull the decoy code into the table (and its 999 rooms into the sum);
+    an unfiltered revenue reference would add the decoy Rooms fact into
+    revenue_ref. Either poisons a reconciliation the ROLL gates on."""
+    from usali.models import (
+        IngestBatch,
+        PmsDailyFinancialStage,
+        PmsDailySegmentStage,
+        PmsDailyStatisticStage,
+        UsaliFinancialFact,
+        UsaliStatisticFact,
+    )
+    from usali.night_audit import segment_reconciliation
+
+    day = _segment_world(db_session)
+    batch = IngestBatch(pms_source="AUTOCLERK", report_type="rate_plan",
+                        source_file="decoy.pdf", file_hash="decoy-h")
+    db_session.add(batch)
+    db_session.flush()
+    # Decoy market-code stage row (DAY, would join the table's sums).
+    db_session.add(PmsDailySegmentStage(
+        property_id="HISJ", pms_source="AUTOCLERK", report_type="rate_plan",
+        business_date=day, segment_code="QQ", segment_desc="Decoy",
+        measure="ROOMS", period_label="DAY", value=Decimal("999"),
+        source_file="decoy.pdf", ingest_batch_id=batch.batch_id,
+        row_hash="decoy-seg",
+    ))
+    # Decoy occupied-rooms reference under the second source.
+    stat_stage = PmsDailyStatisticStage(
+        property_id="HISJ", pms_source="AUTOCLERK", report_type="manager_report",
+        business_date=day, metric_label="Rooms Occupied", period_label="DAY",
+        is_prior_year=False, value=Decimal("999"), source_file="decoy.pdf",
+        ingest_batch_id=batch.batch_id, row_hash="decoy-stat",
+    )
+    db_session.add(stat_stage)
+    db_session.flush()
+    db_session.add(UsaliStatisticFact(
+        property_id="HISJ", pms_source="AUTOCLERK", business_date=day,
+        metric_code="ROOMS_OCCUPIED", period="DAY", is_prior_year=False,
+        value=Decimal("999"), ingest_batch_id=batch.batch_id,
+        stat_stage_id=stat_stage.stat_stage_id,
+    ))
+    # Decoy Rooms revenue: revenue_ref is a SUM, so an unfiltered read adds
+    # this deterministically.
+    fin_stage = PmsDailyFinancialStage(
+        property_id="HISJ", pms_source="AUTOCLERK", report_type="transaction_summary",
+        business_date=day, pms_trx_code="9999", raw_amount=Decimal("5000.00"),
+        source_file="decoy.pdf", ingest_batch_id=batch.batch_id,
+        row_hash="decoy-fin",
+    )
+    db_session.add(fin_stage)
+    db_session.flush()
+    db_session.add(UsaliFinancialFact(
+        property_id="HISJ", pms_source="AUTOCLERK", business_date=day,
+        usali_edition=12, usali_schedule_id=1,
+        usali_major_category="Operated Departments", usali_sub_category="Rooms",
+        usali_line_item="Room Revenue", amount=Decimal("5000.00"),
+        ingest_batch_id=batch.batch_id, stage_id=fin_stage.stage_id,
+    ))
+    db_session.commit()
+
+    r = segment_reconciliation(db_session, "HISJ", day, "OPERA")
+    assert r["status"] == "pass"
+    assert [row["code"] for row in r["rows"]] == ["D", "Y"]  # no decoy QQ
+
+
+def test_segments_save_is_confined_to_the_property(db_session, db_engine, tmp_path):
+    """A sibling property staged for the SAME (source, date) with strict-
+    invalid rows (a code no mapping covers): its rows must neither fail this
+    property's save nor be promoted by it. Drop promote's property filter and
+    the sibling's ZZ9 turns this save into a refusal."""
+    from sqlalchemy import select, update
+    from usali.models import IngestBatch, PmsDailySegmentStage, UsaliSegmentFact
+
+    day = _segment_world(db_session)
+    db_session.add(Property(property_id="OPRB", org_id=1, name="OPRB",
+                            pms_source="OPERA"))
+    batch = IngestBatch(pms_source="OPERA", report_type="market_stats",
+                        source_file="sib.pdf", file_hash="sib-h")
+    db_session.add(batch)
+    db_session.flush()
+    for code, measure, value in (
+        ("ZZ9", "ROOMS", "7"), ("ZZ9", "ROOM_REVENUE", "700.00"),
+        ("TOTAL", "ROOMS", "7"), ("TOTAL", "ROOM_REVENUE", "700.00"),
+    ):
+        db_session.add(PmsDailySegmentStage(
+            property_id="OPRB", pms_source="OPERA", report_type="market_stats",
+            business_date=day, segment_code=code, segment_desc=None,
+            measure=measure, period_label="DAY", value=Decimal(value),
+            source_file="sib.pdf", ingest_batch_id=batch.batch_id,
+            row_hash=f"sib-{code}-{measure}",
+        ))
+    # Break D rooms so the save has something to change and re-promote.
+    db_session.execute(update(PmsDailySegmentStage)
+                       .where(PmsDailySegmentStage.property_id == "HISJ",
+                              PmsDailySegmentStage.segment_code == "D",
+                              PmsDailySegmentStage.measure == "ROOMS")
+                       .values(value=Decimal("32")))
+    db_session.commit()
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    r = client.post(
+        "/api/properties/HISJ/night-audit/segments", headers=headers,
+        json={"rows": [
+            {"code": "D", "rooms": "35", "room_revenue": "6047.33"},
+            {"code": "Y", "rooms": "27", "room_revenue": "4347.67"},
+        ]},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["segments"]["status"] == "pass"
+    db_session.expire_all()
+    promoted_props = set(db_session.execute(
+        select(UsaliSegmentFact.property_id)
+    ).scalars())
+    assert promoted_props == {"HISJ"}  # the sibling was NOT promoted alongside
+
+
+def test_segments_save_strict_refusal_is_a_422(db_session, db_engine, tmp_path):
+    """The target property's OWN promote refusal is the client's problem
+    statement — the corrected table violates promotion's strict rules — so it
+    surfaces as a 422 carrying the underlying message, not an unhandled 500.
+    And the refused save rolls back whole: no facts, stage untouched."""
+    from sqlalchemy import select
+    from usali.models import IngestBatch, PmsDailySegmentStage, UsaliSegmentFact
+
+    day = _segment_world(db_session)
+    batch = IngestBatch(pms_source="OPERA", report_type="market_stats",
+                        source_file="zz.pdf", file_hash="zz-h")
+    db_session.add(batch)
+    db_session.flush()
+    for measure, value in (("ROOMS", "1"), ("ROOM_REVENUE", "10.00")):
+        db_session.add(PmsDailySegmentStage(
+            property_id="HISJ", pms_source="OPERA", report_type="market_stats",
+            business_date=day, segment_code="ZZ9", segment_desc="Unmapped - ZZ9",
+            measure=measure, period_label="DAY", value=Decimal(value),
+            source_file="zz.pdf", ingest_batch_id=batch.batch_id,
+            row_hash=f"zz-{measure}",
+        ))
+    db_session.commit()
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    r = client.post(
+        "/api/properties/HISJ/night-audit/segments", headers=headers,
+        json={"rows": [{"code": "D", "rooms": "34", "room_revenue": "6047.33"}]},
+    )
+    assert r.status_code == 422, r.text
+    assert "ZZ9" in r.json()["detail"]
+    db_session.expire_all()
+    assert db_session.execute(select(UsaliSegmentFact)).first() is None
+    d_rooms = db_session.execute(
+        select(PmsDailySegmentStage.value).where(
+            PmsDailySegmentStage.segment_code == "D",
+            PmsDailySegmentStage.measure == "ROOMS",
+        )
+    ).scalar_one()
+    assert d_rooms == Decimal("35")  # the refused edit did not stick
+
+
+def test_get_or_init_state_races_to_the_existing_row(db_session, monkeypatch):
+    """Two tabs issue the property's FIRST dashboard GET concurrently: both
+    find no state row, both insert. Simulated by blinding the opening get once
+    so the code walks the insert path against a pre-existing row — ON CONFLICT
+    DO NOTHING makes the loser re-read the winner's row instead of dying on
+    the duplicate PK."""
+    from sqlalchemy.orm import Session as OrmSession
+
+    _org_and_property(db_session)
+    db_session.add(NightAuditState(property_id="HISJ",
+                                   current_business_date=date(2026, 8, 18)))
+    db_session.commit()
+    prop = db_session.get(Property, "HISJ")
+
+    real_get = OrmSession.get
+    blinded = {"done": False}
+
+    def blind_once(self, entity, ident, *args, **kwargs):
+        if entity is NightAuditState and not blinded["done"]:
+            blinded["done"] = True
+            return None
+        return real_get(self, entity, ident, *args, **kwargs)
+
+    monkeypatch.setattr(OrmSession, "get", blind_once)
+    state = get_or_init_state(db_session, prop)
+    # The winner's row came back — not a freshly initialized date, and no
+    # duplicate-PK error.
+    assert state.current_business_date == date(2026, 8, 18)
+
+
+def test_adjust_reason_is_validated_after_strip(db_session, db_engine, tmp_path):
+    """min_length used to validate PRE-strip: three spaces passed the floor
+    and stored an empty reason. The validator strips first, then enforces —
+    and what lands in the log is the stripped value."""
+    from sqlalchemy import select
+    from usali.models import NightAuditAdjustment
+
+    _ledger_world(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    r = client.post("/api/properties/HISJ/night-audit/adjust", headers=headers,
+                    json={"corrected_amount": "20000.00", "reason": "   "})
+    assert r.status_code == 422
+    db_session.expire_all()
+    assert db_session.execute(select(NightAuditAdjustment)).first() is None
+
+    r = client.post("/api/properties/HISJ/night-audit/adjust", headers=headers,
+                    json={"corrected_amount": "20000.00", "reason": "  ok!  "})
+    assert r.status_code == 200, r.text
+    db_session.expire_all()
+    adj = db_session.execute(select(NightAuditAdjustment)).scalar_one()
+    assert adj.reason == "ok!"
+
+
+def test_upload_refuses_non_pdf_bytes(db_session, db_engine, tmp_path):
+    """The /ingest %PDF- magic refusal, mirrored — and checked before the
+    inbox write, so a non-PDF blob leaves nothing in the inbox and nothing
+    staged."""
+    from sqlalchemy import func, select
+    from usali.models import PmsDailyFinancialStage
+
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    r = client.post(
+        "/api/properties/HISJ/night-audit/upload", headers=headers,
+        files={"file": ("evil.pdf", b"MZ this is not a pdf", "application/pdf")},
+    )
+    assert r.status_code == 422, r.text
+    assert "PDF" in r.json()["detail"]
+    inbox = tmp_path / "inbox"
+    assert not inbox.exists() or not any(inbox.iterdir())
+    staged = db_session.execute(
+        select(func.count()).select_from(PmsDailyFinancialStage)
+    ).scalar_one()
+    assert staged == 0
+
+
+def test_pack_refuses_recognized_section_without_date_extractor(
+    db_session, db_engine, tmp_path, monkeypatch
+):
+    """Symmetric with the single-report path's loud refusal: a recognized
+    pack section whose (source, report_type) has no _DATE_FNS entry cannot be
+    checked against the current business date, so the WHOLE pack refuses
+    naming the section — no silent continue, nothing staged."""
+    from pathlib import Path
+    from sqlalchemy import func, select
+    import usali.night_audit_api as api
+    from usali.models import PmsDailyFinancialStage
+
+    _seed_world(db_session)
+    db_session.add(NightAuditState(property_id="STDEMO",
+                                   current_business_date=date(2026, 6, 21)))
+    db_session.commit()
+    monkeypatch.setattr(api, "_DATE_FNS", {
+        k: v for k, v in api._DATE_FNS.items()
+        if k != ("SKYTOUCH", "hotel_statistics")
+    })
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    pack = Path("docs/reference/samples/SkyTouch - Standard Audit Pack (mock).pdf")
+    r = client.post(
+        "/api/properties/STDEMO/night-audit/upload", headers=headers,
+        files={"file": (pack.name, pack.read_bytes(), "application/pdf")},
+    )
+    assert r.status_code == 500, r.text
+    assert "SKYTOUCH/hotel_statistics" in r.json()["detail"]
+    assert "pack section" in r.json()["detail"]
+    inbox = tmp_path / "inbox"
+    assert not any(inbox.iterdir())  # the refused pack was unlinked
+    staged = db_session.execute(
+        select(func.count()).select_from(PmsDailyFinancialStage)
+    ).scalar_one()
+    assert staged == 0
+
+
+def test_the_adjustment_log_is_append_only_by_grant(app_role_engine):
+    """n2a0nightadjust REVOKEs UPDATE, DELETE on night_audit_adjustment from
+    the app role (the g1a0glcore journal idiom). The enumerable pin — the
+    test_gl_wall.test_the_append_only_revoke_covers_the_whole_journal shape —
+    so a later migration re-granting either privilege fails here, not in an
+    audit. has_table_privilege evaluates as the connecting role: usali_app."""
+    from sqlalchemy import text
+
+    with app_role_engine.connect() as conn:
+        for priv in ("UPDATE", "DELETE"):
+            assert not conn.execute(
+                text("SELECT has_table_privilege('night_audit_adjustment', :p)"),
+                {"p": priv},
+            ).scalar_one(), f"{priv} on night_audit_adjustment was re-granted"

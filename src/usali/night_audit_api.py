@@ -12,6 +12,17 @@ the CURRENT business date — a mismatched file is refused with nothing staged
 (the generic /ingest stays unrestricted for backfills and corrections). Only a
 valid file reaches `process_file`, which owns staging, transform, coverage, and
 filing exactly as it does for every other ingest path.
+
+THE ACCESS RULE, stated once (the property_config_api convention): every
+mutation here — upload, roll, and BOTH corrections (/adjust, /segments) — gates
+on `require_grants(ORG_ADMIN, PROPERTY_GM)`. Corrections are deliberately NOT
+narrowed to org_admin the way gl_api narrows its mutations through
+`require_gl_admin`: the night audit is property work, done at the desk by the
+night auditor under the GM, and a correction that must wait for an org admin is
+a correction that doesn't happen at 3am. The control that makes the wider gate
+safe is the trail, not the gate: every correction lands in
+night_audit_adjustment, which is append-only by grant (n2a0nightadjust; pinned
+by test_the_adjustment_log_is_append_only_by_grant in test_night_audit.py).
 """
 
 import re
@@ -44,7 +55,11 @@ from usali.auth import (
 )
 from usali.detect import Detection, detect, load_registry
 from usali.ingestion import ProcessingError, process_file, process_pack
-from usali.segment_promote import promote_segments
+from usali.segment_promote import (
+    SegmentMappingError,
+    SegmentReconciliationError,
+    promote_segments,
+)
 from sqlalchemy import delete
 from usali.models import (
     AuditEvent,
@@ -169,6 +184,10 @@ async def upload_night_audit_report(
     payload = await file.read(_MAX_PDF_BYTES + 1)
     if len(payload) > _MAX_PDF_BYTES:
         raise HTTPException(status_code=413, detail="PDF too large")
+    # The /ingest magic-byte refusal, mirrored — and checked BEFORE the inbox
+    # write below, so a non-PDF never touches the filesystem at all.
+    if not payload.startswith(b"%PDF-"):
+        raise HTTPException(status_code=422, detail="upload must be a PDF")
 
     inbox, processed, failed = request.app.state.ingest_dirs
     with _session(request) as session:
@@ -299,9 +318,20 @@ def _ingest_pack(
                 f"pack section {section.title!r} is for property "
                 f"{det.property_id}, not {prop.property_id}",
             )
+        # The single-report path's refusal, symmetric: a recognized section
+        # with no registered date extractor cannot be checked against the
+        # current business date, so the PACK refuses loudly (nothing staged)
+        # rather than silently skipping this section's date check.
         date_fn = _DATE_FNS.get((det.pms_source, det.report_type))
         if date_fn is None:
-            continue
+            raise _refuse(
+                500,
+                f"no business-date extractor is registered for "
+                f"{det.pms_source}/{det.report_type} (pack section "
+                f"{section.title!r}), so this pack cannot be checked against "
+                "the current business date — refusing rather than staging it "
+                "unverified",
+            )
         try:
             report_date = date_fn(section.words)
         except Exception as exc:
@@ -343,12 +373,23 @@ def _ingest_pack(
 
 class AdjustBody(BaseModel):
     corrected_amount: Decimal
-    reason: str = Field(min_length=3, max_length=300)
+    reason: str = Field(max_length=300)
 
     @field_validator("corrected_amount")
     @classmethod
     def _two_dp(cls, v: Decimal) -> Decimal:
         return v.quantize(Decimal("0.01"))
+
+    @field_validator("reason")
+    @classmethod
+    def _stripped_reason(cls, v: str) -> str:
+        # Strip FIRST, then enforce the floor: what gets stored is the
+        # stripped value, so the floor must hold on that — a Field
+        # min_length would pass three spaces and store an empty reason.
+        v = v.strip()
+        if len(v) < 3:
+            raise ValueError("reason must be at least 3 characters")
+        return v
 
 
 @router.post("/{property_id}/night-audit/adjust")
@@ -363,6 +404,11 @@ def adjust_prior_close(
     mandatory reason, actor) plus an AuditEvent. Scope is deliberately narrow:
     only the cross-night check's input is editable here — an identity failure
     means tonight's own report contradicts itself and needs a corrected export.
+
+    Plainly: this endpoint accepts ANY amount at ANY time the gate allows.
+    The dashboard offering the edit only when the roll-forward FAILS is
+    presentation, not enforcement — the control on this power is the
+    append-only adjustment log above, not a precondition.
     """
     with _session(request) as session:
         _require_onboardable_property(session, principal, property_id)
@@ -396,7 +442,8 @@ def adjust_prior_close(
         session.add(NightAuditAdjustment(
             property_id=property_id, business_date=prior_day,
             ledger_code="AR_LEDGER", old_amount=old_amount,
-            new_amount=body.corrected_amount, reason=body.reason.strip(),
+            new_amount=body.corrected_amount,
+            reason=body.reason,  # already stripped by AdjustBody._stripped_reason
             actor_subject=principal.subject,
         ))
         session.add(AuditEvent(
@@ -526,10 +573,21 @@ def save_segment_rows(
                 )
             )
             session.flush()
-            promote_segments(
-                session, "mapping/segments.yaml",
-                source=prop.pms_source, business_date=day,
-            )
+            # Scoped to THIS property: unscoped, the promote sweeps every
+            # property staged for the (source, date), so a sibling property's
+            # strict-invalid rows would fail this save (and its valid rows
+            # would be promoted as a side effect). A strictness refusal is the
+            # client's problem statement — the corrected table doesn't satisfy
+            # promotion's rules — so it converts to a 422 carrying the
+            # message, not a 500.
+            try:
+                promote_segments(
+                    session, "mapping/segments.yaml",
+                    source=prop.pms_source, business_date=day,
+                    property_id=property_id,
+                )
+            except (SegmentMappingError, SegmentReconciliationError) as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             session.add(AuditEvent(
                 actor_subject=principal.subject,
                 action="night_audit_segments_adjusted",
@@ -570,7 +628,12 @@ def roll_night_audit(
             raise HTTPException(
                 status_code=409,
                 detail="cannot roll: ledger checks failed — "
-                + "; ".join(f"{c.name} (Δ {c.delta})" for c in failed),
+                + "; ".join(
+                    # A check can fail with no delta (ledger_block: the trial
+                    # balance parsed to nothing) — name it without "(Δ None)".
+                    f"{c.name} (Δ {c.delta})" if c.delta is not None else c.name
+                    for c in failed
+                ),
             )
         segments = segment_reconciliation(session, property_id, day, prop.pms_source)
         if segments is not None and segments["status"] == "fail":
