@@ -343,9 +343,10 @@ function CheckRow({ check, propertyId, onAdjusted }: {
           <div className="flex items-center gap-2">
             <button
               type="submit"
-              // Trimmed, matching what the server stores: three spaces
-              // satisfy minLength but are not a reason (the GlPage reopen
-              // gate is the pattern).
+              // Strip-then-floor, the same rule night_audit_api.py's
+              // AdjustBody._stripped_reason enforces: three spaces satisfy
+              // minLength but are not a reason (the GlPage reopen gate is
+              // the pattern).
               disabled={adjust.isPending || reason.trim().length < 3}
               className="rounded-control bg-accent px-3 py-1.5 text-sm font-medium text-accent-contrast disabled:opacity-50"
             >
