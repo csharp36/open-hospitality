@@ -1,6 +1,6 @@
 """Night-audit flow: state init, checklist, ledger checks, roll gating."""
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -39,6 +39,60 @@ def _admin_headers(mint, db_session):
     grant_role(db_session, "org_admin", sub="na-admin", org_id=1)
     tok = mint(roles=["org_admin"], sub="na-admin")
     return {"Authorization": f"Bearer {tok}"}
+
+
+def _seed_ledger_facts(db_session, facts, pid="HISJ", tag="lf"):
+    """Promote (code, kind, amount, on) rows as OPERA trial-balance ledger facts."""
+    from usali.models import IngestBatch, PmsLedgerBalanceStage, UsaliLedgerBalanceFact
+
+    batch = IngestBatch(pms_source="OPERA", report_type="trial_balance",
+                        source_file=f"{tag}.pdf", file_hash=f"{tag}-h")
+    db_session.add(batch)
+    db_session.flush()
+    for code, kind, amount, on in facts:
+        stage = PmsLedgerBalanceStage(
+            property_id=pid, pms_source="OPERA", report_type="trial_balance",
+            business_date=on, ledger_label=code, kind=kind, amount=amount,
+            source_file=f"{tag}.pdf", row_hash=f"{tag}-{code}-{on}",
+            ingest_batch_id=batch.batch_id,
+        )
+        db_session.add(stage)
+        db_session.flush()
+        db_session.add(UsaliLedgerBalanceFact(
+            property_id=pid, pms_source="OPERA", business_date=on,
+            ledger_code=code, ledger_name=code, kind=kind, amount=amount,
+            ingest_batch_id=batch.batch_id, ledger_stage_id=stage.ledger_stage_id,
+        ))
+    db_session.commit()
+
+
+def _passing_ledger_set(day):
+    """A balanced identity plus an exactly-tying signed roll-forward:
+    200 + 15 + (-5) == 210."""
+    prior = day - timedelta(days=1)
+    return [
+        ("GUEST_LEDGER", "balance", Decimal("100"), day),
+        ("AR_LEDGER", "balance", Decimal("210"), day),
+        ("DEPOSIT_LEDGER", "balance", Decimal("-10"), day),
+        ("PACKAGE_LEDGER", "balance", Decimal("0"), day),
+        ("HOTEL_BALANCE", "balance", Decimal("300"), day),
+        ("AR_CHARGES", "activity", Decimal("15"), day),
+        ("AR_PAYMENTS", "activity", Decimal("-5"), day),
+        ("AR_LEDGER", "balance", Decimal("200"), prior),
+    ]
+
+
+def _freeze_window(monkeypatch, *, open_now):
+    """Pin the api module's roll_window; real boundary behavior is pinned by
+    test_roll_window_boundaries."""
+    import usali.night_audit_api as api
+
+    monkeypatch.setattr(
+        api, "roll_window",
+        lambda prop, now=None: {"open": open_now, "hours": "00:00–05:00",
+                                "timezone": prop.timezone,
+                                "local_time": "01:00" if open_now else "08:00"},
+    )
 
 
 # ---- service ---------------------------------------------------------------
@@ -162,12 +216,42 @@ def test_ledger_checks_skip_without_data(db_session):
     assert [c.status for c in checks] == ["skipped"]
 
 
+def test_opera_empty_ledger_block_fails_once_trial_balance_lands(db_session):
+    """LEDGER_BLOCK_REPORT lists OPERA's trial balance as the ledger-block
+    carrier: once it has landed, zero parsed ledger balances is a parser
+    regression (layout drift), and 'skipped' would let the roll through
+    unverified. Before it lands, the skip stays honest."""
+    from usali.ingestion import record_coverage
+
+    _org_and_property(db_session)
+    day = date(2026, 8, 18)
+    checks = ledger_checks(db_session, "HISJ", day, "OPERA")
+    assert [c.status for c in checks] == ["skipped"]
+
+    record_coverage(db_session, "HISJ", day, "trial_balance")
+    db_session.commit()
+    checks = ledger_checks(db_session, "HISJ", day, "OPERA")
+    assert [(c.name, c.status) for c in checks] == [("ledger_block", "fail")]
+    assert "ledger block" in checks[0].detail
+
+
 def test_roll_window_is_property_local():
     prop = Property(property_id="X", org_id=1, name="X", pms_source="OPERA",
                     timezone="America/Los_Angeles")
     # 10:00 UTC = 03:00 PDT -> open;  15:00 UTC = 08:00 PDT -> closed.
     assert roll_window(prop, datetime(2026, 8, 18, 10, 0, tzinfo=UTC))["open"] is True
     assert roll_window(prop, datetime(2026, 8, 18, 15, 0, tzinfo=UTC))["open"] is False
+
+
+def test_roll_window_boundaries():
+    """00:00 is inside the window (inclusive open); 05:00 is outside
+    (exclusive close), while 04:59:59 is still inside."""
+    prop = Property(property_id="X", org_id=1, name="X", pms_source="OPERA",
+                    timezone="UTC")
+    assert roll_window(prop, datetime(2026, 8, 17, 23, 59, 59, tzinfo=UTC))["open"] is False
+    assert roll_window(prop, datetime(2026, 8, 18, 0, 0, 0, tzinfo=UTC))["open"] is True
+    assert roll_window(prop, datetime(2026, 8, 18, 4, 59, 59, tzinfo=UTC))["open"] is True
+    assert roll_window(prop, datetime(2026, 8, 18, 5, 0, 0, tzinfo=UTC))["open"] is False
 
 
 # ---- endpoints -------------------------------------------------------------
@@ -217,6 +301,10 @@ def test_roll_refuses_outside_window_and_rolls_inside(
     for rt in ("trial_balance", "manager_flash", "market_stats"):
         record_coverage(db_session, "HISJ", day, rt)
     db_session.commit()
+    # A landed trial balance with no parsed ledger balances is a FAIL
+    # (test_opera_empty_ledger_block_fails_once_trial_balance_lands) — seed a
+    # green set so only the window stands between this test and the roll.
+    _seed_ledger_facts(db_session, _passing_ledger_set(day))
 
     # Freeze the window: closed (08:00 property-local = 15:00 UTC in August).
     monkeypatch.setattr(
@@ -236,7 +324,8 @@ def test_roll_refuses_outside_window_and_rolls_inside(
     )
     r = client.post("/api/properties/HISJ/night-audit/roll", headers=headers)
     assert r.status_code == 200, r.text
-    assert r.json()["business_date"] == (day.replace(day=day.day)).isoformat() or True
+    # The roll's own response already shows the ADVANCED date.
+    assert r.json()["business_date"] == (day + timedelta(days=1)).isoformat()
     db_session.expire_all()
     state = db_session.get(NightAuditState, "HISJ")
     assert (state.current_business_date - day).days == 1
@@ -247,6 +336,118 @@ def test_roll_refuses_outside_window_and_rolls_inside(
         select(AuditEvent.action).where(AuditEvent.resource_id == "HISJ")
     ).scalars().all()
     assert "night_audit_rolled" in events
+
+
+def test_roll_refuses_on_failing_ledger_check(db_session, db_engine, tmp_path, monkeypatch):
+    """All reports landed, window open, but a ledger check FAILS: the roll must
+    409 naming the check and advance nothing."""
+    from usali.ingestion import record_coverage
+
+    _org_and_property(db_session)
+    day = date(2026, 8, 18)
+    db_session.add(NightAuditState(property_id="HISJ", current_business_date=day))
+    for rt in ("trial_balance", "manager_flash", "market_stats"):
+        record_coverage(db_session, "HISJ", day, rt)
+    # Break the identity: hotel balance disagrees with the four sub-ledgers.
+    facts = [
+        ("HOTEL_BALANCE", "balance", Decimal("999"), on) if code == "HOTEL_BALANCE"
+        else (code, kind, amount, on)
+        for code, kind, amount, on in _passing_ledger_set(day)
+    ]
+    _seed_ledger_facts(db_session, facts)
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    _freeze_window(monkeypatch, open_now=True)
+    r = client.post("/api/properties/HISJ/night-audit/roll", headers=headers)
+    assert r.status_code == 409
+    assert "balance_identity" in r.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(NightAuditState, "HISJ").current_business_date == day
+
+
+def test_roll_refuses_on_failing_segment_reconciliation(
+    db_session, db_engine, tmp_path, monkeypatch
+):
+    """All reports landed, ledger checks green, window open, but the market-code
+    table does not tie: the roll must 409 naming the reconciliation and advance
+    nothing."""
+    from sqlalchemy import update
+    from usali.ingestion import record_coverage
+    from usali.models import PmsDailySegmentStage
+
+    day = _segment_world(db_session)
+    # Break the table: D rooms 35 -> 32, so the code sum (59) misses flash (62).
+    db_session.execute(update(PmsDailySegmentStage)
+                       .where(PmsDailySegmentStage.segment_code == "D",
+                              PmsDailySegmentStage.measure == "ROOMS")
+                       .values(value=Decimal("32")))
+    for rt in ("trial_balance", "manager_flash", "market_stats"):
+        record_coverage(db_session, "HISJ", day, rt)
+    # Green ledger checks, so only the segments gate stands between us and 200.
+    _seed_ledger_facts(db_session, _passing_ledger_set(day))
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    _freeze_window(monkeypatch, open_now=True)
+    r = client.post("/api/properties/HISJ/night-audit/roll", headers=headers)
+    assert r.status_code == 409
+    assert "market-code reconciliation" in r.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(NightAuditState, "HISJ").current_business_date == day
+
+
+def test_opera_empty_ledger_block_blocks_roll(db_session, db_engine, tmp_path, monkeypatch):
+    """Everything landed but NO ledger balances parsed (the F4 regression
+    shape): the ledger_block FAIL must block the roll, not slide through as a
+    skip."""
+    from usali.ingestion import record_coverage
+
+    _org_and_property(db_session)
+    day = date(2026, 8, 18)
+    db_session.add(NightAuditState(property_id="HISJ", current_business_date=day))
+    for rt in ("trial_balance", "manager_flash", "market_stats"):
+        record_coverage(db_session, "HISJ", day, rt)
+    db_session.commit()
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    _freeze_window(monkeypatch, open_now=True)
+    r = client.post("/api/properties/HISJ/night-audit/roll", headers=headers)
+    assert r.status_code == 409
+    assert "ledger_block" in r.json()["detail"]
+    db_session.expire_all()
+    assert db_session.get(NightAuditState, "HISJ").current_business_date == day
+
+
+def test_autoclerk_absent_ledger_block_stays_skipped_and_rollable(
+    db_session, db_engine, tmp_path, monkeypatch
+):
+    """AUTOCLERK is not in LEDGER_BLOCK_REPORT: a full night with no ledger
+    balances keeps the honest skip and the roll proceeds."""
+    from usali.ingestion import record_coverage
+
+    _org_and_property(db_session, pid="SSSJ", pms_source="AUTOCLERK")
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    r = client.get("/api/properties/SSSJ/night-audit", headers=headers)
+    day = date.fromisoformat(r.json()["business_date"])
+    for rt in ("transaction_summary", "manager_report", "rate_plan"):
+        record_coverage(db_session, "SSSJ", day, rt)
+    db_session.commit()
+    checks = ledger_checks(db_session, "SSSJ", day, "AUTOCLERK")
+    assert [c.status for c in checks] == ["skipped"]
+
+    _freeze_window(monkeypatch, open_now=True)
+    r = client.post("/api/properties/SSSJ/night-audit/roll", headers=headers)
+    assert r.status_code == 200, r.text
+    db_session.expire_all()
+    assert db_session.get(NightAuditState, "SSSJ").current_business_date == day + timedelta(days=1)
 
 
 def test_upload_rejects_wrong_business_date(db_session, db_engine, tmp_path):

@@ -60,6 +60,16 @@ PACK_UPLOAD: dict[str, str] = {
     "SKYTOUCH": "Standard Audit Pack (one PDF, split report-by-report)",
 }
 
+# pms_source -> the report whose parse is expected to yield the ledger block.
+# Once that report has LANDED, zero ledger balances on file means the parse
+# came back empty — layout drift or a parser regression — so ledger_checks
+# fails instead of skipping (a skip would let the roll through unverified
+# exactly when verification broke). A source not listed here carries no
+# ledger-block expectation and keeps its honest skip.
+LEDGER_BLOCK_REPORT: dict[str, str] = {
+    "OPERA": "trial_balance",
+}
+
 ROLL_WINDOW_START_HOUR = 0  # 00:00 property-local
 ROLL_WINDOW_END_HOUR = 5    # exclusive: rolls allowed strictly before 05:00
 
@@ -155,12 +165,26 @@ def _balances(
     return {code: Decimal(str(amount)) for code, amount in rows}
 
 
+def _report_landed(
+    session: Session, property_id: str, day: date, report_type: str
+) -> bool:
+    """Whether this report's coverage row exists — the same rows slot_status reads."""
+    return session.execute(
+        select(IngestionCoverage.report_type).where(
+            IngestionCoverage.property_id == property_id,
+            IngestionCoverage.business_date == day,
+            IngestionCoverage.report_type == report_type,
+        )
+    ).first() is not None
+
+
 def ledger_checks(
     session: Session, property_id: str, day: date, pms_source: str
 ) -> list[LedgerCheck]:
     """The 'balances are zero as per the last' verification, from the trial
     balance's ledger block. Two zero-checks, each honest about absent data
-    (AutoClerk reports carry no ledger block; a first night has no prior close):
+    (a source absent from LEDGER_BLOCK_REPORT has no ledger-block expectation;
+    a first night has no prior close):
 
     * identity — GUEST + AR + DEPOSIT + PACKAGE − HOTEL_BALANCE == 0 today.
     * AR roll-forward — prior AR close + today's charges + today's payments
@@ -173,6 +197,17 @@ def ledger_checks(
     checks: list[LedgerCheck] = []
 
     if not today:
+        carrier = LEDGER_BLOCK_REPORT.get(pms_source.upper())
+        if carrier is not None and _report_landed(session, property_id, day, carrier):
+            return [
+                LedgerCheck(
+                    name="ledger_block",
+                    status="fail",
+                    detail=f"the {carrier} landed but its ledger block yielded no "
+                    "balances — layout drift or a parser regression, so tonight's "
+                    "close cannot be verified",
+                )
+            ]
         return [
             LedgerCheck(
                 name="ledger_block",
