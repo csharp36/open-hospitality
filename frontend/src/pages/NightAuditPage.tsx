@@ -116,9 +116,14 @@ export default function NightAuditPage() {
                 Required reports — {audit.data.pms_source}
               </h2>
               <ol className="flex flex-col gap-2">
+                {/* Property in the key: report types recur across properties
+                    (any two on the same PMS share the set), and a row's
+                    upload-mutation state (a pending or failed label) must not
+                    survive into another — GlPage.tsx's scope-keyed
+                    discipline. */}
                 {audit.data.slots.map((slot, i) => (
                   <SlotRow
-                    key={slot.report_type}
+                    key={`${property}:${slot.report_type}`}
                     index={i + 1}
                     slot={slot}
                     propertyId={property}
