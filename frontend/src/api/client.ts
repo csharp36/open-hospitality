@@ -848,9 +848,10 @@ export async function postPreview(file: File): Promise<PreviewResponse> {
 }
 
 // --- Night audit (explicit business date + roll) -----------------------------
-// org_admin | property_gm on the server for upload/roll; reads gate on property
-// readability. The upload validates property/report/date BEFORE staging. For a
-// pack-based PMS (SkyTouch) ONE pack upload fills every slot it contains.
+// The mutations' role gate is night_audit_api.require_auditor — that dependency
+// is where the allowed roles are enumerated; reads gate on property
+// readability. For a pack-based PMS (SkyTouch) ONE pack upload fills every
+// slot it contains.
 
 export function getNightAudit(propertyId: string): Promise<NightAuditState> {
   return getJson(`/api/properties/${propertyId}/night-audit`)

@@ -3,9 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { Card, PageHeader } from '../components/ui'
 import { getNightAudit, postNightAuditAdjust, postNightAuditRoll, postNightAuditSegments, postNightAuditUpload } from '../api/client'
-import type { NightAuditCheck, NightAuditPackSection, NightAuditSegments, NightAuditSlot } from '../api/types'
+import type { NightAuditCheck, NightAuditPackSection, NightAuditSegments, NightAuditSlot, NightAuditState } from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
+import { eqFixed, isFixed, subFixed, sumFixed } from '../lib/decimal'
+import { fmtMoney, fmtStat } from '../lib/format'
 
 /**
  * Night audit: the property's EXPLICIT current business date. The auditor
@@ -25,13 +27,40 @@ export default function NightAuditPage() {
     enabled: property !== undefined,
   })
 
+  // Every night-audit mutation returns the full state payload; writing it
+  // straight into the cache is the PeriodDetailCard close-mutation idiom —
+  // the page re-renders from the freshest picture at once, with no refetch
+  // round trip showing the pre-mutation numbers in the meantime. The cache is
+  // keyed by the payload's OWN property_id, not the selector's current value,
+  // so a mutation that resolves after a property switch can only ever update
+  // the property it was posted against.
+  const adopt = (state: NightAuditState) => {
+    qc.setQueryData(['night-audit', state.property_id], state)
+  }
+
   const roll = useMutation({
     mutationFn: () => postNightAuditRoll(property!),
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: ['night-audit', property] })
+    onSuccess: (state) => {
+      adopt(state)
       void qc.invalidateQueries({ queryKey: ['properties'] })
     },
   })
+
+  // Why the roll is refused, named in visible words beside the button — a
+  // title-only reason never reaches keyboard or screen-reader users (the
+  // segments Save reason span is the pattern).
+  const rollBlockers: string[] = []
+  if (audit.data !== undefined && !audit.data.can_roll) {
+    const missing = audit.data.slots.filter((s) => !s.landed)
+    if (missing.length > 0)
+      rollBlockers.push(`reports still missing: ${missing.map((s) => s.label).join(', ')}`)
+    if (
+      audit.data.verification.some((c) => c.status === 'fail') ||
+      audit.data.segments?.status === 'fail'
+    )
+      rollBlockers.push('checks above are failing')
+    if (!audit.data.window.open) rollBlockers.push('the roll window is closed')
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -68,12 +97,16 @@ export default function NightAuditPage() {
           </Card>
 
           {audit.data.upload_mode === 'pack' ? (
+            /* key={property}: the card's sections/upload state belongs to one
+               property and must die on a switch — GlPage.tsx's scope-keyed
+               discipline. */
             <PackDropCard
+              key={property}
               propertyId={property}
               packLabel={audit.data.pack_label ?? 'Night-audit pack'}
               slots={audit.data.slots}
-              onUploaded={() => {
-                void qc.invalidateQueries({ queryKey: ['night-audit', property] })
+              onUploaded={(state) => {
+                adopt(state)
                 void qc.invalidateQueries({ queryKey: ['properties'] })
               }}
             />
@@ -89,8 +122,8 @@ export default function NightAuditPage() {
                     index={i + 1}
                     slot={slot}
                     propertyId={property}
-                    onUploaded={() => {
-                      void qc.invalidateQueries({ queryKey: ['night-audit', property] })
+                    onUploaded={(state) => {
+                      adopt(state)
                       void qc.invalidateQueries({ queryKey: ['properties'] })
                     }}
                   />
@@ -102,13 +135,21 @@ export default function NightAuditPage() {
           <Card role="region" aria-label="verification">
             <h2 className="mb-3 text-sm font-semibold text-ink">Verification — balances vs the last close</h2>
             <ul className="flex flex-col gap-1.5">
+              {/* Property in the key: check names are the same constants for
+                  every property, and an open adjust form (amount + reason
+                  typed for one property) must not survive into another —
+                  GlPage.tsx's scope-keyed discipline. */}
               {audit.data.verification.map((c) => (
                 <CheckRow
-                  key={c.name}
+                  key={`${property}:${c.name}`}
                   check={c}
                   propertyId={property}
-                  onAdjusted={() => {
-                    void qc.invalidateQueries({ queryKey: ['night-audit', property] })
+                  onAdjusted={(state) => {
+                    adopt(state)
+                    // Prefix-wide drop: this page does not track which
+                    // performance windows are cached, and none of them may
+                    // keep rendering pre-correction numbers.
+                    void qc.invalidateQueries({ queryKey: ['performance'] })
                   }}
                 />
               ))}
@@ -116,11 +157,19 @@ export default function NightAuditPage() {
           </Card>
 
           {audit.data.segments !== null && (
+            /* key={property}: the `edited` cell map is keyed by market code —
+               the same codes recur across properties — and must die on a
+               switch, GlPage.tsx's scope-keyed discipline. */
             <SegmentsCard
+              key={property}
               propertyId={property}
               segments={audit.data.segments}
-              onSaved={() => {
-                void qc.invalidateQueries({ queryKey: ['night-audit', property] })
+              onSaved={(state) => {
+                adopt(state)
+                // The saved rows land in UsaliSegmentFact, the table
+                // usali/performance.py reads — prefix-wide drop, since this
+                // page does not track which windows are cached.
+                void qc.invalidateQueries({ queryKey: ['performance'] })
               }}
             />
           )}
@@ -138,11 +187,16 @@ export default function NightAuditPage() {
                 disabled={!audit.data.can_roll || roll.isPending}
                 onClick={() => roll.mutate()}
                 className="rounded-control bg-accent px-4 py-2 text-sm font-medium text-accent-contrast disabled:opacity-40"
-                title={audit.data.can_roll ? undefined : 'All reports must land, checks must pass, and the window must be open'}
               >
                 Roll to next business date →
               </button>
             </div>
+            {!audit.data.can_roll && (
+              <p className="mt-2 text-sm text-ink-muted">
+                Roll unavailable —{' '}
+                {rollBlockers.length > 0 ? rollBlockers.join('; ') : 'the server refuses the roll'}.
+              </p>
+            )}
             {roll.isError && (
               <p className="mt-2 text-sm text-danger-red">{errorMessage(roll.error)}</p>
             )}
@@ -157,7 +211,7 @@ function SlotRow({ index, slot, propertyId, onUploaded }: {
   index: number
   slot: NightAuditSlot
   propertyId: string
-  onUploaded: () => void
+  onUploaded: (state: NightAuditState) => void
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const upload = useMutation({
@@ -203,7 +257,7 @@ function SlotRow({ index, slot, propertyId, onUploaded }: {
 function CheckRow({ check, propertyId, onAdjusted }: {
   check: NightAuditCheck
   propertyId: string
-  onAdjusted: () => void
+  onAdjusted: (state: NightAuditState) => void
 }) {
   const [open, setOpen] = useState(false)
   const [corrected, setCorrected] = useState('')
@@ -211,10 +265,10 @@ function CheckRow({ check, propertyId, onAdjusted }: {
   const adjust = useMutation({
     mutationFn: () =>
       postNightAuditAdjust(propertyId, { corrected_amount: corrected, reason }),
-    onSuccess: () => {
+    onSuccess: (state) => {
       setOpen(false)
       setReason('')
-      onAdjusted()
+      onAdjusted(state)
     },
   })
   const tone =
@@ -313,7 +367,7 @@ function PackDropCard({ propertyId, packLabel, slots, onUploaded }: {
   propertyId: string
   packLabel: string
   slots: NightAuditSlot[]
-  onUploaded: () => void
+  onUploaded: (state: NightAuditState) => void
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
   const [sections, setSections] = useState<NightAuditPackSection[] | null>(null)
@@ -321,7 +375,7 @@ function PackDropCard({ propertyId, packLabel, slots, onUploaded }: {
     mutationFn: (file: File) => postNightAuditUpload(propertyId, file),
     onSuccess: (result) => {
       setSections(result.sections)
-      onUploaded()
+      onUploaded(result)
     },
   })
   const allLanded = slots.length > 0 && slots.every((s) => s.landed)
@@ -408,36 +462,76 @@ function PackDropCard({ propertyId, packLabel, slots, onUploaded }: {
 // --- Rooms & revenue by market code -------------------------------------------
 // The tabular reconciliation: Σ per-code rooms must hit the Manager Flash
 // occupied total, Σ per-code revenue the Trial Balance Rooms line. On a
-// mismatch every code's cells become editable — the auditor makes the numbers
-// EXACTLY equal, saves, and the checks re-run live. No reason is asked; every
-// changed cell is still recorded server-side (old → new, who, when).
+// mismatch every code's cells become editable — the auditor edits until both
+// sums tie within the report's own tolerance, saves, and the checks re-run
+// live. No reason is asked; every changed cell is still recorded server-side
+// (old → new, who, when).
+
+// Rooms are counts: a whole number, nothing else. (Revenue cells take any
+// fixed-point decimal — isFixed in lib/decimal.ts is that gate.)
+const WHOLE_RE = /^-?\d+$/
+
+/**
+ * |Δ| ≤ 0.01 — the same tie the segment check applies server-side
+ * (night_audit.py's _TOL is where that tolerance is set). Decided on the
+ * exact decimal strings: subFixed's sign carries the comparison, so no float
+ * ever touches the amounts.
+ */
+function withinTol(delta: string): boolean {
+  const abs = delta.startsWith('-') ? delta.slice(1) : delta
+  const rem = subFixed(abs, '0.01')
+  return rem.startsWith('-') || eqFixed(rem, '0')
+}
 
 function SegmentsCard({ propertyId, segments, onSaved }: {
   propertyId: string
   segments: NightAuditSegments
-  onSaved: () => void
+  onSaved: (state: NightAuditState) => void
 }) {
   const [edited, setEdited] = useState<Record<string, { rooms: string; room_revenue: string }>>({})
   const failing = segments.status === 'fail'
 
-  const rows = segments.rows.map((r) => ({
-    code: r.code,
-    description: r.description,
-    rooms: edited[r.code]?.rooms ?? r.rooms,
-    room_revenue: edited[r.code]?.room_revenue ?? r.room_revenue,
-  }))
-  const liveRooms = rows.reduce((a, r) => a + (Number(r.rooms) || 0), 0)
-  const liveRevenue = rows.reduce((a, r) => a + (Number(r.room_revenue) || 0), 0)
-  const roomsRef = segments.rooms_ref === null ? null : Number(segments.rooms_ref)
-  const revenueRef = segments.revenue_ref === null ? null : Number(segments.revenue_ref)
-  const roomsTie = roomsRef !== null && Math.abs(liveRooms - roomsRef) < 0.005
-  const revenueTie = revenueRef !== null && Math.abs(liveRevenue - revenueRef) < 0.005
+  const rows = segments.rows.map((r) => {
+    const rooms = edited[r.code]?.rooms ?? r.rooms
+    const room_revenue = edited[r.code]?.room_revenue ?? r.room_revenue
+    return {
+      code: r.code,
+      description: r.description,
+      rooms,
+      room_revenue,
+      // An unparseable cell must never count as 0 toward the tie — it locks
+      // Save and is flagged in place instead. A raw "1,234" posted to the
+      // server would only come back as an opaque 422.
+      roomsInvalid: !WHOLE_RE.test(rooms.trim()),
+      revenueInvalid: !isFixed(room_revenue),
+    }
+  })
+  const roomsValid = rows.every((r) => !r.roomsInvalid)
+  const revenueValid = rows.every((r) => !r.revenueInvalid)
+  const anyInvalid = !roomsValid || !revenueValid
+
+  // Exact string arithmetic (lib/decimal.ts) end-to-end; sums exist only
+  // while every cell in the column parses.
+  const liveRooms = roomsValid ? sumFixed(rows.map((r) => r.rooms)) : null
+  const liveRevenue = revenueValid ? sumFixed(rows.map((r) => r.room_revenue)) : null
+  const roomsDelta =
+    liveRooms !== null && segments.rooms_ref !== null ? subFixed(liveRooms, segments.rooms_ref) : null
+  const revenueDelta =
+    liveRevenue !== null && segments.revenue_ref !== null
+      ? subFixed(liveRevenue, segments.revenue_ref)
+      : null
+  const roomsTie = roomsDelta !== null && withinTol(roomsDelta)
+  const revenueTie = revenueDelta !== null && withinTol(revenueDelta)
 
   const save = useMutation({
-    mutationFn: () => postNightAuditSegments(propertyId, rows),
-    onSuccess: () => {
+    mutationFn: () =>
+      postNightAuditSegments(
+        propertyId,
+        rows.map(({ code, rooms, room_revenue }) => ({ code, rooms, room_revenue })),
+      ),
+    onSuccess: (state) => {
       setEdited({})
-      onSaved()
+      onSaved(state)
     },
   })
 
@@ -477,30 +571,36 @@ function SegmentsCard({ propertyId, segments, onSaved }: {
                     <span className="font-mono">{r.code}</span>
                     <span className="ml-2 text-xs text-ink-muted">{r.description}</span>
                   </td>
-                  {(['rooms', 'room_revenue'] as const).map((field) => (
-                    <td key={field} className="py-1.5 text-right font-mono">
-                      {failing ? (
-                        <input
-                          className="w-28 rounded-control border border-line px-2 py-1 text-right font-mono text-sm"
-                          value={r[field]}
-                          aria-label={`${r.code} ${field}`}
-                          inputMode={field === 'rooms' ? 'numeric' : 'decimal'}
-                          onChange={(e) => setCell(r.code, field, e.target.value)}
-                        />
-                      ) : (
-                        r[field]
-                      )}
-                    </td>
-                  ))}
+                  {(['rooms', 'room_revenue'] as const).map((field) => {
+                    const invalid = field === 'rooms' ? r.roomsInvalid : r.revenueInvalid
+                    return (
+                      <td key={field} className="py-1.5 text-right font-mono">
+                        {failing ? (
+                          <input
+                            className={`w-28 rounded-control border px-2 py-1 text-right font-mono text-sm ${
+                              invalid ? 'border-danger-red' : 'border-line'
+                            }`}
+                            value={r[field]}
+                            aria-label={`${r.code} ${field}`}
+                            aria-invalid={invalid}
+                            inputMode={field === 'rooms' ? 'numeric' : 'decimal'}
+                            onChange={(e) => setCell(r.code, field, e.target.value)}
+                          />
+                        ) : (
+                          r[field]
+                        )}
+                      </td>
+                    )
+                  })}
                 </tr>
               ))}
               <tr className="border-b border-line font-medium">
                 <td className="py-1.5 text-ink">Sum</td>
                 <td className={`py-1.5 text-right font-mono ${roomsTie ? 'text-ok-green' : 'text-danger-red'}`}>
-                  {liveRooms.toFixed(0)}
+                  {liveRooms === null ? '—' : fmtStat(liveRooms)}
                 </td>
                 <td className={`py-1.5 text-right font-mono ${revenueTie ? 'text-ok-green' : 'text-danger-red'}`}>
-                  {liveRevenue.toFixed(2)}
+                  {liveRevenue === null ? '—' : fmtMoney(liveRevenue)}
                 </td>
               </tr>
               {segments.report_total_rooms !== null && (
@@ -518,10 +618,10 @@ function SegmentsCard({ propertyId, segments, onSaved }: {
               <tr className="text-xs text-ink-muted">
                 <td className="py-1">Δ remaining</td>
                 <td className={`py-1 text-right font-mono ${roomsTie ? 'text-ok-green' : 'text-danger-red'}`}>
-                  {roomsRef === null ? '—' : (liveRooms - roomsRef).toFixed(0)}
+                  {roomsDelta === null ? '—' : fmtStat(roomsDelta)}
                 </td>
                 <td className={`py-1 text-right font-mono ${revenueTie ? 'text-ok-green' : 'text-danger-red'}`}>
-                  {revenueRef === null ? '—' : (liveRevenue - revenueRef).toFixed(2)}
+                  {revenueDelta === null ? '—' : fmtMoney(revenueDelta)}
                 </td>
               </tr>
             </tbody>
@@ -533,16 +633,17 @@ function SegmentsCard({ propertyId, segments, onSaved }: {
         <div className="mt-3 flex items-center gap-3">
           <button
             type="button"
-            disabled={save.isPending || !roomsTie || !revenueTie}
+            disabled={save.isPending || anyInvalid || !roomsTie || !revenueTie}
             onClick={() => save.mutate()}
             className="rounded-control bg-accent px-4 py-2 text-sm font-medium text-accent-contrast disabled:opacity-40"
-            title={roomsTie && revenueTie ? undefined : 'Edit the cells until both sums exactly match the references'}
           >
             Save matched values
           </button>
-          {(!roomsTie || !revenueTie) && (
+          {(anyInvalid || !roomsTie || !revenueTie) && (
             <span className="text-xs text-ink-muted">
-              Save unlocks when both sums exactly match the references.
+              {anyInvalid
+                ? 'Fix the marked cells first — rooms take a whole number, revenue a plain decimal (no commas).'
+                : 'Save unlocks when both sums match the references within the report’s tolerance (±0.01).'}
             </span>
           )}
           {save.isError && (
