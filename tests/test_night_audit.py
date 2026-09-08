@@ -124,20 +124,25 @@ def test_ledger_checks_pass_and_fail(db_session):
         ))
 
     # Balanced identity + a consistent AR roll-forward from the prior day.
+    # Payments carry the report's own minus sign into the fact table -- the
+    # parser preserves signs (test_sign_opposed_duplicate_pair_kept_distinct_by_
+    # heading in test_ledger_capture.py) and promote_ledgers copies amounts
+    # verbatim -- so a NONZERO payment here is Decimal("-5"), not 5.
     _fact("GUEST_LEDGER", "Guest Ledger", "balance", Decimal("100"))
     _fact("AR_LEDGER", "AR / City Ledger", "balance", Decimal("210"))
     _fact("DEPOSIT_LEDGER", "Deposit Ledger", "balance", Decimal("-10"))
     _fact("PACKAGE_LEDGER", "Package Ledger", "balance", Decimal("0"))
     _fact("HOTEL_BALANCE", "Hotel Balance", "balance", Decimal("300"))
     _fact("AR_CHARGES", "AR Charges", "activity", Decimal("15"))
-    _fact("AR_PAYMENTS", "AR Payments", "activity", Decimal("5"))
+    _fact("AR_PAYMENTS", "AR Payments", "activity", Decimal("-5"))
     _fact("AR_LEDGER", "AR / City Ledger", "balance", Decimal("200"),
           on=date(2026, 8, 17))
     db_session.commit()
 
     checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day, "OPERA")}
     assert checks["balance_identity"].status == "pass"
-    assert checks["ar_rollforward"].status == "pass"  # 200 + 15 - 5 == 210
+    assert checks["ar_rollforward"].status == "pass"  # 200 + 15 + (-5) == 210
+    assert checks["ar_rollforward"].delta == "0.00"  # exact, not just within tolerance
 
     # Break the identity: raise the hotel balance without moving the subs.
     from sqlalchemy import update
@@ -385,7 +390,11 @@ def test_pack_upload_rejects_wrong_business_date(db_session, db_engine, tmp_path
 
 
 def _ledger_world(db_session):
-    """HISJ with a failing AR roll-forward: prior close 19000, today implies 19592.66."""
+    """HISJ with a failing AR roll-forward: today's signed activity implies a
+    prior close of 20000.00 (19742.41 - 149.75 + 407.34), but 19000.00 is
+    stored. Payments are signed-negative, as the staged rows are (the parser
+    keeps the report's minus: test_sign_opposed_duplicate_pair_kept_distinct_
+    by_heading in test_ledger_capture.py)."""
     from usali.models import IngestBatch, PmsLedgerBalanceStage, UsaliLedgerBalanceFact
 
     _org_and_property(db_session)
@@ -412,7 +421,7 @@ def _ledger_world(db_session):
     today = date(2026, 7, 7)
     _fact("AR_LEDGER", "AR / City Ledger", "balance", Decimal("19742.41"), today)
     _fact("AR_CHARGES", "AR Charges", "activity", Decimal("149.75"), today)
-    _fact("AR_PAYMENTS", "AR Payments", "activity", Decimal("0"), today)
+    _fact("AR_PAYMENTS", "AR Payments", "activity", Decimal("-407.34"), today)
     _fact("AR_LEDGER", "AR / City Ledger", "balance", Decimal("19000.00"),
           date(2026, 7, 6))
     db_session.add(NightAuditState(property_id="HISJ", current_business_date=today))
@@ -432,12 +441,16 @@ def test_adjust_fixes_rollforward_and_records_everything(db_session, db_engine, 
     r = client.get("/api/properties/HISJ/night-audit", headers=headers)
     check = next(c for c in r.json()["verification"] if c["name"] == "ar_rollforward")
     assert check["status"] == "fail"
+    assert check["delta"] == "-1000.00"  # 19000 + 149.75 + (-407.34) - 19742.41
     assert check["adjust"]["stored"] == "19000.00"  # money: 2dp everywhere
-    assert check["adjust"]["suggested"] == "19592.66"
+    # The suggestion must BE the true prior close -- the value under which
+    # prior + charges + payments == today exactly -- because it is what the
+    # adjust endpoint writes into the promoted fact.
+    assert check["adjust"]["suggested"] == "20000.00"
 
     r = client.post(
         "/api/properties/HISJ/night-audit/adjust", headers=headers,
-        json={"corrected_amount": "19592.66", "reason": "late city-ledger transfer"},
+        json={"corrected_amount": "20000.00", "reason": "late city-ledger transfer"},
     )
     assert r.status_code == 200, r.text
     check = next(c for c in r.json()["verification"] if c["name"] == "ar_rollforward")
@@ -447,7 +460,7 @@ def test_adjust_fixes_rollforward_and_records_everything(db_session, db_engine, 
     db_session.expire_all()
     adj = db_session.execute(select(NightAuditAdjustment)).scalar_one()
     assert str(adj.old_amount) == "19000.0000"
-    assert str(adj.new_amount) == "19592.6600"
+    assert str(adj.new_amount) == "20000.0000"
     assert adj.reason == "late city-ledger transfer"
     events = db_session.execute(
         select(AuditEvent.action).where(AuditEvent.resource_id == "HISJ")
@@ -463,7 +476,7 @@ def test_adjust_requires_reason_and_prior_close(db_session, db_engine, tmp_path)
 
     # Reason too short -> pydantic 422, nothing changed.
     r = client.post("/api/properties/HISJ/night-audit/adjust", headers=headers,
-                    json={"corrected_amount": "19592.66", "reason": "x"})
+                    json={"corrected_amount": "20000.00", "reason": "x"})
     assert r.status_code == 422
 
     # No prior close on file -> 409 names the skipped state.

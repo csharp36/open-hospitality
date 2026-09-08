@@ -163,8 +163,11 @@ def ledger_checks(
     (AutoClerk reports carry no ledger block; a first night has no prior close):
 
     * identity — GUEST + AR + DEPOSIT + PACKAGE − HOTEL_BALANCE == 0 today.
-    * AR roll-forward — prior AR close + today's charges − payments − today's
-      AR close == 0.
+    * AR roll-forward — prior AR close + today's charges + today's payments
+      − today's AR close == 0. ADDITIVE over signed rows: activity facts keep
+      the report's own sign, so a payment is negative (the parser preserves
+      the minus — test_sign_opposed_duplicate_pair_kept_distinct_by_heading
+      in test_ledger_capture.py — and promote_ledgers copies amounts verbatim).
     """
     today = _balances(session, property_id, day, pms_source)
     checks: list[LedgerCheck] = []
@@ -202,13 +205,13 @@ def ledger_checks(
     if "AR_LEDGER" in prior and "AR_LEDGER" in today:
         charges = today.get("AR_CHARGES", Decimal("0"))
         payments = today.get("AR_PAYMENTS", Decimal("0"))
-        delta = prior["AR_LEDGER"] + charges - payments - today["AR_LEDGER"]
+        delta = prior["AR_LEDGER"] + charges + payments - today["AR_LEDGER"]
         failed = abs(delta) > _TOL
         checks.append(
             LedgerCheck(
                 name="ar_rollforward",
                 status="fail" if failed else "pass",
-                detail="prior AR close + charges − payments vs today's AR close",
+                detail="prior AR close + charges + payments (signed) vs today's AR close",
                 delta=_fmt_money(delta),
                 # Direct-edit affordance: correcting the PRIOR close to
                 # (stored − Δ) zeroes the residual. The API records old → new
