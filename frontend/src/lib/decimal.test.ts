@@ -1,6 +1,27 @@
 import { describe, expect, it } from 'vitest'
 
-import { addFixed, eqFixed, subFixed, sumFixed } from './decimal'
+import { addFixed, eqFixed, isFixed, subFixed, sumFixed } from './decimal'
+
+describe('isFixed', () => {
+  it('accepts the shapes the arithmetic accepts', () => {
+    expect(isFixed('410')).toBe(true)
+    expect(isFixed('410.0000')).toBe(true)
+    expect(isFixed('-16.2')).toBe(true)
+    expect(isFixed('0.0001')).toBe(true)
+    expect(isFixed(' 410.00 ')).toBe(true) // trimmed, like parseScaled
+  })
+
+  it('refuses everything the arithmetic would throw on', () => {
+    expect(isFixed('')).toBe(false)
+    expect(isFixed('   ')).toBe(false)
+    expect(isFixed('1,234')).toBe(false)
+    expect(isFixed('1.2.3')).toBe(false)
+    expect(isFixed('abc')).toBe(false)
+    expect(isFixed('1e3')).toBe(false)
+    expect(isFixed('.5')).toBe(false)
+    expect(isFixed('5.')).toBe(false)
+  })
+})
 
 describe('addFixed', () => {
   it('adds same-scale storage strings exactly', () => {
