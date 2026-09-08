@@ -5,15 +5,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT } from '../test/fixtures'
 import { createAppRouter } from '../router'
-import type { CoreMetrics, PerformanceResponse } from '../api/types'
+import type { CoreMetrics, NightAuditState, PerformanceResponse } from '../api/types'
 
 vi.mock('../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../api/client')>()),
   getPerformance: vi.fn(),
   getProperties: vi.fn(),
   getMe: vi.fn(),
+  getNightAudit: vi.fn(),
 }))
-import { ApiError, getMe, getPerformance, getProperties } from '../api/client'
+import { ApiError, getMe, getNightAudit, getPerformance, getProperties } from '../api/client'
 
 function metrics(over: Partial<CoreMetrics> = {}): CoreMetrics {
   return {
@@ -69,6 +70,28 @@ function sampleResponse(): PerformanceResponse {
   }
 }
 
+// Resolved night-audit state: the page derives its default window THROUGH
+// `closed_through`, so the suite must answer the night-audit query — an
+// unmocked (failing) fetch would exercise only the error-fallback derivation.
+function nightAuditState(over: Partial<NightAuditState> = {}): NightAuditState {
+  return {
+    property_id: 'HISJ',
+    pms_source: 'OPERA',
+    business_date: '2026-07-31',
+    closed_through: '2026-07-30',
+    upload_mode: 'reports',
+    pack_label: null,
+    slots: [],
+    verification: [],
+    segments: null,
+    window: { open: false, hours: '00:00–05:00', timezone: 'America/New_York', local_time: '12:00' },
+    all_reports_landed: false,
+    can_roll: false,
+    last_rolled_at: null,
+    ...over,
+  }
+}
+
 function renderPage() {
   const router = createAppRouter(createMemoryHistory({ initialEntries: ['/performance'] }))
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -87,6 +110,7 @@ beforeEach(() => {
     { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2026-07-07', last_date: '2026-07-07', name: null },
   ])
   vi.mocked(getPerformance).mockResolvedValue(sampleResponse())
+  vi.mocked(getNightAudit).mockResolvedValue(nightAuditState())
 })
 
 describe('PerformancePage', () => {
@@ -124,21 +148,25 @@ describe('PerformancePage', () => {
     expect(await screen.findByText(/data available 2025-08-01 – 2026-07-31/i)).toBeInTheDocument()
   })
 
-  it('defaults the window to the last month of available data, not month-to-date', async () => {
-    // last_date is 2026-07-31; the default window is that month (from clamped
-    // to first_date when first_date falls inside the month). A today-anchored
-    // default would land on an empty current month.
+  it('defaults the window to the last month of available data, clamped to closed_through', async () => {
+    // last_date is 2026-07-31 but the night audit has only closed through
+    // 2026-07-30, so `to` clamps there — the 31st's audit is still arriving.
+    // `from` is the first of that month (clamped up to first_date when the
+    // data starts inside it). A today-anchored default would land on an
+    // empty current month.
     vi.mocked(getProperties).mockResolvedValue([
       { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2025-08-01', last_date: '2026-07-31', name: null },
     ])
     renderPage()
     await waitFor(() =>
-      expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-31'),
+      expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-30'),
     )
     expect((screen.getByLabelText('From') as HTMLInputElement).value).toBe('2026-07-01')
   })
 
   it('clamps the default From up to first_date when the data starts mid-month', async () => {
+    // closed_through (2026-07-30) is past last_date here, so `to` stays on
+    // last_date — the clamp only ever pulls the window earlier.
     vi.mocked(getProperties).mockResolvedValue([
       { property_id: 'HISJ', pms_source: 'OPERA', first_date: '2026-07-07', last_date: '2026-07-20', name: null },
     ])
@@ -173,7 +201,7 @@ describe('PerformancePage', () => {
     ])
     renderPage()
     await waitFor(() =>
-      expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-31'),
+      expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe('2026-07-30'),
     )
     for (const label of ['From', 'To']) {
       const input = screen.getByLabelText(label) as HTMLInputElement
