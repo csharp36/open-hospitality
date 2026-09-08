@@ -151,6 +151,28 @@ def test_second_property_promotes_after_first_already_done(db_session):
     }
 
 
+def test_property_scope_confines_the_promotion(db_session):
+    """property_id=... promotes ONLY that property's rows: a sibling property
+    staged for the same (source, date) with a strict-invalid set (a code no
+    mapping covers) neither raises nor gets promoted as a side effect. Drop
+    the property filter and the sibling's ZZ9 raises SegmentMappingError
+    before HISJ promotes anything."""
+    _stage(db_session, [
+        _rec("D", "ROOMS", "35"), _rec("D", "ROOM_REVENUE", "6047.33"),
+        _rec("TOTAL", "ROOMS", "35"), _rec("TOTAL", "ROOM_REVENUE", "6047.33"),
+        _rec("ZZ9", "ROOMS", "7", prop="OPRB"),
+        _rec("ZZ9", "ROOM_REVENUE", "700.00", prop="OPRB"),
+        _rec("TOTAL", "ROOMS", "7", prop="OPRB"),
+        _rec("TOTAL", "ROOM_REVENUE", "700.00", prop="OPRB"),
+    ], "ps1")
+    result = promote_segments(db_session, "mapping/segments.yaml", source="OPERA",
+                              business_date=date(2026, 7, 7), property_id="HISJ")
+    db_session.commit()
+    assert result.promoted_segments == 1
+    facts = db_session.execute(select(UsaliSegmentFact)).scalars().all()
+    assert {(f.property_id, f.usali_segment) for f in facts} == {("HISJ", "TRANSIENT")}
+
+
 def test_ignored_counter_distinguishes_nonqualifying_rows(db_session):
     _stage(db_session, [
         _rec("D", "ADR", "172.78"),           # non-core measure
