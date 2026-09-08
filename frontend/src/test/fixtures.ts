@@ -10,6 +10,9 @@ import type {
   GlPeriod,
   JePlan,
   JournalEntry,
+  NightAuditCheck,
+  NightAuditSegments,
+  NightAuditState,
   PropertyInfo,
   PushLedgerRow,
   SosReport,
@@ -385,6 +388,75 @@ export function makeTrialBalance(overrides: Partial<TrialBalance> = {}): TrialBa
     ],
     total_debits: '12066.3700',
     total_credits: '12066.3700',
+    ...overrides,
+  }
+}
+
+// --- Night audit -------------------------------------------------------------
+// Dates continue the HISJ story above: closed through 2026-07-06, auditing
+// 2026-07-07. Amounts are plain decimal strings like the API serializes.
+
+export function makeNightAuditCheck(overrides: Partial<NightAuditCheck> = {}): NightAuditCheck {
+  return {
+    name: 'ar_ledger_rollforward',
+    status: 'pass',
+    detail: 'AR close ties to the prior close',
+    delta: null,
+    adjust: null,
+    ...overrides,
+  }
+}
+
+/**
+ * Failing by default so the cells render editable: Σ rooms already ties the
+ * Manager Flash reference (40), Σ revenue (10452.28) misses the Trial Balance
+ * reference by -4.09 — typing GRP revenue 2614.09 is the correction that ties.
+ */
+export function makeNightAuditSegments(
+  overrides: Partial<NightAuditSegments> = {},
+): NightAuditSegments {
+  return {
+    status: 'fail',
+    detail: 'revenue by market code misses the Trial Balance Rooms line',
+    rows: [
+      { code: 'TRAN', description: 'Transient', rooms: '30', room_revenue: '7842.28' },
+      { code: 'GRP', description: 'Group', rooms: '10', room_revenue: '2610.00' },
+    ],
+    rooms_total: '40',
+    revenue_total: '10452.28',
+    rooms_ref: '40',
+    revenue_ref: '10456.37',
+    rooms_delta: '0',
+    revenue_delta: '-4.09',
+    report_total_rooms: null,
+    report_total_revenue: null,
+    ...overrides,
+  }
+}
+
+export function makeNightAuditState(overrides: Partial<NightAuditState> = {}): NightAuditState {
+  return {
+    property_id: 'HISJ',
+    pms_source: 'OPERA',
+    business_date: '2026-07-07',
+    closed_through: '2026-07-06',
+    upload_mode: 'reports',
+    pack_label: null,
+    slots: [
+      { report_type: 'trial_balance', label: 'Trial Balance', landed: true },
+      { report_type: 'manager_flash', label: 'Manager Flash', landed: false },
+    ],
+    verification: [makeNightAuditCheck()],
+    segments: null,
+    window: {
+      open: true,
+      hours: '00:00–05:00',
+      timezone: 'America/Costa_Rica',
+      local_time: '01:12',
+    },
+    all_reports_landed: false,
+    can_roll: false,
+    last_rolled_at: null,
     ...overrides,
   }
 }

@@ -30,6 +30,12 @@ function formatScaled(value: bigint, scale: number): string {
   return `${neg ? '-' : ''}${int}${frac}`
 }
 
+/** Whether `s` is a decimal string the arithmetic here accepts (parseScaled's
+ * own regex) — the gate callers use before summing user-typed cells. */
+export function isFixed(s: string): boolean {
+  return FIXED_RE.test(s.trim())
+}
+
 /** Exact sum of two decimal strings; result carries the wider scale. */
 export function addFixed(a: string, b: string): string {
   const [av, bv, scale] = align(parseScaled(a), parseScaled(b))

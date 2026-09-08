@@ -130,7 +130,7 @@ const SECTIONS: NavSection[] = [
       { to: '/integrations', label: 'Integrations', icon: SyncIcon, show: isOrgAdmin },
       { to: '/coverage', label: 'Coverage', icon: CoverageIcon },
       { label: 'Daily Reports', icon: FileIcon, soon: true },
-      { label: 'Night Audit', icon: MoonIcon, soon: true },
+      { to: '/night-audit', label: 'Night Audit', icon: MoonIcon, show: isScheduler },
       { to: '/gl', label: 'General Ledger', icon: BankIcon },
     ],
   },

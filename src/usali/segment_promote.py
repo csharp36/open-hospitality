@@ -44,7 +44,8 @@ def _load_segment_map(path: str | Path) -> dict[tuple[str, str], str]:
 
 
 def promote_segments(
-    session: Session, mapping_path: str | Path, *, source: str, business_date: date
+    session: Session, mapping_path: str | Path, *, source: str, business_date: date,
+    property_id: str | None = None,
 ) -> SegmentPromoteResult:
     """Aggregate staged segment rows into usali_segment_fact — STRICTLY, per property.
 
@@ -57,13 +58,20 @@ def promote_segments(
     into another's, and one property being already-promoted never masks another
     property's pending rows. Idempotent per property: an already-promoted
     (source, property, date) is a skip no-op for that property only.
+
+    `property_id` confines the scan to ONE property's stage rows. None (the
+    ingestion-path default) keeps the every-staged-property sweep — right for a
+    report that carries several properties, wrong for a caller acting on one:
+    a sibling property's strict-invalid rows would fail this property's
+    operation, and its valid rows would be promoted as a side effect.
     """
-    stage_rows = session.execute(
-        select(PmsDailySegmentStage).where(
-            PmsDailySegmentStage.pms_source == source,
-            PmsDailySegmentStage.business_date == business_date,
-        )
-    ).scalars().all()
+    stmt = select(PmsDailySegmentStage).where(
+        PmsDailySegmentStage.pms_source == source,
+        PmsDailySegmentStage.business_date == business_date,
+    )
+    if property_id is not None:
+        stmt = stmt.where(PmsDailySegmentStage.property_id == property_id)
+    stage_rows = session.execute(stmt).scalars().all()
 
     by_property: dict[str, list[PmsDailySegmentStage]] = {}
     for r in stage_rows:

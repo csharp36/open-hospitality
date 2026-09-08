@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { Badge, Card, PageHeader, controlClass } from '../components/ui'
-import { ApiError, getPerformance } from '../api/client'
+import { getNightAudit, ApiError, getPerformance } from '../api/client'
 import type { CoreMetrics, PerformanceResponse } from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
@@ -55,24 +55,45 @@ function formatDelta(value: string | null | undefined): { text: string; positive
 
 export default function PerformancePage() {
   const { property, selected } = useGlobalProperty()
-  // The window is seeded from the property's OWN data range rather than a
-  // today-relative month-to-date: the demo (and any property whose feed has
-  // lapsed) has no data in the current month, so a today-anchored default
-  // lands on an empty window. Default to the last month of available data —
-  // `to` = last_date, `from` = the first of that month clamped to first_date.
-  const [from, setFrom] = useState('')
-  const [to, setTo] = useState('')
-  // Re-default only when the property changes, so a user's manual date edits
-  // survive re-renders (react-query may hand back a fresh `selected` object
-  // with the same id on refetch).
-  const defaultedFor = useRef<string | undefined>(undefined)
-  useEffect(() => {
-    if (selected === undefined || defaultedFor.current === selected.property_id) return
-    defaultedFor.current = selected.property_id
-    const monthStart = `${selected.last_date.slice(0, 7)}-01`
-    setTo(selected.last_date)
-    setFrom(selected.first_date > monthStart ? selected.first_date : monthStart)
-  }, [selected])
+  // Night-audit state: dashboards default to data through the last CLOSED
+  // business day (`closed_through`) — the current date's audit is still
+  // arriving, so a today-inclusive default would under-report it.
+  const nightAudit = useQuery({
+    queryKey: ['night-audit', property],
+    queryFn: () => getNightAudit(property!),
+    enabled: property !== undefined,
+  })
+
+  // The default window is DERIVED during render, never effect-set. It is
+  // seeded from the property's OWN data range rather than a today-relative
+  // month-to-date (the demo, and any property whose feed has lapsed, has no
+  // data in the current month): `to` = last_date clamped to `closed_through`,
+  // `from` = the first of that month clamped to first_date. While the
+  // night-audit answer for THIS property is still unknown the window is
+  // undefined and the performance query below stays disabled — no fetch can
+  // go out with a previous property's window. On a night-audit error the
+  // data range alone seeds the default; nothing is latched, so a later
+  // success re-derives the clamp in that render.
+  let derived: { from: string; to: string } | undefined
+  if (selected !== undefined && (nightAudit.data !== undefined || nightAudit.isError)) {
+    const closedThrough = nightAudit.data?.closed_through
+    const end =
+      closedThrough !== undefined && closedThrough < selected.last_date
+        ? closedThrough
+        : selected.last_date
+    const monthStart = `${end.slice(0, 7)}-01`
+    derived = { from: selected.first_date > monthStart ? selected.first_date : monthStart, to: end }
+  }
+
+  // Only the USER's edits live in state, stored WITH the property they were
+  // typed for and read back only while that property is selected (the GlPage
+  // drillScope shape). The render-time clear keeps a return to this property
+  // from resurrecting dates typed in an earlier visit.
+  const [override, setOverride] = useState<{ key: string; from: string; to: string } | null>(null)
+  if (override !== null && override.key !== property) setOverride(null)
+  const range = override !== null && override.key === property ? override : derived
+  const from = range?.from ?? ''
+  const to = range?.to ?? ''
 
   const perf = useQuery({
     queryKey: ['performance', property, from, to],
@@ -101,7 +122,9 @@ export default function PerformancePage() {
               min={selected?.first_date}
               max={selected?.last_date}
               aria-label="From"
-              onChange={(e) => setFrom(e.target.value)}
+              onChange={(e) => {
+                if (property !== undefined) setOverride({ key: property, from: e.target.value, to })
+              }}
             />
           </label>
           <label className="flex flex-col gap-1 text-sm">
@@ -113,7 +136,9 @@ export default function PerformancePage() {
               min={selected?.first_date}
               max={selected?.last_date}
               aria-label="To"
-              onChange={(e) => setTo(e.target.value)}
+              onChange={(e) => {
+                if (property !== undefined) setOverride({ key: property, from, to: e.target.value })
+              }}
             />
           </label>
           {selected !== undefined && (
