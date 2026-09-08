@@ -7,13 +7,16 @@ roll-forward finds a hole the PMS export cannot fix. The stage row keeps what
 the PMS originally said; this table records every correction — old value, new
 value, mandatory reason, actor — so the direct edit stays attributable.
 
-OrgScoped, RLS'd, composite (org_id, property_id) FK: the standard wall.
+OrgScoped, RLS'd, composite (org_id, property_id) FK: the standard wall. And
+append-only BY GRANT (the g1a0glcore journal idiom): UPDATE and DELETE are
+REVOKEd from the app role, because a correction log the app can rewrite is no
+control at all.
 """
 
 import sqlalchemy as sa
 from alembic import op
 
-from usali.tenancy import RLS_ORG_VAR
+from usali.tenancy import APP_DB_ROLE, RLS_ORG_VAR
 
 revision = "n2a0nightadjust"
 down_revision = "n1a0nightaudit"
@@ -51,8 +54,16 @@ def upgrade() -> None:
         f"CREATE POLICY {_POLICY} ON {_TABLE} "
         f"USING ({_PREDICATE}) WITH CHECK ({_PREDICATE})"
     )
+    # Append-only is a grant, not a convention (the g1a0glcore idiom):
+    # l2a0rlswall's ALTER DEFAULT PRIVILEGES hands the app role UPDATE/DELETE
+    # on every new table, so without this REVOKE the correction log stays
+    # rewritable.
+    # Pinned enumerable by test_night_audit.py::
+    # test_the_adjustment_log_is_append_only_by_grant.
+    op.execute(f"REVOKE UPDATE, DELETE ON {_TABLE} FROM {APP_DB_ROLE}")
 
 
 def downgrade() -> None:
+    op.execute(f"GRANT UPDATE, DELETE ON {_TABLE} TO {APP_DB_ROLE}")
     op.execute(f"DROP POLICY {_POLICY} ON {_TABLE}")
     op.drop_table(_TABLE)
