@@ -273,8 +273,9 @@ roadmap:
       Pull data directly from a property management system rather than
       ingesting an exported report. Named targets: HotelKey (API and event
       stream), Oracle OPERA Cloud via OHIP, and Cloudbeds. Distinct from OH-2,
-      which extends the existing file-based path to more report shapes.
-    status: in-progress
+      which extends the existing file-based path to more report shapes, and
+      from OH-31, the file-based HotelKey source that shipped first.
+    status: planned  # nothing on the direct path is built; the file slice that made this in-progress is OH-31 (2026-09-20)
     tags: [ingestion, pms, integrations]
 
   - id: OH-23
@@ -344,3 +345,17 @@ roadmap:
       accountant role.
     status: considering
     tags: [gl, accounting, reporting]
+
+  - id: OH-31
+    title: HotelKey report ingestion
+    summary: >
+      Ingest the reports a HotelKey property exports — the Hotel Statistics
+      PDF and the Settlement By Payment Type, All Payments and AR Invoice
+      Aging spreadsheets — through the same detect, stage, transform and
+      promote path as the other sources. Occupancy, ADR and RevPAR statistics
+      and AR balances promote; financial rows are staged and mapped for
+      review but not posted, and the operating statement says so, until a
+      HotelKey night audit pack is available. Signup and the anonymous
+      preview recognize HotelKey. The direct API and event stream are OH-22.
+    status: shipped  # PR #136, 2026-09-20; docs/design/2026-09-08-oh22-hotelkey-design.md (D-OH22.6)
+    tags: [ingestion, pms, integrations]

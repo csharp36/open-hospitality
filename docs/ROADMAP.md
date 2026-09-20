@@ -111,8 +111,10 @@ since is the `/integrations` page (PR #113), reflected below.
   Summary Operating Statement with drill-through, labor Schedule 14/15,
   per-department analytics, scheduling, the kiosk with enforced punch order,
   payroll orchestration to swappable providers with estimate vs. actual.
-- **Three PMS sources** — Opera, AutoClerk, and choiceADVANTAGE (the bundled
-  Standard Audit Pack via `process_pack`), through one detection registry.
+- **Four PMS sources** — Opera, AutoClerk, choiceADVANTAGE (the bundled
+  Standard Audit Pack via `process_pack`), and HotelKey's exported reports
+  (OH-31, 2026-09-20: statistics and AR balances promote; financial rows
+  stage without posting), through one detection registry.
 - **Multi-tenancy** — RLS fail-closed as the tenant wall, Keycloak
   Organizations identity, client-side sealed PII (ADR-004), per-org field
   encryption (ADR-005), pinned by a real two-org isolation suite.
@@ -153,7 +155,7 @@ G3+G4 → OH-29, G5+G6+G7 → OH-30, G8 → the forecasting item in Tier 2.
 
 | # | Work | Id | Why here |
 |---|---|---|---|
-| 1 | **HotelKey integration** — API + event stream where the property grants credentials; a parser for Hilton PEP's emailed audit pack where the API is franchisor-gated. Include settlement-by-payment-type from day one; bank matching (#6) needs it. | OH-22 | Integration #1 of seven: the largest and fastest-growing brand platform, and the only API-first accounting feed among the brand systems. Credentials are property-initiated and already requested. **File ingestion shipped** as a statistics-and-balances source (design D-OH22.6, 2026-09-20): all four HotelKey exports ingest; statistics and AR balances promote; financial rows stage and do not post, and the operating statement says so. Not SOS-backing until the night audit pack arrives; the API/event stream promised above is pending vendor access. |
+| 1 | **HotelKey integration** — API + event stream where the property grants credentials; a parser for Hilton PEP's emailed audit pack where the API is franchisor-gated. Include settlement-by-payment-type from day one; bank matching (#6) needs it. | OH-31 (shipped), OH-22 | Integration #1 of seven: the largest and fastest-growing brand platform, and the only API-first accounting feed among the brand systems. Credentials are property-initiated and already requested. **File ingestion shipped as OH-31**, a statistics-and-balances source (design D-OH22.6, 2026-09-20): all four HotelKey exports ingest; statistics and AR balances promote; financial rows stage and do not post, and the operating statement says so. Not SOS-backing until the night audit pack arrives; the API/event stream promised above is pending vendor access. |
 | 2 | **Ingestion-boundary redaction on the authenticated path** | — | The gate that lets a stranger upload a real audit pack; the first line of every security review. More important, not less, once OH holds bank tokens. Smallest item on the list. |
 | 3 | **General ledger posting core** — USALI chart of accounts with per-org extensions, immutable double-entry journal with source links to staged PMS rows and labor facts, fiscal periods with an audited close, trial balance and balance sheet; the operating statement re-pointed at the journal; the QBO push becomes an export from it. | OH-27 | Everything later posts into it, and it is smaller than it sounds: the fiscal calendar, the USALI dictionary, the staged facts, and the journal generator already exist. Needs the GL posting-model ADR first (§6). **Backend, the /gl page, and the SOS cutover shipped**: the operating statement's totals now render from the journal (shape C of docs/design/2026-09-07-oh27-sos-cutover-decision.md), with tests/test_gl_parity.py staying in CI as the tripwire. |
 | 4 | **Emailed-report intake** — an inbound address per property, detection-registry routed. | OH-23 | Four of the seven target PMSs deliver by scheduled email; until this exists, each is a daily manual upload and self-service onboarding is a slogan. Depends on #2. |
@@ -279,6 +281,21 @@ reused.
 **Not changed:** every shipped status, and OH-19's `planned` status — its
 movement is in this document's ordering, where §8 of the previous revision
 said such movements belong.
+
+### 7.1 Deltas applied 2026-09-20
+
+- **OH-31 added, `shipped`** — HotelKey report ingestion, the file-based
+  slice PR #136 delivered under the OH-22 id. It gets its own id because
+  OH-22's summary promises direct API and event-stream pulls, which #136 did
+  not build, and a `shipped` status on that summary would have been false.
+  Tier 0 row 1 now cites both ids.
+- **OH-22 narrowed and returned to `planned`** — its summary names OH-31 as
+  the file-based source and keeps the API, OHIP and Cloudbeds targets. The
+  `in-progress` set on 2026-09-20 referred to the slice now carried by
+  OH-31; nothing on the direct path has been started, pending vendor access.
+- **OH-2 deliberately unchanged** — its sentence that SkyTouch Hotel OS is a
+  separate, unbuilt source stands, per §1.4: the built source is
+  choiceADVANTAGE's audit pack under the in-code name `SKYTOUCH`.
 
 ---
 
