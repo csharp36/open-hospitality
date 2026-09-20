@@ -3,16 +3,17 @@
 Every non-empty cell becomes one Word on a synthetic grid: ``x0`` is the
 1-based column index times ``XLSX_COL_STEP`` and ``top`` the 1-based row index
 times ``XLSX_ROW_STEP``. ``cluster_rows`` at its default tolerance then
-recovers the sheet's rows exactly, because rows sit ``XLSX_ROW_STEP`` apart,
-well beyond that tolerance. A parser can recover the column with
-``round(x0 / XLSX_COL_STEP)``. A cell's text is its value rendered exactly:
-integers as digits, floats through ``Decimal(repr(...))`` so ``361.63`` stays
-``361.63``, midnight datetimes as ISO dates, other datetimes and times as ISO.
+recovers the sheet's rows exactly (tests/adaptors/test_xlsx.py::
+test_cluster_rows_recovers_the_sheet_rows). A parser can recover the column
+with ``round(x0 / XLSX_COL_STEP)``. A cell's text is its value rendered
+exactly: integers as digits, floats through ``Decimal(repr(...))`` so
+``361.63`` stays ``361.63``, midnight datetimes as ISO dates, other datetimes
+and times as ISO.
 
 Only the FIRST worksheet is read (tests/adaptors/test_xlsx.py::
-test_only_the_first_worksheet_is_read): every HotelKey export is a single
-sheet named ``Report``, and a second sheet would be a format change worth
-noticing rather than silently concatenating.
+test_only_the_first_worksheet_is_read): the four HotelKey sample exports read
+on 2026-09-20 each carry one sheet, named ``Report``; a second sheet would be
+a format change worth noticing rather than silently concatenating.
 """
 
 import io
@@ -37,9 +38,11 @@ def _cell_text(value: object) -> str | None:
         return str(value)
     if isinstance(value, float):
         if value.is_integer():
-            # openpyxl yields int for a whole number in its own files and float
-            # when the sheet XML spells one with a point; either way an amount
-            # prints without it. Pinned by
+            # openpyxl 3.1.5 _reader._cast_number returns int unless the raw
+            # text has '.', 'E' or 'e' (read 2026-09-20), so a whole number
+            # reaches here as int from its own files and as float from a
+            # producer that writes a point. Either way an amount prints
+            # without it. Pinned by
             # test_cell_text_renders_a_whole_number_float_without_a_point.
             return str(int(value))
         return format(Decimal(repr(value)), "f")
@@ -51,14 +54,20 @@ def _cell_text(value: object) -> str | None:
         return value.isoformat()
     if isinstance(value, time):
         return value.isoformat()
-    text = str(value).strip()
-    return text or None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    raise ValueError(f"unsupported cell value type {type(value).__name__}")
 
 
 def extract_words_from_xlsx_bytes(data: bytes) -> list[Word]:
     try:
         workbook = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
-    except (zipfile.BadZipFile, KeyError, ValueError, OSError) as exc:
+    # SyntaxError is caught for its subclass xml.etree.ElementTree.ParseError,
+    # raised on a corrupt sheet XML; catching the parent instead of importing
+    # ElementTree here means a different XML parser backend raising a sibling
+    # SyntaxError subclass is still caught.
+    except (zipfile.BadZipFile, KeyError, ValueError, OSError, SyntaxError) as exc:
         raise ValueError(f"not an XLSX workbook: {exc}") from exc
     try:
         sheet = workbook.worksheets[0]

@@ -1,4 +1,5 @@
 import io
+import zipfile
 from datetime import datetime, time
 
 import openpyxl
@@ -72,3 +73,40 @@ def test_cell_text_renders_a_whole_number_float_without_a_point():
     assert _cell_text(700.0) == "700"
     assert _cell_text(150.5) == "150.5"
     assert _cell_text(361.63) == "361.63"
+
+
+def test_a_workbook_with_corrupt_sheet_xml_is_refused_loudly():
+    good = _workbook({"A1": "hello"})
+    in_zip = zipfile.ZipFile(io.BytesIO(good))
+    out_buf = io.BytesIO()
+    with zipfile.ZipFile(out_buf, "w") as out_zip:
+        for item in in_zip.infolist():
+            content = in_zip.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                content = b"<not valid xml"
+            out_zip.writestr(item, content)
+    with pytest.raises(ValueError, match="not an XLSX workbook"):
+        extract_words_from_xlsx_bytes(out_buf.getvalue())
+
+
+def test_an_elapsed_time_cell_is_refused_not_guessed():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Report"
+    ws["A1"] = 1.5
+    ws["A1"].number_format = "[h]:mm:ss"
+    buf = io.BytesIO()
+    wb.save(buf)
+    with pytest.raises(ValueError, match="unsupported cell value type timedelta"):
+        extract_words_from_xlsx_bytes(buf.getvalue())
+
+
+def test_an_empty_workbook_yields_no_words():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    assert ws is not None
+    ws.title = "Report"
+    buf = io.BytesIO()
+    wb.save(buf)
+    assert extract_words_from_xlsx_bytes(buf.getvalue()) == []
