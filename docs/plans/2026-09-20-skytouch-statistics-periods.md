@@ -120,7 +120,7 @@ Expected: 4 passed.
 
 Run: `uv run ruff check && uv run mypy --strict src && uv run pytest -q -p no:cacheprovider`
 Expected: ruff `All checks passed!`, mypy `Success`, pytest all green
-(main has 2410 passed / 4 skipped; expect 2412 passed / 4 skipped).
+(main has 2309 passed / 4 skipped; expect 2311 passed / 4 skipped; the 4 skips are the onnxruntime-gated face-model tests).
 
 - [ ] **Step 5: Commit**
 
