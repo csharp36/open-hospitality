@@ -17,7 +17,6 @@ from usali.adaptors.pdf import Word
 from usali.schemas import LedgerRecord
 
 _DATE_SECTION = "AR Aging Details - Date"
-_TYPE_SECTION = "AR Aging Details - Transaction Type"
 
 
 def _amounts(sec: HkSection, row: dict[str, str]) -> list[tuple[str, Decimal]]:

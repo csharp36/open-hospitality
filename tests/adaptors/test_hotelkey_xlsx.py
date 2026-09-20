@@ -10,6 +10,7 @@ from usali.adaptors.hotelkey_settlement import parse_settlement
 from usali.adaptors.hotelkey_xlsx import split_report
 from usali.adaptors.pdf import Word
 from usali.adaptors.reader import read_words
+from usali.adaptors.xlsx import XLSX_COL_STEP, XLSX_ROW_STEP
 
 FIX = Path("tests/fixtures/hotelkey")
 BD = date(2026, 8, 13)
@@ -17,6 +18,15 @@ BD = date(2026, 8, 13)
 
 def _words(name: str) -> list[Word]:
     return read_words(FIX / name)
+
+
+def _mutated(words: list[Word], cell: str, text: str) -> list[Word]:
+    """Replace the one word at sheet cell ``cell`` (e.g. "N20") with ``text``."""
+    col, row = ord(cell[0]) - ord("A") + 1, int(cell[1:])
+    x0, top = col * XLSX_COL_STEP, row * XLSX_ROW_STEP
+    hits = [w for w in words if w.x0 == x0 and w.top == top]
+    assert len(hits) == 1, (cell, hits)
+    return [Word(text=text, x0=w.x0, top=w.top) if w is hits[0] else w for w in words]
 
 
 def test_split_report_recovers_the_shared_shape():
@@ -87,3 +97,56 @@ def test_ar_aging_refuses_when_sections_disagree():
     bad = [Word(text="3401", x0=w.x0, top=w.top) if (w.text == "3400" and w.top == 310.0) else w for w in words]
     with pytest.raises(ValueError, match="Company Name"):
         parse_ar_aging(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_settlement_refuses_when_details_do_not_foot_to_their_total():
+    # N20 is the Details grand total (generator: row 20, column 14, unnumbered).
+    bad = _mutated(_words("Settlement By Payment Type.xlsx"), "N20", "901")
+    with pytest.raises(ValueError, match="Details do not foot"):
+        parse_settlement(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_settlement_refuses_when_a_summary_count_disagrees():
+    # D25 is the Summary MASTER count (row 25: 1, MASTER, 700, 3); three details carry MASTER.
+    bad = _mutated(_words("Settlement By Payment Type.xlsx"), "D25", "4")
+    with pytest.raises(ValueError, match="MASTER.*x4"):
+        parse_settlement(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_settlement_refuses_when_the_summary_total_disagrees():
+    # C27 is the Summary total amount (row 27: C = 900, D = 5).
+    bad = _mutated(_words("Settlement By Payment Type.xlsx"), "C27", "901")
+    with pytest.raises(ValueError, match="Summary total disagrees"):
+        parse_settlement(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_all_payments_refuses_when_rows_do_not_foot():
+    # C18 is the unnumbered total under rows 16-17 (700 + 200).
+    bad = _mutated(_words("All Payments.xlsx"), "C18", "901")
+    with pytest.raises(ValueError, match="All Payments does not foot"):
+        parse_all_payments(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_ar_aging_refuses_when_a_section_column_does_not_foot():
+    # D29 is TEST CORP TRAVEL's Current cell in the Company Name section (row 29;
+    # B = Company Name, C = Payment On Account, D = Current). The section's total
+    # row still equals the other sections', so only the column footing can catch it.
+    bad = _mutated(_words("AR Invoice Aging.xlsx"), "D29", "1001")
+    with pytest.raises(ValueError, match="Company Name.*Current"):
+        parse_ar_aging(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_expect_title_refuses_the_wrong_report():
+    with pytest.raises(ValueError, match="expected a HotelKey 'Settlement By Payment Type' export"):
+        parse_settlement(_words("All Payments.xlsx"), property_id="HKDEMO", business_date=BD)
+
+
+def test_a_missing_section_is_refused():
+    # B23 is the "Summary" label; without it the Summary rows fall under Details
+    # and the section lookup is what refuses.
+    words = _words("Settlement By Payment Type.xlsx")
+    x0, top = 2 * XLSX_COL_STEP, 23 * XLSX_ROW_STEP
+    assert [w.text for w in words if w.x0 == x0 and w.top == top] == ["Summary"]
+    without = [w for w in words if not (w.x0 == x0 and w.top == top)]
+    with pytest.raises(ValueError, match="has no 'Summary' section"):
+        parse_settlement(without, property_id="HKDEMO", business_date=BD)
