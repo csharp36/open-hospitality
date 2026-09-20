@@ -8,7 +8,10 @@ specified yet. §2 decides what the samples DO support; §3 states what is
 blocked and on what. Implementation plan:
 [`../plans/2026-09-20-oh22-hotelkey.md`](../plans/2026-09-20-oh22-hotelkey.md).
 
-OH-22 is Tier 0 #1 in [`ROADMAP.md`](../ROADMAP.md). It inherits the ingestion
+OH-22 is Tier 0 #1 in [`ROADMAP.md`](../ROADMAP.md). Since 2026-09-20 the
+file-ingestion slice this document specifies is catalogued as **OH-31**
+(`shipped`) in `roadmap.yml`; OH-22 keeps the direct API and event stream.
+It inherits the ingestion
 contract unchanged — detect, stage, transform, promote, with mapping YAML as the
 only place a vendor code becomes a USALI classification.
 
