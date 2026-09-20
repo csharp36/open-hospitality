@@ -42,3 +42,11 @@ def test_only_a_run_date_is_not_a_business_date():
     words = _words("Lakeview Inn", "MQBWF", "Report Run Date: Aug 14 2026")
     with pytest.raises(ValueError, match="no HotelKey"):
         extract_business_date(words)
+
+
+def test_a_header_that_breaks_the_printed_format_is_refused():
+    # The vendor prints "Date:" capitalized with a three-letter month; anything
+    # else raises rather than guessing.
+    for header in ("date: Aug 13, 2026", "Date: Sept 13, 2026"):
+        with pytest.raises(ValueError, match="no HotelKey"):
+            extract_business_date(_words("Lakeside Test Lodge", header, "HKTEST"))
