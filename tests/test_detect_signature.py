@@ -82,3 +82,56 @@ def test_detect_threads_the_title_through_to_the_signature():
     registry = [{"match": "REDSTONE INN", "property_id": "RS1", "pms_source": "AUTOCLERK"}]
     with pytest.raises(ValueError, match="report type"):
         detect(words, registry, title="Cancellation List")
+
+
+# --- The `HOTEL STATISTICS` phrase is not SkyTouch's alone --------------------
+# Both windows below are the real samples' header words in extraction order
+# (`~/Desktop/Sample Hotel/HotelKey/Hotel Statistics - HK.pdf` and the SkyTouch
+# Standard Audit Pack of 2026-06-21; neither file is committed). HotelKey titles
+# its statistics report identically and prints the property as a bare name,
+# never behind a `Property Name:` banner.
+
+_HOTELKEY_STATISTICS_WINDOW = (
+    "Summit", "Lodge", "Redstone,", "TX", "Date:", "Aug", "13,", "2026", "RDQSM",
+    "Report", "Run", "Date:", "Aug", "14", "2026", "S",
+    "Report", "Run", "Time:", "10:04:20", "AM", "MOCK", "DATA", "User:", "Sample",
+    "DEVUSER", "RDQSM", "Hotel", "Statistics",
+    "Room", "Statistics", "Description", "Actual", "Today", "M-T-D", "LY-M-T-D",
+    "Y-T-D", "LY-T-D",
+)
+
+_SKYTOUCH_STATISTICS_WINDOW = (
+    "Hotel", "Statistics", "Property", "Name:", "Econo", "Lodge",
+    "Business", "Date:", "6/21/2026", "Property", "Code:", "NM070",
+    "Shift:", "4", "User:*", "Room", "Statistics", "6/21/2026", "PTD",
+    "Last", "Year", "PTD",
+)
+
+
+def test_hotelkey_statistics_does_not_match_skytouch():
+    assert detect_report_signature(_words(*_HOTELKEY_STATISTICS_WINDOW)) is None
+
+
+def test_skytouch_statistics_still_matches_with_its_banner():
+    words = _words(*_SKYTOUCH_STATISTICS_WINDOW)
+    expected = ("SKYTOUCH", "hotel_statistics")
+    assert detect_report_signature(words) == expected
+    assert detect_report_signature(words, title="Hotel Statistics") == expected
+
+
+def test_anchor_is_checked_on_the_title_path_too():
+    # A pack section's title says "Hotel Statistics" but its page carries no
+    # SkyTouch banner. The title path must not skip the anchor check.
+    words = _words(
+        "Hotel", "Statistics", "Summit", "Lodge", "Room", "Statistics", "Description"
+    )
+    assert detect_report_signature(words, title="Hotel Statistics") is None
+
+
+def test_anchorless_rows_are_unchanged():
+    # Only the HOTEL STATISTICS row carries an anchor; the others still match
+    # on their phrase alone, with no banner anywhere in the window.
+    assert detect_report_signature(_words("Hotel", "Journal", "Summary", "TOTALS")) == (
+        "SKYTOUCH",
+        "hotel_journal",
+    )

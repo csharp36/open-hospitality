@@ -8,14 +8,24 @@ from usali.adaptors.pdf import Word
 from usali.models import PropertyDetectionAlias
 
 # Report signatures: an UPPERCASED phrase that appears in the report's own text.
-_REPORT_SIGNATURES: list[tuple[str, tuple[str, str]]] = [
-    ("TRIAL BALANCE", ("OPERA", "trial_balance")),
-    ("TRANSACTION SUMMARY", ("AUTOCLERK", "transaction_summary")),
-    ("MANAGER FLASH", ("OPERA", "manager_flash")),
-    ("MANAGER'S REPORT", ("AUTOCLERK", "manager_report")),
-    ("MARKET CODE STATISTICS", ("OPERA", "market_stats")),
-    ("RATE PLAN", ("AUTOCLERK", "rate_plan")),
-    ("HOTEL JOURNAL SUMMARY", ("SKYTOUCH", "hotel_journal")),
+@dataclass(frozen=True)
+class _Signature:
+    phrase: str  # uppercased; matched against the title, else the header window
+    pms_source: str
+    report_type: str
+    # Uppercased; ALL must appear in the header window, whichever text the
+    # phrase matched. Empty for every row whose phrase is evidence enough alone.
+    anchors: tuple[str, ...] = ()
+
+
+_REPORT_SIGNATURES: list[_Signature] = [
+    _Signature("TRIAL BALANCE", "OPERA", "trial_balance"),
+    _Signature("TRANSACTION SUMMARY", "AUTOCLERK", "transaction_summary"),
+    _Signature("MANAGER FLASH", "OPERA", "manager_flash"),
+    _Signature("MANAGER'S REPORT", "AUTOCLERK", "manager_report"),
+    _Signature("MARKET CODE STATISTICS", "OPERA", "market_stats"),
+    _Signature("RATE PLAN", "AUTOCLERK", "rate_plan"),
+    _Signature("HOTEL JOURNAL SUMMARY", "SKYTOUCH", "hotel_journal"),
     # Registered once the statistics adapter was recalibrated against a real
     # Standard Audit Pack. It previously matched five synthetic single-word
     # anchors emitted by the mock generator and raised on any real header, so
@@ -23,7 +33,17 @@ _REPORT_SIGNATURES: list[tuple[str, tuple[str, str]]] = [
     # financial section that parsed correctly. It now locates columns by SHAPE
     # (one business date, two PTD, two YTD), which holds for both header
     # variants a real export uses.
-    ("HOTEL STATISTICS", ("SKYTOUCH", "hotel_statistics")),
+    _Signature(
+        "HOTEL STATISTICS",
+        "SKYTOUCH",
+        "hotel_statistics",
+        # `PROPERTY NAME:` is the SkyTouch page banner; HotelKey titles its
+        # statistics report identically and does not print it. Pinned both ways
+        # in tests/test_detect_signature.py by
+        # test_hotelkey_statistics_does_not_match_skytouch and
+        # test_skytouch_statistics_still_matches_with_its_banner.
+        anchors=("PROPERTY NAME:",),
+    ),
 ]
 # Only the header area is needed; scanning a bounded prefix keeps false positives out
 # of table bodies further down the page.
@@ -39,7 +59,7 @@ def supported_pms_sources() -> frozenset[str]:
     un-registered), and the failure is silent -- either a source is advertised
     whose pack quarantines on ingest, or a working one is never offered.
     """
-    return frozenset(source.lower() for _, (source, _) in _REPORT_SIGNATURES)
+    return frozenset(sig.pms_source.lower() for sig in _REPORT_SIGNATURES)
 
 
 @dataclass(frozen=True)
@@ -103,12 +123,23 @@ def detect_report_signature(
 
     A standalone single-report file is not a pack section and has no title, so
     it keeps the header-window behaviour unchanged.
+
+    A signature's ANCHORS are checked against the header window on BOTH paths.
+    An anchor is a vendor's page banner, not a column heading, and it is what
+    tells two vendors' identically titled reports apart. On the title path the
+    window is the section's own words, cut by `pack.split_pack`; that the
+    banner lands inside it for a whole pack is pinned in
+    tests/test_skytouch_end_to_end.py by
+    test_pack_section_title_decides_the_signature_not_a_body_column, and that
+    the check is not skipped when a title is given, in
+    tests/test_detect_signature.py by test_anchor_is_checked_on_the_title_path_too.
     """
-    if title is not None and title.strip():
-        haystack = title.upper()
-    else:
-        haystack = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
-    return next((sig for phrase, sig in _REPORT_SIGNATURES if phrase in haystack), None)
+    header_text = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()
+    haystack = title.upper() if title is not None and title.strip() else header_text
+    for sig in _REPORT_SIGNATURES:
+        if sig.phrase in haystack and all(anchor in header_text for anchor in sig.anchors):
+            return (sig.pms_source, sig.report_type)
+    return None
 
 
 def detect(
