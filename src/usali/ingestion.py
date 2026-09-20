@@ -482,35 +482,48 @@ def process_document(
     """Ingest one file whose shape is not known in advance: a single report
     (PDF or XLSX) or a bundled night-audit pack (PDF only).
 
-    Single-report detection is tried first. `detect` raises when the header
-    window's first matching signature disagrees with the property's registered
-    source (its cross-check) or when nothing matches; a pack shows exactly
-    that, because its first page is whichever report the PMS bound first. A
-    file that detects as a single report is processed as one and never split:
-    `split_pack` carves a multi-page single report at every page-title change,
-    so the pack path would drop the pages whose titles resolve to nothing.
-    Pinned in tests/test_process_document.py::test_single_report_never_takes_the_pack_path.
+    Single-report detection is tried first; only a ValueError from `detect`
+    (nothing matched, no property resolved, or the first matching signature
+    disagrees with the property's registered source) selects the pack path.
+    The rule is calibrated on the committed samples, not proved: a pack bound
+    with a cleanly detectable report first passes the probe and is processed
+    as a single report, and a single report whose header window matches an
+    earlier signature than its title takes the pack path. Both shapes and the
+    reasoning are in docs/design/2026-09-20-seed-pack-routing-design.md, D1.
 
-    Failure semantics are those of the path taken. When the pack path fails
-    too, the raised ProcessingError names both reasons; the failed batch and
-    the quarantine were already recorded by `process_pack`.
+    `process_pack` is not called for `Autoclerk - Manager Report 07.07.2026.pdf`,
+    the multi-page single report that `split_pack` carves into four sections;
+    pinned in tests/test_process_document.py::test_single_report_never_takes_the_pack_path,
+    with the split itself pinned in
+    tests/adaptors/test_pack.py::test_manager_report_splits_into_four_sections_one_resolvable.
+
+    Reading the bytes is not a routing signal: if it raises, the file takes
+    the single-report path, and `process_file` records the failed batch and
+    quarantines (tests/test_process_document.py::test_a_corrupt_pdf_is_quarantined_by_the_single_report_path).
+    When the pack path fails too, the raised ProcessingError names both
+    reasons; the failed batch and the quarantine were already recorded by
+    `process_pack`.
     """
-    src = Path(path)
-    data = src.read_bytes()
-    if not is_pdf(data):
-        return [process_file(session, src, processed_dir=processed_dir,
-                             failed_dir=failed_dir, edition=edition)]
-    try:
-        detect(read_words_from_bytes(data), load_registry(session))
-    except ValueError as single_exc:
+    path = Path(path)
+    data = path.read_bytes()
+    if is_pdf(data):
         try:
-            return process_pack(session, src, processed_dir=processed_dir,
-                                failed_dir=failed_dir, edition=edition)
-        except ProcessingError as pack_exc:
-            raise ProcessingError(
-                f"{src.name}: as a single report: {single_exc}; as a pack: {pack_exc}"
-            ) from pack_exc
-    return [process_file(session, src, processed_dir=processed_dir,
+            words = read_words_from_bytes(data)
+        except Exception:
+            words = None  # not a routing signal; process_file owns the failure
+        if words is not None:
+            try:
+                detect(words, load_registry(session))
+            except ValueError as single_exc:
+                try:
+                    return process_pack(session, path, processed_dir=processed_dir,
+                                        failed_dir=failed_dir, edition=edition)
+                except ProcessingError as pack_exc:
+                    raise ProcessingError(
+                        f"{path.name}: as a single report: {single_exc}; "
+                        f"as a pack: {pack_exc}"
+                    ) from pack_exc
+    return [process_file(session, path, processed_dir=processed_dir,
                          failed_dir=failed_dir, edition=edition)]
 
 

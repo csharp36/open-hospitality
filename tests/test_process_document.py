@@ -58,10 +58,12 @@ def test_pack_sample_routes_to_the_pack_path(db_session, tmp_path):
         db_session, _drop(tmp_path, PACK),
         processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
     )
+    assert len(results) == 2
     assert {(r.pms_source, r.report_type) for r in results} == {
         ("SKYTOUCH", "hotel_journal"), ("SKYTOUCH", "hotel_statistics"),
     }
     assert all(r.property_id == "STDEMO" for r in results)
+    assert all(r.destination == tmp_path / "done" / PACK.name for r in results)
     assert (tmp_path / "done" / PACK.name).exists()
     assert _failed_batches(db_session) == 0
 
@@ -83,15 +85,40 @@ def test_single_report_never_takes_the_pack_path(db_session, tmp_path, monkeypat
     assert (tmp_path / "done" / MANAGER_REPORT.name).exists()
 
 
-def test_xlsx_never_takes_the_pack_path(db_session, tmp_path, monkeypatch):
-    _seed(db_session, "hotelkey")
+def test_xlsx_never_takes_the_pack_path(db_session, tmp_path, founding_org, monkeypatch):
+    # No properties seeded, so single-report detection WOULD raise; an XLSX
+    # must still never be offered the pack path (packs are PDF-only) and
+    # fails through process_file like any single report.
+    seed_schedules(db_session, "mapping/usali_schedules.yaml")
+    load_mappings(db_session, "mapping/hotelkey.yaml")
+    db_session.commit()
     _no_pack_path(monkeypatch)
-    results = process_document(
-        db_session, _drop(tmp_path, HOTELKEY_XLSX),
-        processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
-    )
-    assert len(results) == 1 and results[0].pms_source == "HOTELKEY"
-    assert (tmp_path / "done" / HOTELKEY_XLSX.name).exists()
+    with pytest.raises(ProcessingError) as excinfo:
+        process_document(
+            db_session, _drop(tmp_path, HOTELKEY_XLSX),
+            processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
+        )
+    assert "as a pack:" not in str(excinfo.value)
+    assert (tmp_path / "fail" / HOTELKEY_XLSX.name).exists()
+    assert _failed_batches(db_session) == 1
+
+
+def test_a_corrupt_pdf_is_quarantined_by_the_single_report_path(
+    db_session, tmp_path, founding_org, monkeypatch
+):
+    # Reading the bytes is not a routing signal: whatever it raises, the file
+    # takes the single-report path, which records the failed batch and
+    # quarantines. The pack path is never offered.
+    _no_pack_path(monkeypatch)
+    bad = tmp_path / "inbox" / "corrupt.pdf"
+    bad.parent.mkdir(exist_ok=True)
+    bad.write_bytes(b"%PDF-1.4\nthis is not really a pdf\n")
+    with pytest.raises(ProcessingError):
+        process_document(
+            db_session, bad, processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
+        )
+    assert (tmp_path / "fail" / "corrupt.pdf").exists()
+    assert _failed_batches(db_session) == 1
 
 
 def test_a_pdf_that_fails_both_ways_reports_both_reasons(db_session, tmp_path, founding_org):

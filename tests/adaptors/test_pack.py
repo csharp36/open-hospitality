@@ -1,5 +1,10 @@
+from pathlib import Path
+
+import yaml
+
 from usali.adaptors.pack import split_pack
-from usali.adaptors.pdf import Word
+from usali.adaptors.pdf import Word, extract_pages
+from usali.detect import detect
 
 
 def _page(title, *rows):
@@ -64,3 +69,21 @@ def test_two_consecutive_empty_pages_do_not_crash():
 def test_non_consecutive_same_title_yields_separate_sections():
     pages = [_page("A", "1"), _page("B", "2"), _page("A", "3")]
     assert [s.title for s in split_pack(pages)] == ["A", "B", "A"]
+
+
+def test_manager_report_splits_into_four_sections_one_resolvable():
+    # A multi-page SINGLE report is carved at every page-title change, because
+    # pages 2-4 carry column-heading rows as their top row. Only page 1
+    # resolves by title. This is why ingestion.process_document never offers
+    # a detectable single report to the pack path.
+    registry = yaml.safe_load(Path("mapping/properties.yaml").read_text())
+    sections = split_pack(extract_pages("docs/reference/samples/Autoclerk - Manager Report 07.07.2026.pdf"))
+    assert len(sections) == 4
+    resolved = []
+    for s in sections:
+        try:
+            resolved.append(detect(s.words, registry, s.title).report_type)
+        except ValueError:
+            resolved.append(None)
+    assert resolved == ["manager_report", None, None, None]
+    assert len(sections[0].words) == 104 and sum(len(s.words) for s in sections) == 336
