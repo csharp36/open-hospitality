@@ -293,6 +293,11 @@ def create_first_property(
     test_a_signup_created_property_takes_its_first_night_audit_upload holds
     the whole path.
     """
+    name = name.strip()
+    if not name:
+        # The name is the alias's match phrase; blank matches every header.
+        # The API strips and refuses first (CompleteRequest); this is the belt.
+        raise ValueError("a property name must not be blank")
     source = pms_source.upper()
     base = _slugify(name)
     for _ in range(5):

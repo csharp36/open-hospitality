@@ -10,7 +10,7 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from usali import invites, pms_interest
 from usali.detect import supported_pms_sources
@@ -81,6 +81,18 @@ class CompleteRequest(BaseModel):
     # so a bad alias can't preempt them, but a too-short password is a pure
     # field-shape refusal and stays here.
     password: str = Field(min_length=8, max_length=200)
+
+    @field_validator("property_name")
+    @classmethod
+    def _stripped_property_name(cls, v: str) -> str:
+        # Strip FIRST, then enforce the floor (the AdjustBody._stripped_reason
+        # idiom): the stored name becomes the property's detection alias, and
+        # a blank match phrase is a substring of every report header. Field's
+        # min_length=1 alone passes three spaces.
+        v = v.strip()
+        if not v:
+            raise ValueError("property_name must not be blank")
+        return v
 
     @model_validator(mode="after")
     def _other_requires_name(self) -> "CompleteRequest":

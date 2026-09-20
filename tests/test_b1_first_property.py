@@ -35,6 +35,19 @@ def test_creates_a_property_under_the_bound_org(db_session):
         FOUNDING_ORG_ID, "OPERA", "Sunset Inn")
 
 
+def test_refuses_a_blank_name(db_session):
+    """Belt to the API validator's braces: the name is the detection alias's
+    match phrase, and an empty phrase matches every header."""
+    import pytest
+
+    ensure_default_org(db_session)
+    bind_org_context(db_session, FOUNDING_ORG_ID)
+    for blank in ("", "   ", "\t\n"):
+        with pytest.raises(ValueError, match="blank"):
+            create_first_property(db_session, FOUNDING_ORG_ID, name=blank, pms_source="opera")
+    assert db_session.execute(select(Property)).first() is None
+
+
 def test_defaults_timezone_when_omitted(db_session):
     ensure_default_org(db_session)
     bind_org_context(db_session, FOUNDING_ORG_ID)

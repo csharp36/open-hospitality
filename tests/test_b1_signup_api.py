@@ -281,6 +281,26 @@ def test_malformed_alias_is_422_and_does_not_burn_the_invite(
         assert invites.validate(s, raw) is not None  # still pending, not burned
 
 
+def test_complete_rejects_a_whitespace_property_name(db_url, tmp_path, _founding_committed):
+    """The typed name becomes the property's detection alias (match phrase),
+    and a blank phrase is a substring of every report header. Whitespace is
+    stripped at the boundary and an empty result is a field-shape 422."""
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier, kc=InMemoryKeycloakAdmin())
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = _last_code(notifier)
+    done = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code,
+        "workspace_name": "Blank Group", "workspace_alias": "blank-group",
+        "property_name": "   ", "pms_source": "opera",
+        "wage_jurisdiction": "US-CA",
+        "cell": "+15550000000", "password": "chosen-password",
+    })
+    assert done.status_code == 422, done.text
+    assert "property_name" in done.text
+
+
 def test_complete_rejects_other_pms_without_a_name(db_url, tmp_path, _founding_committed):
     raw = _make_invite(db_url, "owner@example.test")
     notifier = CapturingNotifier()
