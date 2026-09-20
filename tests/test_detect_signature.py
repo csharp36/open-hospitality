@@ -93,10 +93,10 @@ def test_detect_threads_the_title_through_to_the_signature():
 # `Report Run Date:` / `Report Run Time:` stamp, which is its own anchor.
 
 _HOTELKEY_STATISTICS_WINDOW = (
-    "Summit", "Lodge", "Redstone,", "TX", "Date:", "Aug", "13,", "2026", "RDQSM",
+    "Lakeside", "Test", "Lodge,", "TX", "Date:", "Aug", "13,", "2026", "HKTEST",
     "Report", "Run", "Date:", "Aug", "14", "2026", "S",
     "Report", "Run", "Time:", "10:04:20", "AM", "MOCK", "DATA", "User:", "Sample",
-    "DEVUSER", "RDQSM", "Hotel", "Statistics",
+    "TESTUSER", "HKTEST", "Hotel", "Statistics",
     "Room", "Statistics", "Description", "Actual", "Today", "M-T-D", "LY-M-T-D",
     "Y-T-D", "LY-T-D",
 )

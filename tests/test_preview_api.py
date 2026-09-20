@@ -166,10 +166,10 @@ def test_preview_hotelkey_statistics_is_named_hotelkey_with_no_preview(
     from usali.adaptors.pdf import Word
 
     header = [
-        "Summit", "Lodge", "Redstone,", "TX", "Date:", "Aug", "13,", "2026", "RDQSM",
+        "Lakeside", "Test", "Lodge,", "TX", "Date:", "Aug", "13,", "2026", "HKTEST",
         "Report", "Run", "Date:", "Aug", "14", "2026", "S",
         "Report", "Run", "Time:", "10:04:20", "AM", "MOCK", "DATA", "User:", "Sample",
-        "DEVUSER", "RDQSM", "Hotel", "Statistics",
+        "TESTUSER", "HKTEST", "Hotel", "Statistics",
         "Room", "Statistics", "Description", "Actual", "Today", "M-T-D", "LY-M-T-D",
         "Y-T-D", "LY-T-D",
     ]

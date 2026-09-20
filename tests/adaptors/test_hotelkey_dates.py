@@ -19,27 +19,27 @@ def test_parse_hotelkey_date_with_and_without_comma():
 def test_pdf_header_date_is_the_report_date_not_the_run_date():
     # Real header order: "Date: Aug 13, 2026" on line 1, "Report Run Date: Aug 14 2026" on line 2.
     words = _words(
-        "Summit", "Lodge", "Redstone,", "TX", "Date:", "Aug", "13,", "2026",
-        "RDQSM", "Report", "Run", "Date:", "Aug", "14", "2026",
+        "Lakeside", "Test", "Lodge,", "TX", "Date:", "Aug", "13,", "2026",
+        "HKTEST", "Report", "Run", "Date:", "Aug", "14", "2026",
     )
     assert extract_business_date(words) == date(2026, 8, 13)
 
 
 def test_xlsx_date_range_yields_the_range_end():
     words = _words(
-        "Lakeview Inn", "Date Range: Aug 13, 2026 - Aug 14, 2026",
-        "MQBWF", "Report Run Date: Aug 14 2026",
+        "Lakeside Test Lodge", "Date Range: Aug 13, 2026 - Aug 14, 2026",
+        "HKTEST", "Report Run Date: Aug 14 2026",
     )
     assert extract_business_date(words) == date(2026, 8, 14)
 
 
 def test_xlsx_single_date():
-    words = _words("Lakeview Inn", "Date: Aug 14, 2026", "MQBWF", "Report Run Date: Aug 14 2026")
+    words = _words("Lakeside Test Lodge", "Date: Aug 14, 2026", "HKTEST", "Report Run Date: Aug 14 2026")
     assert extract_business_date(words) == date(2026, 8, 14)
 
 
 def test_only_a_run_date_is_not_a_business_date():
-    words = _words("Lakeview Inn", "MQBWF", "Report Run Date: Aug 14 2026")
+    words = _words("Lakeside Test Lodge", "HKTEST", "Report Run Date: Aug 14 2026")
     with pytest.raises(ValueError, match="no HotelKey"):
         extract_business_date(words)
 
