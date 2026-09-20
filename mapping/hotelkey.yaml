@@ -1,0 +1,34 @@
+# HotelKey -> USALI (12th edition). Codes are the line labels the Hotel
+# Statistics report prints and the payment types its exports carry; HotelKey
+# labels are property-configurable (SUNDRY - FOOD 1..6 are one property's
+# names), the sample is mock, and no real export exists to calibrate against,
+# so EVERY row is confidence: LOW / review_status: needs-review (D-OH22.4).
+# These rows are staged and never promoted (D-OH22.6); they exist so the
+# coverage worklist can show an operator what would be classified how.
+# DIFFERENCE DROP is deliberately unmapped: a cash-handling variance whose
+# meaning changes the statement -- let the worklist ask.
+- {source: HOTELKEY, code: "Taxable Room Revenue", edition: 12, schedule_id: 1, major: "Operated Departments", sub: "Rooms", line_item: "Room Revenue", gl_account_code: "4000", confidence: LOW, review_status: needs-review, notes: "Revenue Statistics / Room Revenue"}
+- {source: HOTELKEY, code: "Exempt Room Revenue", edition: 12, schedule_id: 1, major: "Operated Departments", sub: "Rooms", line_item: "Room Revenue", gl_account_code: "4000", confidence: LOW, review_status: needs-review, notes: "Tax-exempt room revenue; same line, exemption is a tax fact"}
+- {source: HOTELKEY, code: "LATE CANCEL ROOM REVENUE", edition: 12, schedule_id: 1, major: "Operated Departments", sub: "Rooms", line_item: "Other Rooms Revenue", gl_account_code: "4000", confidence: LOW, review_status: needs-review, notes: "Late cancellation charge; cf. SkyTouch NS"}
+- {source: HOTELKEY, code: "DAMAGE FEE", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Miscellaneous", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "Guest damage recovery"}
+- {source: HOTELKEY, code: "OTHER REVENUE", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Miscellaneous", gl_account_code: "4200", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "SUNDRY - FOOD 1", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Sundry Food", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "Property-configured sundry line; F&B without a Schedule 2 department is a classification to confirm"}
+- {source: HOTELKEY, code: "SUNDRY - FOOD 2", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Sundry Food", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "As SUNDRY - FOOD 1"}
+- {source: HOTELKEY, code: "SUNDRY - FOOD 3", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Sundry Food", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "As SUNDRY - FOOD 1"}
+- {source: HOTELKEY, code: "SUNDRY - FOOD 4", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Sundry Food", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "As SUNDRY - FOOD 1"}
+- {source: HOTELKEY, code: "SUNDRY - FOOD 5", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Sundry Food", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "As SUNDRY - FOOD 1"}
+- {source: HOTELKEY, code: "SUNDRY - FOOD 6", edition: 12, schedule_id: 4, major: "Miscellaneous Income", sub: "Miscellaneous", line_item: "Sundry Food", gl_account_code: "4200", confidence: LOW, review_status: needs-review, notes: "As SUNDRY - FOOD 1"}
+- {source: HOTELKEY, code: "TAXABLE CITY TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Occupancy Taxes", line_item: "City/County Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "EXEMPTED CITY TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Occupancy Taxes", line_item: "City/County Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review, notes: "Printed negative: the exempted portion nets against the taxable line"}
+- {source: HOTELKEY, code: "TAXABLE COUNTY TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Occupancy Taxes", line_item: "City/County Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "EXEMPTED COUNTY TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Occupancy Taxes", line_item: "City/County Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review, notes: "Printed negative"}
+- {source: HOTELKEY, code: "TAXABLE STATE TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Sales Tax", line_item: "State Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "EXEMPTED STATE TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Sales Tax", line_item: "State Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review, notes: "Printed negative"}
+- {source: HOTELKEY, code: "TAXABLE SALES TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Sales Tax", line_item: "Sales Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "EXEMPTED SALES TAX", edition: 12, schedule_id: null, major: "Taxes (Pass-Through)", sub: "Sales Tax", line_item: "Sales Tax", gl_account_code: "2100", confidence: LOW, review_status: needs-review, notes: "Printed negative"}
+- {source: HOTELKEY, code: "CASH", edition: 12, schedule_id: null, major: "Settlements", sub: "Cash", line_item: "Cash", gl_account_code: "1100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "AMEX", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "American Express", gl_account_code: "1100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "DISCOVER", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "Discover", gl_account_code: "1100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "MASTER", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "MasterCard", gl_account_code: "1100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "VISA", edition: 12, schedule_id: null, major: "Settlements", sub: "Credit Card", line_item: "Visa", gl_account_code: "1100", confidence: LOW, review_status: needs-review}
+- {source: HOTELKEY, code: "BILL TO COMPANY", edition: 12, schedule_id: null, major: "Settlements", sub: "Direct Bill", line_item: "City Ledger", gl_account_code: "1200", confidence: LOW, review_status: needs-review}

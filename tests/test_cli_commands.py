@@ -23,7 +23,8 @@ def test_seed_schedules_command_runs(db_url):
 def test_seed_properties_command_runs(db_url):
     result = runner.invoke(app, ["seed-properties", "mapping/properties.yaml"])
     assert result.exit_code == 0, result.output
-    assert "Seeded 3 propert" in result.output
+    # One demo property per registered source in mapping/properties.yaml.
+    assert "Seeded 4 propert" in result.output
 
 
 def test_ingest_opera_trial_balance(db_url):
