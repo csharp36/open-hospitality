@@ -278,10 +278,10 @@ In `scripts/demo_seed.py`:
                process_document(session, target, processed_dir=work / "processed",
                                 failed_dir=work / "failed")
    ```
-   and the docstring's first line becomes `"""Ingest the sample PDFs: single reports and the choiceADVANTAGE pack, every property."""`; the closing print becomes
+   and the docstring's first line becomes `"""Ingest the sample PDFs: single reports and the choiceADVANTAGE (SKYTOUCH) pack, every property."""`; the closing print becomes
    ```python
        print(f"  ingested {ingested} sample PDFs, {skipped} already present "
-             "(Opera/AutoClerk 2026-07-07, choiceADVANTAGE pack 2026-06-21, "
+             "(Opera/AutoClerk 2026-07-07, choiceADVANTAGE (SKYTOUCH) pack 2026-06-21, "
              "HotelKey statistics 2026-08-13)")
    ```
 
@@ -304,7 +304,7 @@ Expected: ruff clean, mypy `Success`, pytest all green (main: 2311 passed / 4 sk
 ```
 fix(seed): route the sample packs through the pack path; load every sample's dictionary
 
-The demo seed and the Playwright backend handed the choiceADVANTAGE pack to
+The demo seed and the Playwright backend handed the SkyTouch-format pack to
 process_file, whose header window matched AutoClerk rate_plan and tripped
 the property source cross-check, so both stopped at that file. Both now
 call process_document and load skytouch.yaml and hotelkey.yaml so the

@@ -62,20 +62,41 @@ def process_document(session, path, *, processed_dir, failed_dir, edition=12) ->
   recorded the `failed` batch and quarantined the file; the wrapper records
   nothing.
 
-Why the rule is sound rather than lucky: whole-file and per-section
-detection resolve the property the same way (the registry cross-check in
-`detect`), and a section's words begin with that section's own header, which
-for the first section is the same header the whole-file window reads. So a
-file whose first section resolves by title also resolves whole-file, unless
-the whole-file window matched an earlier signature that disagrees with the
-property's source. That disagreement is exactly what a pack produces, because
-its first page is whichever report the PMS bound first. The converse, a
-single report that fails whole-file but resolves as a pack, needs a page
-title to match a signature its own header window did not, which the
-first-match rule in `detect_report_signature` does not allow. The behavior
-is pinned, not asserted:
-`tests/test_process_document.py::test_single_report_never_takes_the_pack_path`
-monkeypatches `process_pack` to fail loudly and runs the manager report.
+The rule is calibrated on the committed corpus, not proved. The review of
+the first cut (2026-09-20) disproved the soundness argument that stood here
+with counterexamples in both directions, and the design records them as
+the rule's known defeaters rather than pretending they do not exist:
+
+- *A single report that fails the probe but resolves as a section.* The
+  whole-file haystack is the 120-word window; the title haystack is a
+  subset of it. First match over the larger text is not monotone with the
+  smaller: a standalone SkyTouch Hotel Journal Summary that prints a
+  `Rate Plan` column heading before its own title matches AutoClerk
+  `rate_plan` whole-file (the issue #78 shape), trips the cross-check, and
+  then resolves by title on the pack path. Two pages of it, with the
+  column-heading row as page 2's top row, would ingest 20 of 33 words as
+  a `transformed` batch. Same family: any multi-page report whose first
+  120 words carry no signature phrase but whose page 2 top row is the
+  title.
+- *A pack that passes the probe.* Reorder the committed pack so the Hotel
+  Journal Summary page is bound first and whole-file `detect` returns
+  `SKYTOUCH hotel_journal STDEMO`; the router would hand all 187 words,
+  four reports' worth, to the journal adapter. Today's sample is routed
+  correctly because A/R Aging and the Cancellation List are bound first.
+
+Neither shape is in the corpus, and the alternative router (a section
+count) corrupts a file that is. The probe-first rule stays because it is
+the best cheap rule available and degrades, in the second case, to what
+`process_file` does today. The docstring says the same in one sentence.
+
+Failure semantics of the probe itself: reading the bytes into words can
+raise things that are not `ValueError` (a corrupt or encrypted PDF raises
+pdfplumber's `PdfminerException`). Those are not routing signals. The
+words are read outside the routing `try`; if reading fails the file goes
+to `process_file`, which owns the quarantine contract (records the
+`failed` batch, moves the file, raises `ProcessingError`). Only
+`ValueError` from `detect` selects the pack path. Pinned in
+`tests/test_process_document.py::test_a_corrupt_pdf_is_quarantined_by_the_single_report_path`.
 
 Cost accepted: the file is read twice on the single-report path (once for
 the probe, once inside `process_file`). The two callers are seeds over eight
@@ -112,11 +133,16 @@ issue reproduced.
 
 ## Acceptance
 
-1. `test_process_document.py`: pack sample routes to the pack path (two
-   results, filed, no failed batch); manager report never touches
-   `process_pack`; a HotelKey XLSX never touches `process_pack`; a PDF that
-   fails both ways raises one `ProcessingError` naming both reasons with one
-   `failed` batch and the file in `failed_dir`.
+1. `test_process_document.py`: pack sample routes to the pack path (exactly
+   two results, both filed to `processed_dir`, no failed batch); manager
+   report never touches `process_pack`; an XLSX whose probe WOULD raise (no
+   properties seeded) still never touches `process_pack` and fails through
+   `process_file`; a PDF that fails both ways raises one `ProcessingError`
+   naming both reasons with one `failed` batch and the file in `failed_dir`;
+   a `%PDF-` file of garbage is quarantined with one `failed` batch.
+   `tests/adaptors/test_pack.py` (or the module that already tests
+   `split_pack`) pins by name that the manager report splits into four
+   sections of which one resolves by title.
 2. `test_demo_seed_documents.py` as in D3; fails on main at the pack.
 3. `scripts/e2e_backend.py` uses the same helper and dictionaries.
 4. Full pytest, ruff, `mypy --strict src` green (venv synced with `--extra
