@@ -386,9 +386,16 @@ def process_cmd(
     )
 
 
+# The one accepted-suffix set for `watch`: the startup drain and the live handler
+# both read it, so a file already waiting when watch starts is treated exactly as
+# one arriving later (tests/test_cli_commands.py::
+# test_watch_drains_every_accepted_suffix_already_in_the_inbox).
+_WATCH_SUFFIXES = frozenset({".pdf", ".xlsx"})
+
+
 @app.command("watch")
 def watch_cmd(
-    inbox_dir: str | None = typer.Option(None, help="Sentinel directory to watch for PDFs"),
+    inbox_dir: str | None = typer.Option(None, help="Directory to watch for PDF/XLSX reports"),
     processed_dir: str | None = typer.Option(None, help="Where successful files are filed"),
     failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
     edition: int = typer.Option(12, help="USALI edition"),
@@ -406,7 +413,7 @@ def watch_cmd(
     inbox.mkdir(parents=True, exist_ok=True)
 
     def handle(path: Path) -> None:
-        if path.suffix.lower() not in {".pdf", ".xlsx"}:
+        if path.suffix.lower() not in _WATCH_SUFFIXES:
             return
         with _session_factory()() as s:
             try:
@@ -426,7 +433,8 @@ def watch_cmd(
                 time.sleep(0.5)  # allow the writer (mail client, scp, cp) to finish
                 handle(Path(str(event.src_path)))
 
-    for existing in sorted(inbox.glob("*.pdf")):  # drain anything already waiting
+    # Drain anything already waiting, in name order for determinism.
+    for existing in sorted(p for p in inbox.iterdir() if p.suffix.lower() in _WATCH_SUFFIXES):
         handle(existing)
 
     observer = Observer()
