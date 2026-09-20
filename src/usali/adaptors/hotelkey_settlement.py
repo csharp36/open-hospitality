@@ -1,7 +1,7 @@
 """Settlement By Payment Type: one StagedRecord per settlement transaction.
 
-Guest names, the card descriptor and the operator's username are read for the
-self-check and never staged: pms_trx_desc carries category, transaction number,
+Guest names, the card descriptor and the operator's username are parsed with
+the row and never staged: pms_trx_desc carries category, transaction number,
 folio and room only (tests/adaptors/test_hotelkey_xlsx.py::
 test_settlement_rows_are_transaction_grain_without_guest_names). Each row keeps
 its own Date; the export can span two days. The Summary block is not staged --

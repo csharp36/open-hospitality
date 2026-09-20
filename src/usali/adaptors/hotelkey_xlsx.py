@@ -1,8 +1,8 @@
 """The shape every HotelKey spreadsheet export shares, recovered from the Word grid.
 
 Rows 1-2: property name and code in column A; the run stamps sit in the
-right-most used column of rows 1-4. The title is the first single-cell row in
-column A after row 4. Then sections::
+right-most used column of rows 1-4. The title is the first single-cell
+column-A row after the property code row. Then sections::
 
     <label>                                (one cell, column B)
     <header ...>                           (cells from column B)

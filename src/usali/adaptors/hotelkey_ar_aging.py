@@ -5,8 +5,9 @@ groupings), which is the footing check
 (tests/adaptors/test_hotelkey_xlsx.py::test_ar_aging_refuses_when_sections_disagree).
 Staged: each section's total row, and the detail rows of the Transaction Type,
 Company Name and Transaction Status sections. The per-invoice-date rows of the
-Date section are not staged; they are the invoice ledger OH-29 will read from
-the real export, not a balance.
+Date section are not staged; they are invoice detail, not a balance, and are
+deferred to the AR slice (design doc
+docs/design/2026-09-08-oh22-hotelkey-design.md, D-OH22.5).
 """
 
 from datetime import date
