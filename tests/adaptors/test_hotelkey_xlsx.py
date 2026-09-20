@@ -212,31 +212,47 @@ def test_a_renamed_header_column_is_refused():
         parse_settlement(bad, property_id="HKDEMO", business_date=BD)
 
 
+PII_IN_ROW_13 = ("TESTGUEST", "ALPHA", "1111", "testusr01")
+
+
 def test_a_row_whose_column_a_is_not_an_ordinal_is_refused():
-    # A13 is the first Details row's ordinal.
+    # A13 is the first Details row's ordinal; the row also carries guest name,
+    # card descriptor and username, none of which may reach the message.
     bad = _mutated(_words("Settlement By Payment Type.xlsx"), "A13", "1.0")
-    with pytest.raises(ValueError, match="'Details'.*'1.0'.*not a detail, subtotal or total row"):
+    with pytest.raises(ValueError) as excinfo:
         split_report(bad)
+    message = str(excinfo.value)
+    assert "'Details'" in message and "A '1.0'" in message
+    assert "is not a detail, subtotal or total row" in message
+    for pii in PII_IN_ROW_13:
+        assert pii not in message
 
 
 def test_a_row_with_cells_but_no_ordinal_is_refused():
     # Row 13 without its A13 ordinal has column B populated and column A empty.
     bad = _without(_words("Settlement By Payment Type.xlsx"), "A13")
-    with pytest.raises(ValueError, match="'Details'.*'Reservation'.*not a detail, subtotal or total row"):
+    with pytest.raises(ValueError) as excinfo:
         split_report(bad)
+    message = str(excinfo.value)
+    assert "'Details': row with cells in B, C, D, E, F, G, H, I, K, L, M, N, O" in message
+    assert "is not a detail, subtotal or total row" in message
+    for pii in PII_IN_ROW_13:
+        assert pii not in message
 
 
 def test_a_second_total_row_is_refused():
     # Row 19 of All Payments is blank between the C18 total and A20 END OF REPORT.
     bad = _words("All Payments.xlsx") + [_at("C19", "900")]
-    with pytest.raises(ValueError, match="'All Payments - Payment Type' has two total rows"):
+    with pytest.raises(ValueError, match="'All Payments - Payment Type' has two total rows; the second has cells in C$"):
         split_report(bad)
 
 
 def test_a_header_row_with_a_column_a_cell_is_refused():
     # Row 12 is the Details header; a cell in A12 makes it look like a detail row.
     bad = _words("Settlement By Payment Type.xlsx") + [_at("A12", "1")]
-    with pytest.raises(ValueError, match=r"expected a header row from column B, found \['1', 'Account Category'"):
+    with pytest.raises(
+        ValueError, match=r"expected a header row from column B, found column A '1' and cells in B, C, D"
+    ):
         split_report(bad)
 
 
@@ -254,3 +270,10 @@ def test_a_label_directly_before_end_of_report_is_refused():
     words = _grid([{1: "Lodge"}, {1: "CODE"}, {1: "All Payments"}, {2: "Only"}, {1: "END OF REPORT"}])
     with pytest.raises(ValueError, match="'Only' has no header row"):
         split_report(words)
+
+
+def test_a_blank_count_cell_is_refused():
+    # D25 is the Summary MASTER count.
+    bad = _without(_words("Settlement By Payment Type.xlsx"), "D25")
+    with pytest.raises(ValueError, match="'Summary' row 'MASTER': column 'Count' is not a count: ''"):
+        parse_settlement(bad, property_id="HKDEMO", business_date=BD)

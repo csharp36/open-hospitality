@@ -20,6 +20,7 @@ from decimal import Decimal
 
 from usali.adaptors.hotelkey_xlsx import (
     amount,
+    count,
     expect_title,
     require_columns,
     section,
@@ -81,14 +82,17 @@ def parse_settlement(
         ptype = srow["Payment Type"]
         amounts = by_type[ptype]
         detail_total = sum(amounts, Decimal("0"))
-        if detail_total != amount(summary, srow, "Amount") or len(amounts) != int(srow["Count"]):
+        if detail_total != amount(summary, srow, "Amount") or len(amounts) != count(summary, srow, "Count"):
             raise ValueError(
                 f"HotelKey settlement Summary disagrees with Details for {ptype}: "
                 f"summary {srow['Amount']} x{srow['Count']}, details {detail_total} x{len(amounts)}"
             )
     if summary.total is None:
         raise ValueError("HotelKey settlement Summary has no total row")
-    if amount(summary, summary.total, "Amount") != grand or int(summary.total["Count"]) != len(out):
+    if (
+        amount(summary, summary.total, "Amount") != grand
+        or count(summary, summary.total, "Count") != len(out)
+    ):
         raise ValueError(
             f"HotelKey settlement Summary total disagrees with Details: "
             f"summary {summary.total['Amount']} x{summary.total['Count']}, "

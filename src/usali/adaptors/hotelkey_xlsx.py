@@ -27,9 +27,18 @@ itself raises ``InvalidOperation`` on blank or non-numeric text, which a
 caller catching ``ValueError`` never sees (the same reasoning as
 ``rates.CorruptRateError``), so it is turned into a ``ValueError`` naming the
 section, row and column here (test_a_blank_amount_cell_is_refused,
-test_a_non_numeric_amount_is_refused). ``require_columns`` turns a renamed
-header into a ``ValueError`` rather than a ``KeyError`` deep in a parser
-(test_a_renamed_header_column_is_refused).
+test_a_non_numeric_amount_is_refused); ``count`` is its integer twin for the
+settlement Summary (test_a_blank_count_cell_is_refused). ``require_columns``
+turns a renamed header into a ``ValueError`` rather than a ``KeyError`` deep
+in a parser (test_a_renamed_header_column_is_refused).
+
+A refusal that describes a row echoes only its populated column letters and
+its column-A text (an ordinal or END OF REPORT), never the other cells: on the
+settlement export those hold guest names, card descriptors and usernames
+(test_a_row_whose_column_a_is_not_an_ordinal_is_refused pins the exclusion).
+``amount`` and ``count`` echo the offending cell and the row's first header
+column only; in every HotelKey export that column is a category or a payment
+type, not a person.
 """
 
 from dataclasses import dataclass, field
@@ -66,8 +75,20 @@ def _grid(words: list[Word]) -> list[dict[int, str]]:
     return rows
 
 
-def _texts(cells: dict[int, str]) -> list[str]:
-    return [cells[c] for c in sorted(cells)]
+def _letter(column: int) -> str:
+    out = ""
+    while column:
+        column, rem = divmod(column - 1, 26)
+        out = chr(ord("A") + rem) + out
+    return out
+
+
+def _shape(cells: dict[int, str]) -> str:
+    others = ", ".join(_letter(c) for c in sorted(cells) if c != 1)
+    if 1 not in cells:
+        return f"cells in {others}"
+    head = f"column A {cells[1]!r}"
+    return f"{head} and cells in {others}" if others else f"{head} only"
 
 
 def _is_ordinal(text: str | None) -> bool:
@@ -100,7 +121,7 @@ def split_report(words: list[Word]) -> HkReport:
             if 1 in cells or 2 not in cells:
                 raise ValueError(
                     f"HotelKey section {current.label!r}: expected a header row from column B, "
-                    f"found {_texts(cells)}"
+                    f"found {_shape(cells)}"
                 )
             current.header_cols = sorted(c for c in cells if c >= 2)
             current.header = [cells[c] for c in current.header_cols]
@@ -121,12 +142,12 @@ def split_report(words: list[Word]) -> HkReport:
             if current.total is not None:
                 raise ValueError(
                     f"HotelKey section {current.label!r} has two total rows; "
-                    f"the second is {_texts(cells)}"
+                    f"the second has {_shape(cells)}"
                 )
             current.total = named
         else:
             raise ValueError(
-                f"HotelKey section {current.label!r}: row {_texts(cells)} is not a detail, "
+                f"HotelKey section {current.label!r}: row with {_shape(cells)} is not a detail, "
                 f"subtotal or total row"
             )
     if not terminated:
@@ -159,6 +180,13 @@ def require_columns(section: HkSection, names: tuple[str, ...]) -> None:
         raise ValueError(f"HotelKey {section.label!r} header lacks {missing}; found {section.header}")
 
 
+def _refusal(section: HkSection, row: dict[str, str], column: str, what: str) -> ValueError:
+    return ValueError(
+        f"HotelKey {section.label!r} row {row.get(section.header[0], '?')!r}: "
+        f"column {column!r} is not {what}: {row.get(column, '')!r}"
+    )
+
+
 def amount(section: HkSection, row: dict[str, str], column: str) -> Decimal:
     text = row.get(column, "")
     value: Decimal | None
@@ -167,8 +195,12 @@ def amount(section: HkSection, row: dict[str, str], column: str) -> Decimal:
     except InvalidOperation:
         value = None
     if value is None or not value.is_finite():
-        raise ValueError(
-            f"HotelKey {section.label!r} row {row.get(section.header[0], '?')!r}: "
-            f"column {column!r} is not an amount: {text!r}"
-        )
+        raise _refusal(section, row, column, "an amount")
     return value
+
+
+def count(section: HkSection, row: dict[str, str], column: str) -> int:
+    text = row.get(column, "")
+    if not text.isdigit():
+        raise _refusal(section, row, column, "a count")
+    return int(text)
