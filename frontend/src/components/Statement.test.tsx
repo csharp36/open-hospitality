@@ -233,5 +233,4 @@ describe('Statement labor variance (C3)', () => {
     ).not.toBeInTheDocument()
     expect(screen.queryByText(/Pay periods:/)).not.toBeInTheDocument()
   })
-
 })

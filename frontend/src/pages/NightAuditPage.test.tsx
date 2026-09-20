@@ -190,6 +190,23 @@ describe('NightAuditPage uploads', () => {
     expect(screen.queryByRole('region', { name: 'required reports' })).not.toBeInTheDocument()
   })
 
+  // Pins the accept attribute the picker filters on; without these, reverting
+  // it to PDF-only fails nothing else in this file.
+  it('the slot file input accepts PDF or XLSX', async () => {
+    renderPage()
+    await screen.findByText('Required reports — OPERA')
+    expect(screen.getByLabelText('Upload Manager Flash')).toHaveAttribute('accept', 'application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  })
+
+  it('the pack file input accepts PDF or XLSX', async () => {
+    vi.mocked(getNightAudit).mockResolvedValue(
+      makeNightAuditState({ upload_mode: 'pack', pack_label: 'HotelKey pack' }),
+    )
+    renderPage()
+    await screen.findByRole('region', { name: 'audit pack' })
+    expect(screen.getByLabelText('Upload audit pack')).toHaveAttribute('accept', 'application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+  })
+
   it('a pack upload renders its sections, the skipped one included', async () => {
     vi.mocked(getNightAudit).mockResolvedValue(
       makeNightAuditState({ upload_mode: 'pack', pack_label: 'SkyTouch pack' }),
