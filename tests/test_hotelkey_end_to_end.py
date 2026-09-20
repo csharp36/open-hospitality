@@ -13,11 +13,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
+from usali import gl_chart
 from usali.ingestion import ProcessingError, process_file
 from usali.mapping.loader import load_mappings
 from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
 from usali.models import (
+    GlPostingLedger,
     IngestBatch,
     IngestionCoverage,
     JournalEntry,
@@ -28,6 +30,8 @@ from usali.models import (
     UsaliLedgerBalanceFact,
     UsaliStatisticFact,
 )
+
+from tests.test_gl_posting import _seed_calendar
 
 FIX = Path("tests/fixtures/hotelkey")
 PDF = Path("docs/reference/samples/HotelKey - Hotel Statistics (mock).pdf")
@@ -91,6 +95,13 @@ def test_statistics_promote_with_distinct_occupancy_codes(seeded, tmp_path):
 
 
 def test_hotelkey_never_produces_financial_facts_or_journal_entries(seeded, tmp_path):
+    # GL is ON for this test: a chart and a fiscal calendar are seeded so
+    # post_and_record reaches build_plan and a transforming handler WOULD post.
+    # Without them it returns "skipped" before looking at any facts, and the
+    # journal claim in this test's name would hold vacuously.
+    gl_chart.seed_chart(seeded, org_id=1)
+    _seed_calendar(seeded, "HKDEMO")
+    seeded.commit()
     for p in (PDF, FIX / "Settlement By Payment Type.xlsx", FIX / "All Payments.xlsx"):
         _ingest(seeded, tmp_path, p)
     staged = seeded.scalar(
@@ -111,6 +122,12 @@ def test_hotelkey_never_produces_financial_facts_or_journal_entries(seeded, tmp_
         .where(MappingException.pms_source == "HOTELKEY")
     ) == 0
     assert seeded.scalar(select(func.count()).select_from(JournalEntry)) == 0
+    # The outcome was "skipped" with no facts: neither "posted" nor "failed",
+    # both of which leave a gl_posting_ledger row for the property-day.
+    ledger_rows = seeded.scalars(
+        select(GlPostingLedger).where(GlPostingLedger.property_id == "HKDEMO")
+    ).all()
+    assert ledger_rows == [], [(r.status, r.message) for r in ledger_rows]
 
 
 def test_hotelkey_statistics_file_opens_exactly_one_batch(seeded, tmp_path):
