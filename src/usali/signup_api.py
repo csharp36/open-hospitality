@@ -66,9 +66,12 @@ class CompleteRequest(BaseModel):
     # SkyTouch was deliberately absent while its Hotel Statistics adapter was
     # un-registered: advertising a source whose night-audit pack would quarantine
     # on ingest is worse than not offering it. Both SkyTouch reports parse now,
-    # so it is offered. Keep this set and `_SUPPORTED_PMS` in step -- a member
-    # that is not supported silently takes the pms_interest branch instead.
-    pms_source: Literal["opera", "autoclerk", "skytouch", "other"]
+    # so it is offered. HotelKey is offered because all four of its exports
+    # parse and detection resolves each of them; it is a statistics-and-balances
+    # source, and `usali.detect.SOURCE_NOTICES` carries what the statement says
+    # about that. Keep this set and `_SUPPORTED_PMS` in step -- a member that is
+    # not supported silently takes the pms_interest branch instead.
+    pms_source: Literal["opera", "autoclerk", "skytouch", "hotelkey", "other"]
     pms_other_name: str | None = Field(default=None, min_length=1, max_length=60)
     wage_jurisdiction: str = Field(min_length=1, max_length=10)
     timezone: str | None = Field(default=None, min_length=1, max_length=50)

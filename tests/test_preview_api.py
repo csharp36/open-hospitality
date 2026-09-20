@@ -153,11 +153,15 @@ def test_preview_persists_nothing(tmp_path: Path) -> None:
         assert not d.exists() or not any(d.iterdir())
 
 
-def test_preview_hotelkey_statistics_is_named_hotelkey(client: TestClient, monkeypatch) -> None:
+def test_preview_hotelkey_statistics_is_named_hotelkey_with_no_preview(
+    client: TestClient, monkeypatch
+) -> None:
     # The customer-visible pin for the HOTEL STATISTICS collision: the real
     # HotelKey sample's header words (extraction order, file never committed)
     # used to preview as SkyTouch, because both vendors title the report
-    # "Hotel Statistics".
+    # "Hotel Statistics". HotelKey is a registered source with no preview
+    # adapter, so the answer is its display name (not `str.title()`'s
+    # "Hotelkey") and the no-preview reason.
     import usali.server as srv
     from usali.adaptors.pdf import Word
 
@@ -180,5 +184,5 @@ def test_preview_hotelkey_statistics_is_named_hotelkey(client: TestClient, monke
     assert r.json() == {
         "status": "unsupported",
         "vendor": "HotelKey",
-        "reason": "vendor_not_supported",
+        "reason": "no_preview_for_report",
     }

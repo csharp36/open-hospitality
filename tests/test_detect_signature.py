@@ -89,7 +89,8 @@ def test_detect_threads_the_title_through_to_the_signature():
 # (`~/Desktop/Sample Hotel/HotelKey/Hotel Statistics - HK.pdf` and the SkyTouch
 # Standard Audit Pack of 2026-06-21; neither file is committed). HotelKey titles
 # its statistics report identically and prints the property as a bare name,
-# never behind a `Property Name:` banner.
+# never behind a `Property Name:` banner; what it does print is the
+# `Report Run Date:` / `Report Run Time:` stamp, which is its own anchor.
 
 _HOTELKEY_STATISTICS_WINDOW = (
     "Summit", "Lodge", "Redstone,", "TX", "Date:", "Aug", "13,", "2026", "RDQSM",
@@ -108,8 +109,13 @@ _SKYTOUCH_STATISTICS_WINDOW = (
 )
 
 
-def test_hotelkey_statistics_does_not_match_skytouch():
-    assert detect_report_signature(_words(*_HOTELKEY_STATISTICS_WINDOW)) is None
+def test_hotelkey_statistics_resolves_to_hotelkey_not_skytouch():
+    # Before OH-22 registered HotelKey this window resolved to nobody; the
+    # SkyTouch-side pin is that it never resolves to SKYTOUCH.
+    assert detect_report_signature(_words(*_HOTELKEY_STATISTICS_WINDOW)) == (
+        "HOTELKEY",
+        "hotel_statistics",
+    )
 
 
 def test_skytouch_statistics_still_matches_with_its_banner():
@@ -135,3 +141,50 @@ def test_anchorless_rows_are_unchanged():
         "SKYTOUCH",
         "hotel_journal",
     )
+
+
+# --- HotelKey registration (OH-22) --------------------------------------------
+
+_HK_STAMP = ["HKTEST", "Report", "Run", "Date:", "Aug", "14", "2026", "Report", "Run", "Time:", "09:10:11", "AM"]
+
+
+def test_hotelkey_statistics_resolves_to_hotelkey():
+    words = _words("Lakeside", "Test", "Lodge,", "TX", "Date:", "Aug", "13,", "2026", *_HK_STAMP,
+                   "Hotel", "Statistics", "Room", "Statistics")
+    assert detect_report_signature(words) == ("HOTELKEY", "hotel_statistics")
+
+
+def test_hotelkey_spreadsheets_resolve_by_title_cell():
+    for title, report_type in [
+        ("Settlement By Payment Type", "settlement"),
+        ("All Payments", "all_payments"),
+        ("AR Invoice Aging", "ar_aging"),
+    ]:
+        words = _words("Lakeside Test Lodge", "Date: Aug 13, 2026", "HKTEST",
+                       "Report Run Date: Aug 14 2026", "Report Run Time: 09:10:11 AM",
+                       "User: Sample TESTUSER", title)
+        assert detect_report_signature(words) == ("HOTELKEY", report_type), title
+
+
+def test_the_hotel_statistics_pair_is_decided_by_banner_not_table_order(monkeypatch):
+    import usali.detect as d
+    skytouch = _words("Hotel", "Statistics", "Property", "Name:", "Econo", "Lodge", "Business", "Date:")
+    hotelkey = _words("Summit", "Lodge", "Date:", "Aug", "13,", "2026", *_HK_STAMP, "Hotel", "Statistics")
+    monkeypatch.setattr(d, "_REPORT_SIGNATURES", list(reversed(d._REPORT_SIGNATURES)))
+    assert detect_report_signature(skytouch) == ("SKYTOUCH", "hotel_statistics")
+    assert detect_report_signature(hotelkey) == ("HOTELKEY", "hotel_statistics")
+
+
+def test_a_generic_all_payments_title_without_the_stamp_is_nobody():
+    assert detect_report_signature(_words("All", "Payments", "Report")) is None
+
+
+def test_hotelkey_is_now_a_supported_source():
+    from usali.detect import supported_pms_sources
+    assert supported_pms_sources() == {"opera", "autoclerk", "skytouch", "hotelkey"}
+
+
+def test_every_notice_source_is_a_supported_source():
+    from usali.detect import SOURCE_NOTICES, supported_pms_sources
+    assert {s.lower() for s in SOURCE_NOTICES} <= supported_pms_sources()
+    assert "HOTELKEY" in SOURCE_NOTICES and SOURCE_NOTICES["HOTELKEY"].strip()

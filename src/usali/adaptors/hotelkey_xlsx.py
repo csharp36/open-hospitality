@@ -37,8 +37,8 @@ its column-A text (an ordinal or END OF REPORT), never the other cells: on the
 settlement export those hold guest names, card descriptors and usernames
 (test_a_row_whose_column_a_is_not_an_ordinal_is_refused pins the exclusion).
 ``amount`` and ``count`` echo the offending cell and the row's first header
-column only; in every HotelKey export that column is a category or a payment
-type, not a person.
+column only; in the four HotelKey exports read 2026-09-20 that column is a
+category, a payment type or an organization, not a person.
 """
 
 from dataclasses import dataclass, field

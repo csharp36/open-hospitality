@@ -44,7 +44,7 @@ from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
 from usali.preview import PreviewPayload, build_financial_preview
 from usali.ratelimit import RateLimiter
-from usali.recognition import recognize_vendor
+from usali.recognition import display_name, recognize_vendor
 from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
@@ -121,7 +121,7 @@ def _parse_preview_sync(data: bytes) -> dict[str, object]:
         )
         return {"status": "ok", "payload": _payload_json(payload)}
     if sig is not None:
-        return {"status": "unsupported", "vendor": sig[0].title(), "reason": "no_preview_for_report"}
+        return {"status": "unsupported", "vendor": display_name(sig[0]), "reason": "no_preview_for_report"}
     vendor = recognize_vendor(words)
     if vendor is not None:
         return {"status": "unsupported", "vendor": vendor, "reason": "vendor_not_supported"}

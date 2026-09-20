@@ -434,6 +434,51 @@ def test_complete_skytouch_pms_creates_a_property(db_url, tmp_path, _founding_co
     assert [e for e in notifier.emails if e["to"] == "ops@example.test"] == []
 
 
+def test_complete_hotelkey_pms_creates_a_property(db_url, tmp_path, _founding_committed):
+    """HotelKey is a supported source (OH-22): it must take the property-creating
+    branch, not the pms_interest one.
+
+    It is offered because all four of its exports parse and detection resolves
+    each of them (tests/test_detect_signature.py, the HotelKey registration
+    block). It is a statistics-and-balances source, not a statement source;
+    `usali.detect.SOURCE_NOTICES` carries what the statement says about that.
+    """
+    from usali.db import make_engine as me
+    from usali.db import make_session_factory as msf
+    from usali.models import Organization, PmsInterestRequest, Property
+    from sqlalchemy import select
+
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin(), admin_email="ops@example.test")
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = _last_code(notifier)
+
+    done = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code,
+        "workspace_name": "Lakeside Group", "workspace_alias": "lakeside-group",
+        "property_name": "Lakeside Test Lodge", "pms_source": "hotelkey",
+        "wage_jurisdiction": "US-TX", "timezone": "America/Chicago",
+        "cell": "+15550000000", "password": "chosen-password",
+    })
+    assert done.status_code == 201, done.text
+    assert done.json()["pms_supported"] is True
+
+    su = msf(me(db_url))
+    with su() as s:
+        org = s.execute(select(Organization).where(
+            Organization.kc_org_alias == "lakeside-group")).scalar_one()
+        prop = s.execute(select(Property).where(
+            Property.org_id == org.org_id)).scalar_one()
+        assert prop.name == "Lakeside Test Lodge" and prop.pms_source == "hotelkey"
+        assert prop.timezone == "America/Chicago"
+        # A supported source records NO interest row and emails no admin.
+        assert s.execute(select(PmsInterestRequest).where(
+            PmsInterestRequest.org_alias == "lakeside-group")).scalar_one_or_none() is None
+    assert [e for e in notifier.emails if e["to"] == "ops@example.test"] == []
+
+
 def test_signup_literal_tracks_the_detection_registry():
     """The `pms_source` Literal must offer exactly the detectable sources, plus
     'other'.
