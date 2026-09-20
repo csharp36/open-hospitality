@@ -23,14 +23,14 @@ Two data statements, idempotent by construction:
 Wrapped in NO FORCE / FORCE ROW LEVEL SECURITY on both tables (2026-09-20):
 `property` and `property_detection_alias` are ENABLE + FORCE RLS, and the
 cloud migrate job runs `alembic upgrade head` as the non-superuser table
-OWNER with no org bound (scripts/cloud/job.sh:33 runs the upgrade;
-scripts/cloud/env.sh:13-16 leaves USALI_DB_USER unset so the job keeps the
-owner identity; scripts/cloud/bootstrap.sh:174-175 records that Cloud SQL
-users are never SUPERUSER and get no BYPASSRLS). Under FORCE that identity
+OWNER with no org bound (scripts/cloud/job.sh runs the upgrade;
+scripts/cloud/env.sh leaves USALI_DB_USER unset for that job so it keeps the
+owner identity; scripts/cloud/bootstrap.sh records that Cloud SQL users are
+never SUPERUSER and get no BYPASSRLS). Under FORCE that identity
 sees zero rows, so the bare UPDATE and INSERT ... SELECT would run clean and
 change nothing. Lifting FORCE lets the owner bypass the policy for the two
 statements; the policy itself stays ENABLEd for every other role throughout,
-and migrations/env.py:29-30 runs the whole upgrade inside one
+and migrations/env.py runs the whole upgrade inside one
 begin_transaction(), so the window closes with the backfill or not at all.
 test_b1e_signup_alias_migration.py runs `run` as a non-superuser owner and
 checks both tables are FORCE again afterwards.

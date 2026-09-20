@@ -91,7 +91,7 @@ require_auditor = require_grants(ORG_ADMIN, PROPERTY_GM)
 
 router = APIRouter(prefix="/api/properties")
 
-_MAX_PDF_BYTES = 25 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 def _safe_component(value: str) -> str:
@@ -180,7 +180,7 @@ async def upload_night_audit_report(
     property_id: str, request: Request, file: UploadFile,
     principal: Principal = Depends(require_auditor),
 ) -> dict[str, object]:
-    upload_name = file.filename or "upload.pdf"
+    upload_name = file.filename or "upload"
     # Multipart filenames are attacker-controlled (the /ingest rule): display
     # only, never a path component.
     if (
@@ -188,8 +188,8 @@ async def upload_night_audit_report(
         or "/" in upload_name or "\\" in upload_name or "\x00" in upload_name
     ):
         raise HTTPException(status_code=422, detail="unsafe upload filename")
-    payload = await file.read(_MAX_PDF_BYTES + 1)
-    if len(payload) > _MAX_PDF_BYTES:
+    payload = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(payload) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="upload too large")
     # The /ingest magic-byte refusal, mirrored — and checked BEFORE the inbox
     # write below, so a blob that is neither format never touches the

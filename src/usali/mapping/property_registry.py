@@ -289,7 +289,9 @@ def create_first_property(
     pms_source verbatim. A lowercase row therefore never detects and never
     sees its own facts. The alias's match phrase is the name typed at signup:
     the only text the property's exports can be matched on until someone
-    registers a better one. tests/test_b1_signup_api.py::
+    registers a better one. The residual: detect() substring-matches the
+    alias, uppercased, against the report header, so a short or generic name
+    matches broadly within the org and source. tests/test_b1_signup_api.py::
     test_a_signup_created_property_takes_its_first_night_audit_upload holds
     the whole path.
     """

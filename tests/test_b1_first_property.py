@@ -2,6 +2,7 @@
 org-bound session, stores pms_source uppercase, generates a unique
 property_id, defaults timezone when omitted."""
 
+import pytest
 from sqlalchemy import select
 
 from usali.mapping.property_registry import create_first_property, ensure_default_org
@@ -38,8 +39,6 @@ def test_creates_a_property_under_the_bound_org(db_session):
 def test_refuses_a_blank_name(db_session):
     """Belt to the API validator's braces: the name is the detection alias's
     match phrase, and an empty phrase matches every header."""
-    import pytest
-
     ensure_default_org(db_session)
     bind_org_context(db_session, FOUNDING_ORG_ID)
     for blank in ("", "   ", "\t\n"):

@@ -629,8 +629,6 @@ def test_hotelkey_night_audit_accepts_a_spreadsheet_slot(db_session, db_engine, 
     """The night-audit upload takes an XLSX export: magic-byte accepted, read
     through the content-dispatching reader, detected as HKDEMO, dated against
     the current business date, and landed in its slot."""
-    from pathlib import Path
-
     _seed_hotelkey_world(db_session)
     verifier, mint = make_authkit()
     client = _client(db_engine, tmp_path, verifier)

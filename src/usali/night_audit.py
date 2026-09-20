@@ -291,9 +291,9 @@ def ledger_checks(
         checks.append(
             LedgerCheck(
                 name="ar_rollforward", status="skipped",
-                detail=f"{pms_source} has an AR close on file for both nights but "
-                "no AR_CHARGES/AR_PAYMENTS activity for this date, so there is "
-                "nothing to roll the prior close forward with",
+                detail=f"{pms_source} reports AR balances only; its ledger "
+                "dictionary maps no AR_CHARGES/AR_PAYMENTS, so there is nothing "
+                "to roll the prior close forward with",
             )
         )
     elif "AR_LEDGER" in prior and "AR_LEDGER" in today:

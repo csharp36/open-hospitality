@@ -5,7 +5,7 @@ from typer.testing import CliRunner
 
 from tests.authkit import make_authkit
 from usali.cli import app as cli_app
-from usali.server import _MAX_PDF_BYTES, create_app
+from usali.server import _MAX_UPLOAD_BYTES, create_app
 
 _VERIFIER, _MINT = make_authkit()
 
@@ -74,7 +74,7 @@ def test_ingest_rejects_oversized_pdf_without_touching_filesystem(
                                    failed_dir=tmp_path / "failed",
                                    token_verifier=_VERIFIER))
     client.headers["Authorization"] = f"Bearer {_MINT(roles=['accountant'])}"
-    oversized = b"%PDF-1.4\n" + b"x" * _MAX_PDF_BYTES
+    oversized = b"%PDF-1.4\n" + b"x" * _MAX_UPLOAD_BYTES
 
     resp = client.post(
         "/ingest", files={"file": ("huge.pdf", oversized, "application/pdf")}
@@ -86,7 +86,7 @@ def test_ingest_rejects_oversized_pdf_without_touching_filesystem(
 
 
 def test_ingest_accepts_a_pdf_at_exactly_the_size_limit(db_url, founding_org, tmp_path):
-    # A payload of exactly _MAX_PDF_BYTES is within bounds and must clear the
+    # A payload of exactly _MAX_UPLOAD_BYTES is within bounds and must clear the
     # size gate (it fails downstream as unparseable, but never with 413). This
     # is the boundary that distinguishes `> _MAX` from the `>= _MAX` mutant,
     # which the oversized (_MAX + prefix) test cannot see.
@@ -95,8 +95,8 @@ def test_ingest_accepts_a_pdf_at_exactly_the_size_limit(db_url, founding_org, tm
                                    failed_dir=tmp_path / "failed",
                                    token_verifier=_VERIFIER))
     client.headers["Authorization"] = f"Bearer {_MINT(roles=['accountant'])}"
-    at_limit = b"%PDF-" + b"x" * (_MAX_PDF_BYTES - len(b"%PDF-"))
-    assert len(at_limit) == _MAX_PDF_BYTES
+    at_limit = b"%PDF-" + b"x" * (_MAX_UPLOAD_BYTES - len(b"%PDF-"))
+    assert len(at_limit) == _MAX_UPLOAD_BYTES
 
     resp = client.post(
         "/ingest", files={"file": ("at-limit.pdf", at_limit, "application/pdf")}
@@ -121,7 +121,6 @@ def test_ingest_refuses_bytes_that_are_neither(db_url, founding_org, tmp_path):
 
     assert resp.status_code == 422
     assert resp.json()["detail"] == "upload must be a PDF or XLSX"
-    assert "PDF or XLSX" in resp.json()["detail"]
     assert not (tmp_path / "inbox").exists()
 
 

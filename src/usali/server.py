@@ -64,7 +64,7 @@ _DEFAULT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 # PMS reports are normally well under 1 MiB. 25 MiB leaves ample room for
 # unusually image-heavy exports while keeping one authenticated request from
 # consuming an unbounded amount of worker memory.
-_MAX_PDF_BYTES = 25 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 _T = TypeVar("_T")
 
@@ -508,7 +508,7 @@ def create_app(
         # into org 1's data.
         factory = request_session_factory(request)
         with factory() as session:
-            upload_name = file.filename or "upload.pdf"
+            upload_name = file.filename or "upload"
             # Multipart filenames are attacker-controlled. Keep them as a
             # display name only: path components (including Windows separators
             # on a Linux server) must never influence where the API writes.
@@ -520,8 +520,8 @@ def create_app(
             ):
                 raise HTTPException(status_code=422, detail="unsafe upload filename")
 
-            payload = await file.read(_MAX_PDF_BYTES + 1)
-            if len(payload) > _MAX_PDF_BYTES:
+            payload = await file.read(_MAX_UPLOAD_BYTES + 1)
+            if len(payload) > _MAX_UPLOAD_BYTES:
                 raise HTTPException(status_code=413, detail="upload too large")
             # Magic bytes, never the suffix: the is_pdf/is_xlsx pair that
             # usali.adaptors.reader.read_words_from_bytes dispatches on, and
