@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -656,11 +657,11 @@ def test_hotelkey_night_audit_accepts_a_spreadsheet_slot(db_session, db_engine, 
 
 
 def test_hotelkey_ar_rollforward_is_an_honest_skip_without_activity(db_session):
-    """HotelKey's AR aging promotes its grand total to AR_LEDGER and emits no
-    AR_CHARGES/AR_PAYMENTS activity (mapping/ledgers.yaml, the HOTELKEY rows).
-    Two nights of differing AR closes must therefore NOT read as a failed
-    roll-forward with an "adjust the prior close" affordance: there is no
-    activity to roll forward with, so the check skips and says why."""
+    """HOTELKEY is in BALANCES_ONLY_SOURCES (its AR aging maps AR_LEDGER and
+    no activity codes; test_balances_only_sources_match_the_ledger_dictionary
+    pins the registry to mapping/ledgers.yaml). Two nights of differing AR
+    closes must therefore NOT read as a failed roll-forward with an "adjust
+    the prior close" affordance: the check skips and says why."""
     _org_and_property(db_session, pid="HKDEMO", pms_source="HOTELKEY")
     day = date(2026, 8, 13)
     _seed_ledger_facts(db_session, [
@@ -677,6 +678,45 @@ def test_hotelkey_ar_rollforward_is_an_honest_skip_without_activity(db_session):
     assert checks["ar_rollforward"].delta is None
     # No sub-ledger block either: the identity check stays its existing skip.
     assert checks["balance_identity"].status == "skipped"
+
+
+def test_opera_ar_rollforward_still_computes_without_activity_facts(db_session):
+    """The skip is PER SOURCE, not per day's data: OPERA is not in
+    BALANCES_ONLY_SOURCES, so AR closes on both nights with no activity facts
+    on file compute with zero activity and FAIL on the residual, adjust
+    affordance and all -- a missing activity line in a trial balance is a
+    hole to surface, not a reason to wave the roll through."""
+    _org_and_property(db_session)
+    day = date(2026, 8, 18)
+    _seed_ledger_facts(db_session, [
+        ("AR_LEDGER", "balance", Decimal("210"), day),
+        ("AR_LEDGER", "balance", Decimal("200"), day - timedelta(days=1)),
+    ])
+    checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day, "OPERA")}
+    assert checks["ar_rollforward"].status == "fail"
+    assert checks["ar_rollforward"].delta == "-10.00"
+    assert checks["ar_rollforward"].adjust == {
+        "business_date": "2026-08-17", "ledger_code": "AR_LEDGER",
+        "stored": "200.00", "suggested": "210.00",
+    }
+
+
+def test_balances_only_sources_match_the_ledger_dictionary():
+    """BALANCES_ONLY_SOURCES is a hand-kept registry; mapping/ledgers.yaml is
+    where a source's ledger codes are actually declared. Pin them together:
+    the registry must be exactly the sources with balance rows and no
+    activity rows, so adding activity codes for a source (or a new
+    balances-only source) fails here until the registry follows."""
+    import yaml
+
+    from usali.night_audit import BALANCES_ONLY_SOURCES
+
+    rows = yaml.safe_load(Path("mapping/ledgers.yaml").read_text())
+    kinds: dict[str, set[str]] = {}
+    for row in rows:
+        kinds.setdefault(row["source"], set()).add(row["kind"])
+    balances_only = {src for src, k in kinds.items() if k == {"balance"}}
+    assert balances_only == BALANCES_ONLY_SOURCES == frozenset({"HOTELKEY"})
 
 
 # ---- direct-edit adjustment (cross-night correction) -----------------------

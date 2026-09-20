@@ -83,6 +83,15 @@ LEDGER_BLOCK_REPORT: dict[str, str] = {
     "OPERA": "trial_balance",
 }
 
+# A source listed here reports AR balances and never AR activity (its rows in
+# mapping/ledgers.yaml are all kind: balance), so ar_rollforward cannot be
+# computed and is an honest skip. A source not listed keeps the computed
+# check -- with zero activity if none is on file, so a trial balance whose
+# activity lines went missing FAILS on the residual rather than skipping.
+# test_balances_only_sources_match_the_ledger_dictionary pins this set to
+# the dictionary.
+BALANCES_ONLY_SOURCES: frozenset[str] = frozenset({"HOTELKEY"})
+
 ROLL_WINDOW_START_HOUR = 0  # 00:00 property-local
 ROLL_WINDOW_END_HOUR = 5    # exclusive: rolls allowed strictly before 05:00
 
@@ -215,8 +224,8 @@ def ledger_checks(
     """The 'balances are zero as per the last' verification, from the trial
     balance's ledger block. Two zero-checks, each honest about absent data
     (a source absent from LEDGER_BLOCK_REPORT has no ledger-block expectation;
-    a first night has no prior close; a day with AR closes but no AR activity
-    facts has nothing to roll forward with):
+    a first night has no prior close; a BALANCES_ONLY_SOURCES source has no
+    activity to roll forward with):
 
     * identity — GUEST + AR + DEPOSIT + PACKAGE − HOTEL_BALANCE == 0 today.
     * AR roll-forward — prior AR close + today's charges + today's payments
@@ -269,15 +278,16 @@ def ledger_checks(
         )
 
     prior = _balances(session, property_id, day - timedelta(days=1), pms_source)
-    if "AR_LEDGER" in prior and "AR_LEDGER" in today and not (
-        "AR_CHARGES" in today or "AR_PAYMENTS" in today
+    if (
+        "AR_LEDGER" in prior and "AR_LEDGER" in today
+        and pms_source.upper() in BALANCES_ONLY_SOURCES
     ):
-        # Balances on both nights but no activity to bridge them: the residual
-        # would be the whole day's AR movement, and the fail would offer to
-        # "correct" a prior close that is not wrong. A source that reports AR
-        # balances only (HotelKey's AR aging: the HOTELKEY rows of
-        # mapping/ledgers.yaml carry no activity codes) keeps its honest skip,
-        # the LEDGER_BLOCK_REPORT posture.
+        # Balances on both nights and, by the source's dictionary, never any
+        # activity to bridge them: the residual would be the whole day's AR
+        # movement, and the fail would offer to "correct" a prior close that
+        # is not wrong. Keyed on the SOURCE, not on what is on file today, so
+        # a source that does map activity is never waved through when its
+        # activity lines happen to be missing.
         checks.append(
             LedgerCheck(
                 name="ar_rollforward", status="skipped",

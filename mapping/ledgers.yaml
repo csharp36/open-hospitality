@@ -17,11 +17,11 @@
 # HotelKey AR Invoice Aging (OH-22): the Transaction Type section's total row,
 # one balance per aging column. Labels are "<section> / Total / <column>" as
 # adaptors/hotelkey_ar_aging emits them.
-# Reuses AR_LEDGER so the A/R report shows the balance. No AR_CHARGES/
-# AR_PAYMENTS rows are mapped here, and night_audit.ledger_checks is where a
-# day with AR closes but no activity facts becomes a skipped roll-forward
-# rather than a failed one (test_hotelkey_ar_rollforward_is_an_honest_skip_
-# without_activity in tests/test_night_audit.py).
+# Reuses AR_LEDGER so the A/R report shows the balance. Every HOTELKEY row is
+# kind: balance -- no AR_CHARGES/AR_PAYMENTS -- which is why HOTELKEY is in
+# night_audit.BALANCES_ONLY_SOURCES (its ar_rollforward is an honest skip).
+# test_balances_only_sources_match_the_ledger_dictionary in
+# tests/test_night_audit.py pins that registry to the kinds mapped here.
 - {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Total", code: AR_LEDGER, name: "AR / City Ledger", kind: balance}
 - {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Payment On Account", code: AR_AGING_PAYMENT_ON_ACCOUNT, name: "AR Payments on Account", kind: balance}
 - {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Current", code: AR_AGING_CURRENT, name: "AR Current", kind: balance}
