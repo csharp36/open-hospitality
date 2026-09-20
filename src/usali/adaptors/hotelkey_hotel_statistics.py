@@ -2,7 +2,7 @@
 
 One report, two record kinds (design D-OH22.3). Every section is a heading row,
 a header row carrying the five period columns, then label rows with values
-right-aligned under those columns::
+centred under those column tokens::
 
     Room Statistics
     Description        Actual Today   M-T-D   LY-M-T-D    Y-T-D   LY-T-D
@@ -25,11 +25,12 @@ rows that repeat the report title are the running footer and are skipped
 Columns are located from the header row's five period tokens by x0 (all five
 present, ascending) and values are assigned to the NEAREST column, because
 sparse rows print no placeholder (test_sparse_rows_assign_by_nearest_column).
-The label/value boundary is the "Actual" header token's x0 less a margin --
-values are right-aligned, so a wide one reaches left of the first period
-anchor. Periods are emitted canonical -- DAY / MTD / YTD with ``is_prior_year``
-for the two LY columns -- which is what ``stats_promote._CANONICAL_PERIODS``
-accepts.
+Values are centred under the column tokens, so a wide one's x0 lands left of
+the first period anchor, which is why the label/value boundary is the
+"Actual" token's x0 less a margin and why assignment is by nearest anchor.
+Periods are emitted canonical -- DAY / MTD / YTD with ``is_prior_year`` for
+the two LY columns -- the labels ``stats_promote._CANONICAL_PERIODS`` maps
+(tests/test_stats_promote.py::test_promotes_curated_metrics_and_canonical_periods).
 
 ``parse_financial_rows`` returns the Revenue Statistics, Taxes and Payments
 lines (never the "Totals" rows) as StagedRecords at the Actual Today value, and
