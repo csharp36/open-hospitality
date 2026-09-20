@@ -25,8 +25,10 @@ PDF metadata, pinned workbook timestamps).
 
 from __future__ import annotations
 
+import io
 import json
 import re
+import zipfile
 from datetime import datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -385,6 +387,37 @@ def _sheet(title_cell: str, right_col: str, date_line: str) -> tuple[Workbook, W
     return wb, ws
 
 
+def _save_stable(wb: Workbook, path: Path) -> None:
+    """Save the workbook so its bytes do not depend on the wall clock.
+
+    Two things in openpyxl 3.1.5 defeat the pinned ``wb.properties`` stamps
+    (read 2026-09-20, ``openpyxl/writer/excel.py``):
+      - line 292, in ``save_workbook``, sets ``workbook.properties.modified``
+        to ``datetime.now(utc)`` on every save, discarding the pin;
+      - the members are written with ``writestr(name, bytes)`` and no
+        ``ZipInfo``, so each one's ``date_time`` is the save-time clock.
+    So the workbook is saved to memory and re-zipped member by member, in the
+    same order, each with ``WORKBOOK_STAMP`` as its date, and the
+    ``<dcterms:modified>`` value in ``docProps/core.xml`` is replaced with the
+    same stamp.
+    """
+    buf = io.BytesIO()
+    wb.save(buf)
+    stamp = WORKBOOK_STAMP.timetuple()[:6]
+    modified_re = re.compile(r"(<dcterms:modified[^>]*>)[^<]*(</dcterms:modified>)")
+    with zipfile.ZipFile(buf) as src, zipfile.ZipFile(path, "w") as dst:
+        for member in src.infolist():
+            data = src.read(member.filename)
+            if member.filename == "docProps/core.xml":
+                xml = data.decode("utf-8")
+                assert len(modified_re.findall(xml)) == 1, ("dcterms:modified occurrences", xml)
+                xml = modified_re.sub(rf"\g<1>{WORKBOOK_STAMP.isoformat()}Z\g<2>", xml)
+                data = xml.encode("utf-8")
+            info = zipfile.ZipInfo(member.filename, date_time=stamp)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            dst.writestr(info, data)
+
+
 def build_settlement(path: Path) -> None:
     wb, ws = _sheet("Settlement By Payment Type", "N", "Date Range: Aug 12, 2026 - Aug 13, 2026")
     ws["B11"] = "Details"
@@ -446,7 +479,7 @@ def build_settlement(path: Path) -> None:
         ws.cell(row=25 + i, column=4, value=count)
     ws["C27"], ws["D27"] = grand_total, sum(count for _, _, count in summary)
     ws["A30"] = "END OF REPORT"
-    wb.save(path)
+    _save_stable(wb, path)
 
 
 def build_all_payments(path: Path) -> None:
@@ -463,7 +496,7 @@ def build_all_payments(path: Path) -> None:
         ws.cell(row=16 + i, column=3, value=amount)
     ws["C18"] = total
     ws["A20"] = "END OF REPORT"
-    wb.save(path)
+    _save_stable(wb, path)
 
 
 AR_COLS = ["Payment On Account", "Current", "31 to 60", "61 to 90", "91 to 120", "121 to 150",
@@ -504,7 +537,7 @@ def build_ar_aging(path: Path) -> None:
             ws.cell(row=r, column=3 + i, value=v)
         r += 2
     ws.cell(row=r, column=1, value="END OF REPORT")
-    wb.save(path)
+    _save_stable(wb, path)
 
 
 def main() -> None:
