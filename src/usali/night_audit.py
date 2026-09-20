@@ -215,7 +215,8 @@ def ledger_checks(
     """The 'balances are zero as per the last' verification, from the trial
     balance's ledger block. Two zero-checks, each honest about absent data
     (a source absent from LEDGER_BLOCK_REPORT has no ledger-block expectation;
-    a first night has no prior close):
+    a first night has no prior close; a day with AR closes but no AR activity
+    facts has nothing to roll forward with):
 
     * identity — GUEST + AR + DEPOSIT + PACKAGE − HOTEL_BALANCE == 0 today.
     * AR roll-forward — prior AR close + today's charges + today's payments
@@ -268,7 +269,24 @@ def ledger_checks(
         )
 
     prior = _balances(session, property_id, day - timedelta(days=1), pms_source)
-    if "AR_LEDGER" in prior and "AR_LEDGER" in today:
+    if "AR_LEDGER" in prior and "AR_LEDGER" in today and not (
+        "AR_CHARGES" in today or "AR_PAYMENTS" in today
+    ):
+        # Balances on both nights but no activity to bridge them: the residual
+        # would be the whole day's AR movement, and the fail would offer to
+        # "correct" a prior close that is not wrong. A source that reports AR
+        # balances only (HotelKey's AR aging: the HOTELKEY rows of
+        # mapping/ledgers.yaml carry no activity codes) keeps its honest skip,
+        # the LEDGER_BLOCK_REPORT posture.
+        checks.append(
+            LedgerCheck(
+                name="ar_rollforward", status="skipped",
+                detail=f"{pms_source} has an AR close on file for both nights but "
+                "no AR_CHARGES/AR_PAYMENTS activity for this date, so there is "
+                "nothing to roll the prior close forward with",
+            )
+        )
+    elif "AR_LEDGER" in prior and "AR_LEDGER" in today:
         charges = today.get("AR_CHARGES", Decimal("0"))
         payments = today.get("AR_PAYMENTS", Decimal("0"))
         delta = prior["AR_LEDGER"] + charges + payments - today["AR_LEDGER"]

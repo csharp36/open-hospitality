@@ -655,6 +655,30 @@ def test_hotelkey_night_audit_accepts_a_spreadsheet_slot(db_session, db_engine, 
     assert body["all_reports_landed"] is False
 
 
+def test_hotelkey_ar_rollforward_is_an_honest_skip_without_activity(db_session):
+    """HotelKey's AR aging promotes its grand total to AR_LEDGER and emits no
+    AR_CHARGES/AR_PAYMENTS activity (mapping/ledgers.yaml, the HOTELKEY rows).
+    Two nights of differing AR closes must therefore NOT read as a failed
+    roll-forward with an "adjust the prior close" affordance: there is no
+    activity to roll forward with, so the check skips and says why."""
+    _org_and_property(db_session, pid="HKDEMO", pms_source="HOTELKEY")
+    day = date(2026, 8, 13)
+    _seed_ledger_facts(db_session, [
+        ("AR_LEDGER", "balance", Decimal("3400"), day),
+        ("AR_AGING_CURRENT", "balance", Decimal("1000"), day),
+        ("AR_LEDGER", "balance", Decimal("2900"), day - timedelta(days=1)),
+        ("AR_AGING_CURRENT", "balance", Decimal("800"), day - timedelta(days=1)),
+    ], pid="HKDEMO", tag="hk", source="HOTELKEY", report_type="ar_aging")
+
+    checks = {c.name: c for c in ledger_checks(db_session, "HKDEMO", day, "HOTELKEY")}
+    assert checks["ar_rollforward"].status == "skipped", checks["ar_rollforward"]
+    assert "HOTELKEY" in checks["ar_rollforward"].detail
+    assert checks["ar_rollforward"].adjust is None
+    assert checks["ar_rollforward"].delta is None
+    # No sub-ledger block either: the identity check stays its existing skip.
+    assert checks["balance_identity"].status == "skipped"
+
+
 # ---- direct-edit adjustment (cross-night correction) -----------------------
 
 
