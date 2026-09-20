@@ -81,7 +81,9 @@ def supported_pms_sources() -> frozenset[str]:
 # operating statement (design D-OH22.6). The value is the notice the statement
 # shows in place of its revenue sections; a source absent here backs the
 # statement. Every key is a registered source, pinned in
-# tests/test_detect_signature.py by test_every_notice_source_is_a_supported_source.
+# tests/test_detect_signature.py by test_every_notice_source_is_a_supported_source;
+# tests/test_hotelkey_end_to_end.py::test_hotelkey_never_produces_financial_facts_or_journal_entries
+# holds HotelKey to it from the ingestion side.
 SOURCE_NOTICES: dict[str, str] = {
     "HOTELKEY": (
         "HotelKey is ingested as a statistics-and-balances source. The operating "

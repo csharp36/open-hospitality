@@ -29,13 +29,19 @@ from sqlalchemy.orm import Session
 from usali.adaptors import autoclerk_manager_report as mgr
 from usali.adaptors import autoclerk_rate_plan as rate_plan
 from usali.adaptors import autoclerk_transaction_summary as autoclerk
+from usali.adaptors import hotelkey as hk
+from usali.adaptors import hotelkey_all_payments as hk_payments
+from usali.adaptors import hotelkey_ar_aging as hk_ar
+from usali.adaptors import hotelkey_hotel_statistics as hk_stats
+from usali.adaptors import hotelkey_settlement as hk_settlement
 from usali.adaptors import opera_manager_flash as flash
 from usali.adaptors import opera_market_stats as market_stats
 from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
-from usali.adaptors.pdf import Word, extract_pages, extract_words
+from usali.adaptors.pdf import Word, extract_pages
+from usali.adaptors.reader import read_words
 from usali.detect import Detection, detect, load_registry
 from usali import gl_posting
 from usali.ledger_promote import promote_ledgers
@@ -203,6 +209,86 @@ def _run_skytouch_hotel_statistics(
     return batch, business_date, _Counts(len(records), r.promoted, 0, r.skipped)
 
 
+def _open_batch(
+    session: Session, det: Detection, path: Path, file_hash: str, row_count: int
+) -> IngestBatch:
+    """An IngestBatch named from the DETECTION, for handlers whose stager does not
+    open one (ledger-only files) or whose export can legitimately be empty (a
+    settlement day with no payments) -- `stage_records` would otherwise label an
+    empty batch UNKNOWN/unknown."""
+    batch = IngestBatch(
+        pms_source=det.pms_source,
+        report_type=det.report_type,
+        source_file=path.name,
+        file_hash=file_hash,
+        status="staged",
+        row_count=row_count,
+    )
+    session.add(batch)
+    session.flush()
+    return batch
+
+
+def _run_hotelkey_hotel_statistics(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> tuple[IngestBatch, date, _Counts]:
+    business_date = hk.extract_business_date(words)
+    stats = hk_stats.parse_hotel_statistics(
+        words, property_id=det.property_id, business_date=business_date
+    )
+    financial = hk_stats.parse_financial_rows(
+        words, property_id=det.property_id, business_date=business_date
+    )
+    batch = stage_statistics(session, stats, source_file=path.name, file_hash=file_hash)
+    # D-OH22.6: the revenue, tax and payment lines ride under the same batch and
+    # are NOT transformed -- no usali_financial_fact row, so gl_posting finds no
+    # plan and writes nothing. Held from this side by
+    # tests/test_hotelkey_end_to_end.py::test_hotelkey_never_produces_financial_facts_or_journal_entries.
+    stage_records(session, financial, source_file=path.name, file_hash=file_hash, batch=batch)
+    batch.row_count += len(financial)
+    r = promote_statistics(
+        session, "mapping/statistics.yaml", source=det.pms_source, business_date=business_date
+    )
+    return batch, business_date, _Counts(len(stats) + len(financial), r.promoted, 0, r.skipped)
+
+
+def _run_hotelkey_settlement(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> tuple[IngestBatch, date, _Counts]:
+    business_date = hk.extract_business_date(words)
+    records = hk_settlement.parse_settlement(
+        words, property_id=det.property_id, business_date=business_date
+    )
+    batch = _open_batch(session, det, path, file_hash, len(records))
+    stage_records(session, records, source_file=path.name, file_hash=file_hash, batch=batch)
+    return batch, business_date, _Counts(len(records), 0, 0, 0)
+
+
+def _run_hotelkey_all_payments(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> tuple[IngestBatch, date, _Counts]:
+    business_date = hk.extract_business_date(words)
+    records = hk_payments.parse_all_payments(
+        words, property_id=det.property_id, business_date=business_date
+    )
+    batch = _open_batch(session, det, path, file_hash, len(records))
+    stage_records(session, records, source_file=path.name, file_hash=file_hash, batch=batch)
+    return batch, business_date, _Counts(len(records), 0, 0, 0)
+
+
+def _run_hotelkey_ar_aging(
+    session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
+) -> tuple[IngestBatch, date, _Counts]:
+    business_date = hk.extract_business_date(words)
+    records = hk_ar.parse_ar_aging(words, property_id=det.property_id, business_date=business_date)
+    batch = _open_batch(session, det, path, file_hash, len(records))
+    stage_ledgers(session, records, batch=batch, source_file=path.name, file_hash=file_hash)
+    r = promote_ledgers(
+        session, "mapping/ledgers.yaml", source=det.pms_source, business_date=business_date
+    )
+    return batch, business_date, _Counts(len(records), r.promoted, 0, r.skipped)
+
+
 _PIPELINES: dict[tuple[str, str], _Handler] = {
     ("OPERA", "trial_balance"): _run_opera_trial_balance,
     ("AUTOCLERK", "transaction_summary"): _run_autoclerk_transaction_summary,
@@ -212,6 +298,10 @@ _PIPELINES: dict[tuple[str, str], _Handler] = {
     ("AUTOCLERK", "rate_plan"): _run_autoclerk_rate_plan,
     ("SKYTOUCH", "hotel_journal"): _run_skytouch_hotel_journal,
     ("SKYTOUCH", "hotel_statistics"): _run_skytouch_hotel_statistics,
+    ("HOTELKEY", "hotel_statistics"): _run_hotelkey_hotel_statistics,
+    ("HOTELKEY", "settlement"): _run_hotelkey_settlement,
+    ("HOTELKEY", "all_payments"): _run_hotelkey_all_payments,
+    ("HOTELKEY", "ar_aging"): _run_hotelkey_ar_aging,
 }
 
 
@@ -253,7 +343,7 @@ def process_file(
     failed_dir: Path,
     edition: int = 12,
 ) -> ProcessResult:
-    """Detect, parse, stage, transform, and file one PDF.
+    """Detect, parse, stage, transform, and file one PDF or XLSX.
 
     The property detection registry is read from the DB (`load_registry`), not from
     `mapping/properties.yaml` — properties must be seeded via `seed_properties` before
@@ -266,7 +356,7 @@ def process_file(
     """
     path = Path(pdf_path)
     try:
-        words = extract_words(path)
+        words = read_words(path)
         det = detect(words, load_registry(session))
         result = _process_section(session, words, det, path, _file_hash(path), edition)
         session.commit()

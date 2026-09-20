@@ -393,7 +393,7 @@ def watch_cmd(
     failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
     edition: int = typer.Option(12, help="USALI edition"),
 ) -> None:
-    """Watch the inbox directory and run the full pipeline on every PDF that appears."""
+    """Watch the inbox directory and run the full pipeline on every PDF or XLSX that appears."""
     import time
 
     from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -406,7 +406,7 @@ def watch_cmd(
     inbox.mkdir(parents=True, exist_ok=True)
 
     def handle(path: Path) -> None:
-        if path.suffix.lower() != ".pdf":
+        if path.suffix.lower() not in {".pdf", ".xlsx"}:
             return
         with _session_factory()() as s:
             try:

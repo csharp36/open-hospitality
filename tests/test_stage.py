@@ -61,3 +61,26 @@ def test_stage_keeps_distinct_rows_with_identical_values(db_session):
     db_session.commit()
     after = db_session.scalar(select(func.count()).select_from(PmsDailyFinancialStage))
     assert after == 2
+
+
+def test_stage_under_a_provided_batch_opens_no_second_batch(db_session):
+    # A handler that stages financial rows alongside another stager's rows (the
+    # HotelKey statistics PDF) hands in the batch it already holds. The rows must
+    # ride under it, no second IngestBatch may appear, and row_count is the
+    # caller's to maintain -- stage_records leaves it untouched.
+    batch = IngestBatch(
+        pms_source="HOTELKEY", report_type="hotel_statistics", source_file="hs.pdf",
+        file_hash="hk1", status="staged", row_count=7,
+    )
+    db_session.add(batch)
+    db_session.flush()
+    returned = stage_records(
+        db_session, [_rec("CASH", "100.00"), _rec("VISA", "200.00")],
+        source_file="hs.pdf", file_hash="hk1", batch=batch,
+    )
+    db_session.commit()
+    assert returned is batch
+    assert batch.row_count == 7
+    assert db_session.scalar(select(func.count()).select_from(IngestBatch)) == 1
+    batch_ids = set(db_session.scalars(select(PmsDailyFinancialStage.ingest_batch_id)))
+    assert batch_ids == {batch.batch_id}
