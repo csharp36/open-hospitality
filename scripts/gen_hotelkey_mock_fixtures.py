@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Generate the synthetic HotelKey fixtures. Run: uv run python scripts/gen_hotelkey_mock_fixtures.py
 
-Single source of truth for every HotelKey test input. Nothing here comes from a
-vendor export except LAYOUT: column x-positions, row pitch, which rows wrap,
-where the stamps sit. Names, codes and figures are invented and internally
-consistent (section totals equal their rows), so a parser self-check can be
+Generates the fixture inputs the HotelKey tests in
+docs/plans/2026-09-20-oh22-hotelkey.md read. Nothing here comes from a vendor
+export except LAYOUT: column x-positions, row pitch, which rows wrap, where the
+stamps sit. Names, codes and figures are invented and internally consistent
+(section totals equal their rows), so a footing check on those totals can be
 exercised without ever committing a sample.
 
 Outputs:
@@ -12,12 +13,13 @@ Outputs:
   tests/fixtures/hotelkey_hotel_statistics_words.json            (extract_words of that PDF)
   tests/fixtures/hotelkey/{Settlement By Payment Type,All Payments,AR Invoice Aging}.xlsx (openpyxl)
 
-After drawing the PDF, ``check_statistics_geometry`` re-reads it through the
-same ``extract_pages`` + ``cluster_rows`` path a parser uses and asserts the
-layout properties a column parser needs (each value nearest its own header
-token, ``%`` a separate token, wrapped label lines free of numbers, a bare
-header row opening page 3, the footers). The generator fails rather than
-writing a fixture that has drifted from that shape.
+After drawing the PDF, ``check_statistics_geometry`` re-reads it with
+``extract_pages`` + ``cluster_rows`` and asserts the layout properties listed
+in docs/plans/2026-09-20-oh22-hotelkey.md Task 3 Step 2 (each value nearest
+its own header token, ``%`` a separate token, wrapped label lines free of
+numbers, a bare header row opening page 3, the footers, the header tokens at
+their measured x0s). The generator fails rather than writing a fixture that
+has drifted from that shape.
 """
 
 from __future__ import annotations
@@ -51,8 +53,11 @@ XLSX_DIR = REPO_ROOT / "tests" / "fixtures" / "hotelkey"
 PAGE_W, PAGE_H = 595.2756, 841.8898
 HEADER_TOKENS = [("Actual", 134.0), ("Today", 160.0), ("M-T-D", 240.0), ("LY-M-T-D", 326.0),
                  ("Y-T-D", 426.0), ("LY-T-D", 516.0)]
-# The five period tokens a parser anchors on; a value must be nearest its own.
+# The five period tokens; Task 3 Step 2 requires every value to be nearest its own.
 PERIOD_ANCHORS = [x0 for tok, x0 in HEADER_TOKENS if tok != "Actual"]
+# Measured on the vendor sample 2026-09-20. Nothing is drawn from these; the
+# geometry check compares the drawn header tokens against them.
+MEASURED_PERIOD_X0 = (160.0, 240.0, 326.0, 426.0, 516.0)
 # Values are centred in their column (a column's x0s wander with the width of
 # the number; its centres do not). A "%" follows a space inside the same cell.
 VALUE_CENTER = [159.5, 251.7, 344.0, 436.0, 529.0]
@@ -241,7 +246,7 @@ def _rows(page: list[Word]) -> list[list[Word]]:
 
 
 def check_statistics_geometry(pdf: Path) -> None:
-    """Assert the layout properties a column parser needs, on the drawn PDF."""
+    """Assert the Task 3 Step 2 layout properties on the drawn PDF."""
     actual_x0 = dict(HEADER_TOKENS)["Actual"]
     label_limit = actual_x0 - 10.0
     pages = extract_pages(pdf)
@@ -268,9 +273,10 @@ def check_statistics_geometry(pdf: Path) -> None:
         for row in rows[:-2]:
             by_text = {w.text: w.x0 for w in row}
             if "Today" in by_text:
-                # header rows carry the six tokens at the measured x0s
-                for tok, x0 in HEADER_TOKENS:
-                    assert abs(by_text[tok] - x0) < 0.5, (tok, by_text.get(tok))
+                # header rows carry the five period tokens at the measured x0s
+                period_tokens = [tok for tok, _ in HEADER_TOKENS if tok != "Actual"]
+                for tok, x0 in zip(period_tokens, MEASURED_PERIOD_X0):
+                    assert abs(by_text[tok] - x0) <= 1.0, (tok, by_text.get(tok), x0)
                 if pending is not None and prev_valueless:
                     pending[0].pop()  # the row above a header is a section heading
                 armed = True
@@ -278,6 +284,8 @@ def check_statistics_geometry(pdf: Path) -> None:
                 continue
             if not armed:
                 continue
+            assert not any(w.text.endswith("%") and w.text != "%" for w in row), (
+                "a percent merged with its number", row)
             nums = [w for w in row if _NUM_RE.match(w.text) and w.x0 > label_limit]
             label = [w.text for w in row if w.x0 <= label_limit]
             if not nums:
@@ -297,7 +305,6 @@ def check_statistics_geometry(pdf: Path) -> None:
                 pending[1][col] = w.text + ("%" if pct else "")
                 if col == 0:
                     assert w.x0 > label_limit, ("DAY value left of the boundary", w)
-            assert not any(w.text.endswith("%") and w.text != "%" for w in row), row
         if pending is not None:
             seen.append(pending)
     assert seen == expected_rows, "drawn rows do not read back as authored"
