@@ -36,6 +36,10 @@
 - {source: HOTELKEY, label: "Rooms Available To Sell", code: ROOMS_AVAILABLE}
 - {source: HOTELKEY, label: "Room Sold", code: ROOMS_OCCUPIED}
 - {source: HOTELKEY, label: "Rooms Sold Excluding Comp House Use Rooms", code: ROOMS_SOLD_EX_COMP_HOUSE}
+# The all-inclusive variants take the shared codes (OCCUPANCY_PCT, ADR, REVPAR)
+# because they are the as-reported figures; performance.py recomputes occupancy
+# on the ex-OOO basis, so its divergence check may flag HotelKey days by
+# definition -- a calibration item for the first real export.
 - {source: HOTELKEY, label: "Occupancy Including Out of Order Rooms, Comp, House Use Rooms", code: OCCUPANCY_PCT}
 - {source: HOTELKEY, label: "Occupancy Excluding Out of Order Rooms, Comp, House Use Rooms", code: OCCUPANCY_PCT_EX_OOO_EX_COMP}
 - {source: HOTELKEY, label: "Occupancy Including Out of Order Rooms and Excluding Comp", code: OCCUPANCY_PCT_EX_COMP}

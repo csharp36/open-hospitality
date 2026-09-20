@@ -58,9 +58,11 @@ def _mapped_segment_codes(source: str) -> set[str]:
     return {row["code"] for row in rows if row["source"] == source}
 
 
-def _curated_ledger_labels() -> set[str]:
+def _curated_ledger_labels(source: str = "OPERA") -> set[str]:
+    # The synthetic HISJ day is an Opera day, so it is held to the Opera rows
+    # only; ledgers.yaml also carries HotelKey's AR aging rows (OH-22).
     rows = yaml.safe_load((REPO / "mapping" / "ledgers.yaml").read_text())
-    return {row["label"] for row in rows}
+    return {row["label"] for row in rows if row["source"] == source}
 
 
 # Sample days spread across the year (both season extremes, both week

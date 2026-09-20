@@ -28,6 +28,8 @@ _VENDOR_SIGNATURES: list[tuple[tuple[str, ...], str]] = [
 ]
 _HEADER_WORD_LIMIT = 120
 
+# One entry per registered source, pinned in tests/test_recognition.py by
+# test_every_supported_source_has_a_display_name.
 _DISPLAY_NAMES = {"OPERA": "Opera", "AUTOCLERK": "AutoClerk", "SKYTOUCH": "SkyTouch",
                   "HOTELKEY": "HotelKey"}
 
