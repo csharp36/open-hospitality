@@ -73,7 +73,7 @@ def _remove_stale_container() -> None:
 
 
 def _seed(db_url: str, work_dir: Path, opener: "SoftwareOpener") -> None:
-    """Migrate, seed schedules + mappings, and process the six sample PDFs."""
+    """Migrate, seed schedules + mappings, and process every PDF in docs/reference/samples."""
     from datetime import UTC, date, datetime, time, timedelta
 
     from usali.db import make_engine, make_session_factory

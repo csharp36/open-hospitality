@@ -1,5 +1,5 @@
 // Portal e2e: one flow against the real stack (Testcontainers Postgres seeded
-// with the six sample PDFs, FastAPI on 8100, Vite dev server on 5173).
+// with every PDF in docs/reference/samples, FastAPI on 8100, Vite dev server on 5173).
 // Mirrors the spec's DoD: upload result card, HISJ/SSSJ statements with and
 // without prior-year columns, Parking drill-through with the reconciliation
 // badge, and the coverage worklists.

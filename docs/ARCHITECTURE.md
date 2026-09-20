@@ -161,7 +161,7 @@ persists your choice in the browser (falls back to the OS preference).
 
 End-to-end tests (`cd frontend && npm run e2e`) drive the full stack with
 Playwright: `scripts/e2e_backend.py` boots a throwaway Testcontainers Postgres
-seeded with the six sample PDFs (plus a mock QuickBooks Online on port 9200 and
+seeded with every PDF in docs/reference/samples (plus a mock QuickBooks Online on port 9200 and
 a mock Gusto payroll provider on port 9300), and the tests exercise upload,
 statement drill-through, coverage, the CPA monthly pack, a real QBO push with
 idempotent re-push, and the pay-run round-trip (C2 submit/fetch plus C3's

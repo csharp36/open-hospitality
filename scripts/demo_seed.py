@@ -1062,7 +1062,8 @@ def _seed_faces(session: Session, workers: list[DemoWorker],
 
 
 def _seed_documents(session: Session) -> None:
-    """Ingest the sample PDFs: single reports and the choiceADVANTAGE (SKYTOUCH) pack, every property.
+    """Ingest the sample PDFs: single reports and the choiceADVANTAGE (SKYTOUCH)
+    pack, every property.
 
     Skips PER FILE by content hash: a pre-existing dev database may hold a
     PARTIAL ingestion (it did — Opera only), and a batch-level guard would

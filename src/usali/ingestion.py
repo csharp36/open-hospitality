@@ -499,7 +499,8 @@ def process_document(
 
     Reading the bytes is not a routing signal: if it raises, the file takes
     the single-report path, and `process_file` records the failed batch and
-    quarantines (tests/test_process_document.py::test_a_corrupt_pdf_is_quarantined_by_the_single_report_path).
+    quarantines (tests/test_process_document.py::
+    test_a_corrupt_pdf_is_quarantined_by_the_single_report_path).
     When the pack path fails too, the raised ProcessingError names both
     reasons; the failed batch and the quarantine were already recorded by
     `process_pack`.

@@ -77,7 +77,9 @@ def test_manager_report_splits_into_four_sections_one_resolvable():
     # resolves by title. This is why ingestion.process_document never offers
     # a detectable single report to the pack path.
     registry = yaml.safe_load(Path("mapping/properties.yaml").read_text())
-    sections = split_pack(extract_pages("docs/reference/samples/Autoclerk - Manager Report 07.07.2026.pdf"))
+    sections = split_pack(
+        extract_pages("docs/reference/samples/Autoclerk - Manager Report 07.07.2026.pdf")
+    )
     assert len(sections) == 4
     resolved = []
     for s in sections:

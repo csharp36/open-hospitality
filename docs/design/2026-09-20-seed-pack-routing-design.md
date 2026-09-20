@@ -104,13 +104,20 @@ small files. Threading pre-read words into `process_file` would touch its
 signature and every caller for no user-facing gain.
 
 **D2. Both scripts call `process_document`; the seed base loads every
-dictionary the samples need.** `_seed_base` and the e2e backend load
-`opera.yaml` and `autoclerk.yaml` only. Without `skytouch.yaml` and
-`hotelkey.yaml`, the pack and the HotelKey sample would now ingest with every
-row landing in `MappingException` (transform records unmapped rows rather
-than failing), which is a `transformed` batch that carries no facts. Both
-scripts gain the two `load_mappings` calls. `test_skytouch_end_to_end.py` and
-`test_hotelkey_end_to_end.py` load the same files the same way.
+dictionary a sample or an upload can need.** `_seed_base` and the e2e backend
+load `opera.yaml` and `autoclerk.yaml` only. Without `skytouch.yaml` the pack's
+journal rows land in `MappingException` instead of becoming facts (transform
+records unmapped rows rather than failing, so the batch is `transformed` and
+carries nothing); measured in review: 4 SkyTouch exception rows and 0 SkyTouch
+facts with the load absent, 0 and 4 with it present. `hotelkey.yaml` is loaded
+for parity: the committed HotelKey sample is a statistics report and touches
+no dictionary row, so that load changes nothing today and is there for a
+HotelKey financial upload against the seeded world. Both loads are upserts
+(`load_mappings` uses `on_conflict_do_update` against the dictionary's unique
+key), so `_seed_base` re-running on every cloud deploy is safe; a triple run
+was measured clean. Pinned in
+`tests/test_demo_seed_documents.py::test_seed_documents_ingests_every_sample_including_the_pack`
+(zero exception rows, SkyTouch facts present).
 
 **D3. The demo seed's document step is pinned end to end.**
 `tests/test_demo_seed_documents.py` runs `_seed_base` then `_seed_documents`
