@@ -121,6 +121,22 @@ def test_a_corrupt_pdf_is_quarantined_by_the_single_report_path(
     assert _failed_batches(db_session) == 1
 
 
+def test_only_value_error_from_detection_selects_the_pack_path(db_session, tmp_path, monkeypatch):
+    # Any other failure of the probe is not a routing signal and must
+    # propagate rather than quietly send the file down the pack path.
+    _seed(db_session, "skytouch")
+    _no_pack_path(monkeypatch)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError("registry unavailable")
+    monkeypatch.setattr(ingestion, "detect", broken)
+    with pytest.raises(RuntimeError, match="registry unavailable"):
+        process_document(
+            db_session, _drop(tmp_path, PACK),
+            processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
+        )
+
+
 def test_a_pdf_that_fails_both_ways_reports_both_reasons(db_session, tmp_path, founding_org):
     # Dictionaries but NO properties: whole-file detection cannot resolve the
     # property, and every pack section is skipped for the same reason.
