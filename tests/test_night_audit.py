@@ -993,6 +993,25 @@ def test_every_required_report_has_a_business_date_extractor():
     assert not missing, f"no _DATE_FNS business-date extractor for: {missing}"
 
 
+def test_every_required_report_has_an_ingestion_handler():
+    """REQUIRED_REPORTS and ingestion._PIPELINES are the other pair of dicts
+    that must agree: the night-audit upload accepts a (source, report_type) it
+    lists, and process_file can only run it if _PIPELINES has a handler for
+    that same key. A required report with no handler would be accepted at the
+    boundary and quarantined by the pipeline, every night.
+    """
+    from usali.ingestion import _PIPELINES
+    from usali.night_audit import REQUIRED_REPORTS
+
+    missing = [
+        (source, report_type)
+        for source, reports in REQUIRED_REPORTS.items()
+        for report_type, _label in reports
+        if (source, report_type) not in _PIPELINES
+    ]
+    assert not missing, f"no ingestion handler for: {missing}"
+
+
 def test_ledger_reads_are_keyed_by_pms_source(db_session):
     """A property-day can hold ledger facts from two sources: the fact table's
     uniqueness is (property_id, pms_source, business_date, ledger_code), so a PMS
