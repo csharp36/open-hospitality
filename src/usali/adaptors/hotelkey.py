@@ -8,8 +8,14 @@ tests/adaptors/test_hotelkey_dates.py by
 test_pdf_header_date_is_the_report_date_not_the_run_date.
 
 A range yields its END date (test_xlsx_date_range_yields_the_range_end): the
-settlement export can span two days, and the batch it opens records the day
-the export closes on; each transaction row keeps its own date.
+settlement export can span two days, and this function answers "which day
+does the export close on"; a caller that needs per-row dates reads them from
+the rows themselves.
+
+The vendor prints ``Date:`` capitalized and three-letter month abbreviations
+(``Aug 13, 2026``) in every sample read on 2026-09-20; a header that breaks
+either (lowercase, ``Sept``) raises rather than guessing
+(test_only_a_run_date_is_not_a_business_date is the refusal path).
 """
 
 import re
