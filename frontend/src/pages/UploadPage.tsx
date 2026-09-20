@@ -1,4 +1,4 @@
-// Drag-and-drop PDF upload page. Each dropped/picked file POSTs to /ingest
+// Drag-and-drop PDF/XLSX upload page. Each dropped/picked file POSTs to /ingest
 // sequentially (one at a time — the backend stages synchronously) and gets a
 // result card: the parse summary on success, or the API `detail` message on a
 // danger-bordered card on failure. A failed file never blocks the rest of the
@@ -87,7 +87,7 @@ export default function UploadPage() {
         {/* ink-muted fails AA on the drag-over accent-soft tint — swap to
             accent-ink while the highlight is active. */}
         <p className={`text-sm ${dragOver ? 'text-accent-ink' : 'text-ink-muted'}`}>
-          Drag and drop PDF reports here
+          Drag and drop PDF or XLSX reports here
         </p>
         <p className="text-xs text-ink-faint">or</p>
         <button
@@ -101,9 +101,9 @@ export default function UploadPage() {
         <input
           ref={inputRef}
           type="file"
-          accept=".pdf"
+          accept="application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           multiple
-          aria-label="PDF files"
+          aria-label="PDF or XLSX files"
           className="hidden"
           onChange={(e) => {
             void uploadFiles(Array.from(e.target.files ?? []))

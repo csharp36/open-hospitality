@@ -1,6 +1,6 @@
 import { QueryClientProvider, QueryClient } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -133,6 +133,14 @@ describe('SignupPage — details step', () => {
     expect(screen.queryByLabelText(/which pms/i)).not.toBeInTheDocument()
   })
 
+  it('offers HotelKey as a selectable source, with no "which PMS" follow-up', async () => {
+    await toDetails()
+    const select = screen.getByRole('combobox', { name: 'PMS' })
+    expect(within(select).getByRole('option', { name: 'HotelKey' })).toHaveValue('hotelkey')
+    await userEvent.selectOptions(select, 'hotelkey')
+    expect(screen.queryByLabelText(/which pms/i)).not.toBeInTheDocument()
+  })
+
   it('submits skytouch as the pms_source', async () => {
     vi.mocked(completeSignup).mockResolvedValue({ org_alias: 'redstone', pms_supported: true })
     await toDetails()
@@ -182,13 +190,13 @@ describe('SignupPage — details step', () => {
     await userEvent.type(screen.getByLabelText(/workspace name/i), 'X Group')
     await userEvent.type(screen.getByLabelText(/property name/i), 'X Inn')
     await userEvent.selectOptions(screen.getByLabelText(/pms/i), 'other')
-    await userEvent.type(screen.getByLabelText(/which pms/i), 'HotelKey')
+    await userEvent.type(screen.getByLabelText(/which pms/i), 'Mews')
     await userEvent.selectOptions(screen.getByLabelText(/jurisdiction/i), 'US-CA')
     await userEvent.type(screen.getByLabelText(/password/i), 'passw0rd1')
     await userEvent.click(screen.getByRole('button', { name: /create workspace/i }))
     await waitFor(() => expect(completeSignup).toHaveBeenCalledTimes(1))
     const payload = vi.mocked(completeSignup).mock.calls[0]![0]
-    expect(payload).toMatchObject({ pms_source: 'other', pms_other_name: 'HotelKey' })
+    expect(payload).toMatchObject({ pms_source: 'other', pms_other_name: 'Mews' })
   })
 
   it('stops auto-slugging the workspace URL once the user edits it', async () => {

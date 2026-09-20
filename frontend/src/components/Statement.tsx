@@ -2,7 +2,8 @@
 // src/usali/render.py's render_sos_text: operated departments, misc income,
 // TOTAL OPERATING REVENUE, rooms segment split, taxes, settlements, other
 // (nonempty sections only), statistics. Every financial line is a button that
-// hands its SosLine to the drill-through handler.
+// hands its SosLine to the drill-through handler. A report carrying a
+// source_notice renders that sentence instead of the revenue sections.
 //
 // Layout is a full-width financial document: generous row heights, wide
 // gutters, section headings on the sidebar's dot+hairline recipe, and one
@@ -189,97 +190,111 @@ export default function Statement({ report, onLineClick }: StatementProps) {
         </span>
       </header>
 
-      <section>
-        <SectionHeading>OPERATED DEPARTMENTS</SectionHeading>
-        {report.operated_departments.map((dept) => (
-          <table key={dept.sub_category} className={tableCls}>
-            <tbody>
-              <tr>
-                <td colSpan={2} className="pb-1 pl-4 pt-5 text-[15px] font-semibold text-ink">
-                  {dept.sub_category}
-                </td>
-              </tr>
-              {dept.lines.map((line) => (
-                <LineRow
-                  key={`${line.major}|${line.sub_category}|${line.line_item}`}
-                  line={line}
-                  onLineClick={onLineClick}
-                  indent
-                />
-              ))}
-              <TotalRow label={`Total ${dept.sub_category}`} total={dept.total} indent />
-            </tbody>
-          </table>
-        ))}
-      </section>
-
-      <LineSection
-        title="MISCELLANEOUS INCOME"
-        lines={report.misc_income}
-        totalLabel="Total Miscellaneous Income"
-        total={report.misc_income_total}
-        onLineClick={onLineClick}
-      />
-
-      <div className="mt-12 flex items-center justify-between rounded-xl bg-ink px-6 py-4 text-surface-raised shadow-card">
-        <span className="text-base font-bold tracking-wide">TOTAL OPERATING REVENUE</span>
-        <span className="text-xl font-bold tabular-nums">
-          {fmtMoney(report.total_operating_revenue)}
-        </span>
-      </div>
-
-      {report.rooms_segments.length > 0 && (
-        <section>
-          <SectionHeading>ROOMS SEGMENT SPLIT</SectionHeading>
-          <table className={tableCls}>
-            <thead>
-              <tr className="border-b border-line-strong">
-                <th className={headCls}>Segment</th>
-                <th className={amountHeadCls}>Rooms</th>
-                <th className={amountHeadCls}>Revenue</th>
-                <th className={amountHeadCls}>% Revenue</th>
-              </tr>
-            </thead>
-            <tbody>
-              {report.rooms_segments.map((seg) => (
-                <tr key={seg.segment} className="border-b border-line last:border-0 hover:bg-surface-sunken">
-                  <td className="py-3 pl-6">{seg.segment}</td>
-                  <td className={amountCls}>{fmtStat(seg.rooms)}</td>
-                  <td className={amountCls}>{fmtMoney(seg.room_revenue)}</td>
-                  <td className={amountCls}>{pct(seg.room_revenue, segmentRevenueTotal)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
+      {report.source_notice !== null && (
+        <p role="note" className="mt-4 rounded-md border border-line bg-surface px-4 py-3 text-sm text-ink">
+          {report.source_notice}
+        </p>
       )}
 
-      {report.taxes.length > 0 && (
-        <LineSection
-          title="TAXES COLLECTED (PASS-THROUGH)"
-          lines={report.taxes}
-          totalLabel="Total Taxes Collected"
-          total={report.taxes_total}
-          onLineClick={onLineClick}
-        />
-      )}
-      {report.settlements.length > 0 && (
-        <LineSection
-          title="SETTLEMENTS"
-          lines={report.settlements}
-          totalLabel="Total Settlements"
-          total={report.settlements_total}
-          onLineClick={onLineClick}
-        />
-      )}
-      {report.other.length > 0 && (
-        <LineSection
-          title="OTHER (UNSCHEDULED)"
-          lines={report.other}
-          totalLabel="Total Other"
-          total={report.other_total}
-          onLineClick={onLineClick}
-        />
+      {/* The revenue side is one block: under a notice its sections, the TOTAL
+          OPERATING REVENUE band and their drill-through buttons are not
+          rendered rather than rendered at zero. Statistics and labor below
+          stay unconditional. */}
+      {report.source_notice === null && (
+        <>
+          <section>
+            <SectionHeading>OPERATED DEPARTMENTS</SectionHeading>
+            {report.operated_departments.map((dept) => (
+              <table key={dept.sub_category} className={tableCls}>
+                <tbody>
+                  <tr>
+                    <td colSpan={2} className="pb-1 pl-4 pt-5 text-[15px] font-semibold text-ink">
+                      {dept.sub_category}
+                    </td>
+                  </tr>
+                  {dept.lines.map((line) => (
+                    <LineRow
+                      key={`${line.major}|${line.sub_category}|${line.line_item}`}
+                      line={line}
+                      onLineClick={onLineClick}
+                      indent
+                    />
+                  ))}
+                  <TotalRow label={`Total ${dept.sub_category}`} total={dept.total} indent />
+                </tbody>
+              </table>
+            ))}
+          </section>
+
+          <LineSection
+            title="MISCELLANEOUS INCOME"
+            lines={report.misc_income}
+            totalLabel="Total Miscellaneous Income"
+            total={report.misc_income_total}
+            onLineClick={onLineClick}
+          />
+
+          <div className="mt-12 flex items-center justify-between rounded-xl bg-ink px-6 py-4 text-surface-raised shadow-card">
+            <span className="text-base font-bold tracking-wide">TOTAL OPERATING REVENUE</span>
+            <span className="text-xl font-bold tabular-nums">
+              {fmtMoney(report.total_operating_revenue)}
+            </span>
+          </div>
+
+          {report.rooms_segments.length > 0 && (
+            <section>
+              <SectionHeading>ROOMS SEGMENT SPLIT</SectionHeading>
+              <table className={tableCls}>
+                <thead>
+                  <tr className="border-b border-line-strong">
+                    <th className={headCls}>Segment</th>
+                    <th className={amountHeadCls}>Rooms</th>
+                    <th className={amountHeadCls}>Revenue</th>
+                    <th className={amountHeadCls}>% Revenue</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {report.rooms_segments.map((seg) => (
+                    <tr key={seg.segment} className="border-b border-line last:border-0 hover:bg-surface-sunken">
+                      <td className="py-3 pl-6">{seg.segment}</td>
+                      <td className={amountCls}>{fmtStat(seg.rooms)}</td>
+                      <td className={amountCls}>{fmtMoney(seg.room_revenue)}</td>
+                      <td className={amountCls}>{pct(seg.room_revenue, segmentRevenueTotal)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {report.taxes.length > 0 && (
+            <LineSection
+              title="TAXES COLLECTED (PASS-THROUGH)"
+              lines={report.taxes}
+              totalLabel="Total Taxes Collected"
+              total={report.taxes_total}
+              onLineClick={onLineClick}
+            />
+          )}
+          {report.settlements.length > 0 && (
+            <LineSection
+              title="SETTLEMENTS"
+              lines={report.settlements}
+              totalLabel="Total Settlements"
+              total={report.settlements_total}
+              onLineClick={onLineClick}
+            />
+          )}
+          {report.other.length > 0 && (
+            <LineSection
+              title="OTHER (UNSCHEDULED)"
+              lines={report.other}
+              totalLabel="Total Other"
+              total={report.other_total}
+              onLineClick={onLineClick}
+            />
+          )}
+        </>
       )}
 
       {statistics.length > 0 && (

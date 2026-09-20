@@ -185,7 +185,7 @@ describe('NightAuditPage uploads', () => {
     renderPage()
     const card = await screen.findByRole('region', { name: 'audit pack' })
     expect(within(card).getByText(/SkyTouch Night Audit Report Pack/)).toBeInTheDocument()
-    expect(within(card).getByRole('button', { name: 'Upload audit pack (PDF)' })).toBeInTheDocument()
+    expect(within(card).getByRole('button', { name: 'Upload audit pack (PDF or XLSX)' })).toBeInTheDocument()
     // The pack replaces the slot rows — no per-report card renders.
     expect(screen.queryByRole('region', { name: 'required reports' })).not.toBeInTheDocument()
   })

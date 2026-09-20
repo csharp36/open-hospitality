@@ -108,6 +108,9 @@ export function makeSosReport(overrides: Partial<SosReport> = {}): SosReport {
     // No processed pay run by default — the C3 variance section stays hidden
     // unless a test overrides this (mirrors the backend's null block).
     labor_variance: null,
+    // A journal-backed source by default — Statement renders every revenue
+    // section. A notice source overrides this with the API's sentence.
+    source_notice: null,
     ...overrides,
   }
 }

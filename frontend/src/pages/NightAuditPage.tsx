@@ -237,7 +237,7 @@ function SlotRow({ index, slot, propertyId, onUploaded }: {
         <input
           ref={fileRef}
           type="file"
-          accept="application/pdf"
+          accept="application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           className="hidden"
           aria-label={`Upload ${slot.label}`}
           onChange={(e) => {
@@ -252,7 +252,7 @@ function SlotRow({ index, slot, propertyId, onUploaded }: {
           disabled={upload.isPending}
           className="rounded-control border border-line px-3 py-1.5 text-sm text-ink disabled:opacity-50"
         >
-          {upload.isPending ? 'Uploading…' : slot.landed ? 'Re-upload' : 'Upload PDF'}
+          {upload.isPending ? 'Uploading…' : slot.landed ? 'Re-upload' : 'Upload PDF or XLSX'}
         </button>
       </span>
     </li>
@@ -399,7 +399,7 @@ function PackDropCard({ propertyId, packLabel, slots, onUploaded }: {
         <input
           ref={fileRef}
           type="file"
-          accept="application/pdf"
+          accept="application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           className="hidden"
           aria-label="Upload audit pack"
           onChange={(e) => {
@@ -414,7 +414,7 @@ function PackDropCard({ propertyId, packLabel, slots, onUploaded }: {
           disabled={upload.isPending}
           className="rounded-control bg-accent px-4 py-2 text-sm font-medium text-accent-contrast disabled:opacity-50"
         >
-          {upload.isPending ? 'Splitting & ingesting…' : allLanded ? 'Re-upload pack' : 'Upload audit pack (PDF)'}
+          {upload.isPending ? 'Splitting & ingesting…' : allLanded ? 'Re-upload pack' : 'Upload audit pack (PDF or XLSX)'}
         </button>
         {upload.isError && (
           <span className="text-sm text-danger-red">{errorMessage(upload.error)}</span>

@@ -16,7 +16,7 @@ export class SignupError extends Error {
 
 /** Mirrors the `pms_source` Literal on the backend's CompleteRequest. Sources
  *  other than 'other' must have an ingestion pipeline behind them. */
-export type PmsSource = 'opera' | 'autoclerk' | 'skytouch' | 'other'
+export type PmsSource = 'opera' | 'autoclerk' | 'skytouch' | 'hotelkey' | 'other'
 
 export interface CompletePayload {
   token: string
