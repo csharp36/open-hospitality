@@ -1054,6 +1054,45 @@ _JOURNAL_OWNED_TOTALS = (
     "other_total",
 )
 
+# The revenue side of SosReport, closed in code: `statistics_only_statement`
+# empties exactly these (an empty list per section, Decimal("0") per total)
+# and fills exactly _KEPT_SIDE. tests/test_sos_source_notice.py::
+# test_every_sos_field_is_classified_revenue_or_kept holds the two sets
+# disjoint and jointly equal to SosReport's fields, so a new field cannot
+# be silently left out of the statistics-only statement.
+_REVENUE_SIDE_SECTIONS = (
+    "operated_departments",
+    "misc_income",
+    "taxes",
+    "settlements",
+    "other",
+    "rooms_segments",
+)
+_REVENUE_SIDE = frozenset(_REVENUE_SIDE_SECTIONS) | frozenset(_JOURNAL_OWNED_TOTALS)
+_KEPT_SIDE = frozenset(
+    {
+        "property_id",
+        "pms_source",
+        "business_date",
+        "date_from",
+        "date_to",
+        "statistics",
+        "payroll_expense",
+        "payroll_expense_total",
+        "labor_hours_total",
+        "labor_ot_hours_total",
+        "labor_fte",
+        "labor_suppressed_departments",
+        "labor_unpriced_hours",
+        "labor_variance",
+        "sick_pay",
+        "sick_pay_total",
+        "sick_suppressed_departments",
+        "sick_unpriced_hours",
+        "source_notice",
+    }
+)
+
 
 def _journal_nets(
     session: Session, property_id: str, start: date, end: date
@@ -1239,9 +1278,10 @@ def statistics_only_statement(
 ) -> SosReport:
     """The statement for a source that does not back the SOS (D-OH22.6):
     statistics and the labor block, every revenue section empty, and
-    `source_notice` saying why. Raises NoFactsError when the window holds no
-    promoted statistics, so the API's 404 means the same thing it does for a
-    journal-backed property: nothing landed for that day."""
+    `source_notice` saying why. The revenue side is emptied by iterating
+    _REVENUE_SIDE, never by naming fields here. Raises NoFactsError when the
+    window holds no promoted statistics; `portal_api._run` turns that into the
+    same 404 a journal-backed property gets: nothing landed for that day."""
     start, end = _sos_window(business_date, date_from, date_to)
     statistics = _statistics(session, property_id, start, end)
     if not statistics:
@@ -1257,24 +1297,15 @@ def statistics_only_statement(
     )
     (sick_pay, sick_pay_total, sick_suppressed_departments,
      sick_unpriced_hours) = _sick_pay(session, property_id, start, end)
-    zero = Decimal("0")
+    revenue_side: dict[str, Any] = {name: [] for name in _REVENUE_SIDE_SECTIONS}
+    revenue_side.update({name: Decimal("0") for name in _JOURNAL_OWNED_TOTALS})
     return SosReport(
+        **revenue_side,
         property_id=property_id,
         pms_source=pms_source,
         business_date=business_date,
         date_from=date_from,
         date_to=date_to,
-        operated_departments=[],
-        misc_income=[],
-        misc_income_total=zero,
-        total_operating_revenue=zero,
-        taxes=[],
-        taxes_total=zero,
-        settlements=[],
-        settlements_total=zero,
-        other=[],
-        other_total=zero,
-        rooms_segments=[],
         statistics=statistics,
         payroll_expense=payroll_expense,
         payroll_expense_total=payroll_expense_total,

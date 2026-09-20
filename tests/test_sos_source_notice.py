@@ -3,7 +3,7 @@ statement, appears in the property picker, and never reaches the journal path.""
 
 import json
 import shutil
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -86,19 +86,27 @@ def test_renderers_print_the_notice(hotelkey_day):
         notice="NOTICE TEXT",
         business_date=BD,
     )
-    assert "NOTICE TEXT" in render_sos_text(report)
+    text = render_sos_text(report)
+    assert "NOTICE TEXT" in text
+    # The notice says no revenue section is shown; a printed 0.00 would
+    # contradict it.
+    assert "TOTAL OPERATING REVENUE" not in text
+    assert "OPERATED DEPARTMENTS" not in text
+    assert "MISCELLANEOUS INCOME" not in text
+    assert "STATISTICS" in text
     assert json.loads(render_sos_json(report))["source_notice"] == "NOTICE TEXT"
     assert '"meta","source_notice","","","NOTICE TEXT"' in render_sos_csv(report)
 
 
 def test_a_journal_backed_statement_renders_no_notice_line(hotelkey_day):
-    # The notice is the one field that distinguishes the two builders' output;
-    # a None notice must leave every renderer's output free of it.
+    # A None notice must leave every renderer's output free of it.
     built = reporting.statistics_only_statement(
         hotelkey_day, property_id="HKDEMO", pms_source="HOTELKEY", notice="x", business_date=BD
     )
     report = replace(built, source_notice=None)
-    assert "NOTE:" not in render_sos_text(report)
+    text = render_sos_text(report)
+    assert "NOTE:" not in text
+    assert "TOTAL OPERATING REVENUE" in text
     assert json.loads(render_sos_json(report))["source_notice"] is None
     assert "source_notice" not in render_sos_csv(report)
 
@@ -130,3 +138,11 @@ def test_sos_api_still_404s_a_hotelkey_property_with_no_statistics_that_day(
     client = _make_client(db_engine, tmp_path)
     r = client.get("/api/sos", params={"property": "HKDEMO", "date": "1999-01-01"})
     assert r.status_code == 404
+
+
+def test_every_sos_field_is_classified_revenue_or_kept():
+    # `statistics_only_statement` empties exactly _REVENUE_SIDE and fills exactly
+    # _KEPT_SIDE; a new SosReport field fails here until it is classified.
+    names = {f.name for f in fields(reporting.SosReport)}
+    assert names == reporting._REVENUE_SIDE | reporting._KEPT_SIDE
+    assert not (reporting._REVENUE_SIDE & reporting._KEPT_SIDE)

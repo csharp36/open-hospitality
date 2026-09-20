@@ -776,13 +776,16 @@ def sos(
     if ranged and (date_from is None or date_to is None):
         raise HTTPException(status_code=422, detail="from and to must be given together")
     # D-OH22.6: a source that does not back the SOS gets the statistics-plus-
-    # notice statement, never the journal path. Uppercased because the registry
-    # keys are; pms_source on the report is the uppercase id so it matches the
-    # id every other source's report carries.
+    # notice statement, never the journal path. `Property.pms_source` is
+    # stored uppercase: `property_registry.create_first_property` uppercases
+    # on signup, and `seed_properties` writes mapping/properties.yaml's rows
+    # as-is (tests/test_detect_registry.py::
+    # test_load_registry_returns_seeded_rows_in_legacy_shape pins them).
+    # SOURCE_NOTICES is keyed uppercase; the .upper() is belt-and-braces.
     prop = session.get(Property, property_id)
-    notice = SOURCE_NOTICES.get(prop.pms_source.upper()) if prop is not None else None
-    if prop is not None and notice is not None:
-        pms_source = prop.pms_source.upper()
+    pms_source = None if prop is None else prop.pms_source.upper()
+    notice = None if pms_source is None else SOURCE_NOTICES.get(pms_source)
+    if pms_source is not None and notice is not None:
         report = _run(
             lambda: reporting.statistics_only_statement(
                 session,
