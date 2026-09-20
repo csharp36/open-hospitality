@@ -41,7 +41,7 @@ from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
 from usali.adaptors.pdf import Word, extract_pages
-from usali.adaptors.reader import read_words
+from usali.adaptors.reader import is_pdf, read_words, read_words_from_bytes
 from usali.detect import Detection, detect, load_registry
 from usali import gl_posting
 from usali.ledger_promote import promote_ledgers
@@ -469,6 +469,49 @@ def process_pack(
 
     dest = _move(path, processed_dir)
     return [dataclasses.replace(r, destination=dest) for r in results]
+
+
+def process_document(
+    session: Session,
+    path: str | Path,
+    *,
+    processed_dir: Path,
+    failed_dir: Path,
+    edition: int = 12,
+) -> list[ProcessResult]:
+    """Ingest one file whose shape is not known in advance: a single report
+    (PDF or XLSX) or a bundled night-audit pack (PDF only).
+
+    Single-report detection is tried first. `detect` raises when the header
+    window's first matching signature disagrees with the property's registered
+    source (its cross-check) or when nothing matches; a pack shows exactly
+    that, because its first page is whichever report the PMS bound first. A
+    file that detects as a single report is processed as one and never split:
+    `split_pack` carves a multi-page single report at every page-title change,
+    so the pack path would drop the pages whose titles resolve to nothing.
+    Pinned in tests/test_process_document.py::test_single_report_never_takes_the_pack_path.
+
+    Failure semantics are those of the path taken. When the pack path fails
+    too, the raised ProcessingError names both reasons; the failed batch and
+    the quarantine were already recorded by `process_pack`.
+    """
+    src = Path(path)
+    data = src.read_bytes()
+    if not is_pdf(data):
+        return [process_file(session, src, processed_dir=processed_dir,
+                             failed_dir=failed_dir, edition=edition)]
+    try:
+        detect(read_words_from_bytes(data), load_registry(session))
+    except ValueError as single_exc:
+        try:
+            return process_pack(session, src, processed_dir=processed_dir,
+                                failed_dir=failed_dir, edition=edition)
+        except ProcessingError as pack_exc:
+            raise ProcessingError(
+                f"{src.name}: as a single report: {single_exc}; as a pack: {pack_exc}"
+            ) from pack_exc
+    return [process_file(session, src, processed_dir=processed_dir,
+                         failed_dir=failed_dir, edition=edition)]
 
 
 def _record_failure(session: Session, path: Path, exc: Exception) -> None:
