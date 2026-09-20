@@ -19,7 +19,8 @@ in docs/plans/2026-09-20-oh22-hotelkey.md Task 3 Step 2 (each value nearest
 its own header token, ``%`` a separate token, wrapped label lines free of
 numbers, a bare header row opening page 3, the footers, the header tokens at
 their measured x0s). The generator fails rather than writing a fixture that
-has drifted from that shape.
+has drifted from that shape. Every output is byte-stable across runs (invariant
+PDF metadata, pinned workbook timestamps).
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime, time
+from decimal import Decimal
 from pathlib import Path
 
 from openpyxl import Workbook
@@ -53,11 +55,12 @@ XLSX_DIR = REPO_ROOT / "tests" / "fixtures" / "hotelkey"
 PAGE_W, PAGE_H = 595.2756, 841.8898
 HEADER_TOKENS = [("Actual", 134.0), ("Today", 160.0), ("M-T-D", 240.0), ("LY-M-T-D", 326.0),
                  ("Y-T-D", 426.0), ("LY-T-D", 516.0)]
-# The five period tokens; Task 3 Step 2 requires every value to be nearest its own.
-PERIOD_ANCHORS = [x0 for tok, x0 in HEADER_TOKENS if tok != "Actual"]
-# Measured on the vendor sample 2026-09-20. Nothing is drawn from these; the
-# geometry check compares the drawn header tokens against them.
+# The five period tokens' x0, measured on the vendor sample 2026-09-20. Nothing
+# is drawn from these; the geometry check compares the drawn header tokens
+# against them and anchors the nearest-column test on them (Task 3 Step 2
+# requires every value to be nearest its own).
 MEASURED_PERIOD_X0 = (160.0, 240.0, 326.0, 426.0, 516.0)
+WORKBOOK_STAMP = datetime(2026, 8, 14, 9, 10, 11)  # pinned so the XLSX bytes are stable
 # Values are centred in their column (a column's x0s wander with the width of
 # the number; its centres do not). A "%" follows a space inside the same cell.
 VALUE_CENTER = [159.5, 251.7, 344.0, 436.0, 529.0]
@@ -142,8 +145,9 @@ STATISTICS_PAGES: list[list[Section]] = [
             (["BILL TO COMPANY"], ["0.00", "0.00", "0.00", "1,000.00", "0.00"]),
             (["Totals"], ["5,500.00", "165,000.00", "0.00", "1,233,000.00", "0.00"]),
         ])]),
-        # Like the real export: the heading and header row land at the foot of
-        # the page and the header row repeats at the top of the next one.
+        # Like the real export (measured 2026-09-20): the heading and header row
+        # land at the foot of the page and the header row repeats at the top of
+        # the next one.
         ("Guest Statistics", [(None, [])]),
     ],
     [  # page 3 -- starts with a bare header row (no heading), then rows
@@ -172,7 +176,8 @@ def build_statistics_pdf(path: Path) -> None:
     from reportlab.pdfgen import canvas
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    c = canvas.Canvas(str(path), pagesize=(PAGE_W, PAGE_H))
+    # invariant=1: fixed metadata timestamp and document ID, so the bytes are stable.
+    c = canvas.Canvas(str(path), pagesize=(PAGE_W, PAGE_H), invariant=1)
     c.setFont(*FONT)
     # The measured "top" is the glyph box's top edge; drawString places the
     # baseline, which sits (size + descent) below it. getDescent is negative.
@@ -233,6 +238,10 @@ def build_statistics_pdf(path: Path) -> None:
                 for lines, values in rows:
                     top = value_row(top, lines, values)
             top += SECTION_GAP
+        # top - SECTION_GAP is where the next row would have gone; it must clear
+        # the footer by a row pitch.
+        assert top - SECTION_GAP < FOOTER_PAGE_TOP - ROW_PITCH, (
+            "page overflowed", page_no, top - SECTION_GAP)
         footer(page_no)
         c.showPage()
     c.save()
@@ -250,7 +259,7 @@ def check_statistics_geometry(pdf: Path) -> None:
     actual_x0 = dict(HEADER_TOKENS)["Actual"]
     label_limit = actual_x0 - 10.0
     pages = extract_pages(pdf)
-    assert len(pages) == len(STATISTICS_PAGES), len(pages)
+    assert len(pages) == len(STATISTICS_PAGES), ("page count", len(pages))
     expected_rows = [
         (lines, values)
         for page in STATISTICS_PAGES
@@ -263,11 +272,14 @@ def check_statistics_geometry(pdf: Path) -> None:
     for page_no, page in enumerate(pages, start=1):
         rows = _rows(page)
         texts = [[w.text for w in row] for row in rows]
-        assert texts[-2][0].startswith("Page") and texts[-2][1:] == ["/", str(len(pages))], texts[-2]
-        assert all(w.x0 > label_limit for w in rows[-2]), rows[-2]
-        assert texts[-1] == ["Hotel", "Statistics"], texts[-1]
+        assert texts[-2][0] == f"Page{page_no}", ("footer page token", page_no, texts[-2])
+        assert texts[-2][1:] == ["/", str(len(pages))], ("footer page-count tokens", texts[-2])
+        assert all(w.x0 > label_limit for w in rows[-2]), (
+            "footer page row has a token left of the label limit", rows[-2])
+        assert texts[-1] == ["Hotel", "Statistics"], ("footer title row", texts[-1])
         if page_no == 3:
-            assert texts[0][0] == "Description" and "Today" in texts[0], texts[0]
+            assert texts[0][0] == "Description" and "Today" in texts[0], (
+                "page 3 does not open with a bare header row", texts[0])
         pending: tuple[list[str], list[str | None]] | None = None
         prev_valueless = False
         for row in rows[:-2]:
@@ -276,7 +288,8 @@ def check_statistics_geometry(pdf: Path) -> None:
                 # header rows carry the five period tokens at the measured x0s
                 period_tokens = [tok for tok, _ in HEADER_TOKENS if tok != "Actual"]
                 for tok, x0 in zip(period_tokens, MEASURED_PERIOD_X0):
-                    assert abs(by_text[tok] - x0) <= 1.0, (tok, by_text.get(tok), x0)
+                    assert abs(by_text[tok] - x0) <= 1.0, (
+                        "header token x0 differs from measured", tok, by_text.get(tok), x0)
                 if pending is not None and prev_valueless:
                     pending[0].pop()  # the row above a header is a section heading
                 armed = True
@@ -298,16 +311,52 @@ def check_statistics_geometry(pdf: Path) -> None:
                 seen.append(pending)
             pending = ([" ".join(label)], [None] * 5)
             for w in nums:
-                col = min(range(5), key=lambda i: abs(w.x0 - PERIOD_ANCHORS[i]))
-                assert pending[1][col] is None, ("two values nearest one anchor", row)
+                col = min(range(5), key=lambda i: abs(w.x0 - MEASURED_PERIOD_X0[i]))
+                assert pending[1][col] is None, ("two values nearest one anchor", col, row)
                 nxt = next((v for v in row if v.x0 > w.x0), None)
                 pct = nxt is not None and nxt.text == "%"
                 pending[1][col] = w.text + ("%" if pct else "")
-                if col == 0:
-                    assert w.x0 > label_limit, ("DAY value left of the boundary", w)
         if pending is not None:
             seen.append(pending)
-    assert seen == expected_rows, "drawn rows do not read back as authored"
+    assert len(seen) == len(expected_rows), ("row count", len(seen), len(expected_rows))
+    for i, (s, e) in enumerate(zip(seen, expected_rows)):
+        assert s == e, ("row does not read back as authored", i, s, e)
+
+
+_FINANCIAL_HEADINGS = ("Revenue Statistics", "Taxes", "Payments")
+
+
+def check_statistics_footing() -> None:
+    """Assert the financial sections of STATISTICS_PAGES foot, column by column.
+
+    Each block's lines sum to its first "Totals" row; a second "Totals" row in
+    a section is the grand total and equals the sum of the block totals.
+    """
+
+    def dec(s: str | None) -> Decimal:
+        assert s is not None, "financial rows carry all five values"
+        return Decimal(s.replace(",", ""))
+
+    for page in STATISTICS_PAGES:
+        for heading, blocks in page:
+            if heading not in _FINANCIAL_HEADINGS:
+                continue
+            block_totals: list[list[str | None]] = []
+            grand: list[str | None] | None = None
+            for prefix, rows in blocks:
+                lines = [values for label, values in rows if label != ["Totals"]]
+                totals = [values for label, values in rows if label == ["Totals"]]
+                assert 1 <= len(totals) <= 2, ("Totals rows per block", heading, prefix)
+                for col in range(5):
+                    assert sum(dec(v[col]) for v in lines) == dec(totals[0][col]), (
+                        "block does not foot", heading, prefix, col)
+                block_totals.append(totals[0])
+                if len(totals) == 2:
+                    grand = totals[1]
+            if grand is not None:
+                for col in range(5):
+                    assert sum(dec(t[col]) for t in block_totals) == dec(grand[col]), (
+                        "grand total does not foot", heading, col)
 
 
 def write_statistics_words(pdf: Path, out: Path) -> None:
@@ -322,6 +371,7 @@ def write_statistics_words(pdf: Path, out: Path) -> None:
 # --- XLSX -----------------------------------------------------------------------
 def _sheet(title_cell: str, right_col: str, date_line: str) -> tuple[Workbook, Worksheet]:
     wb = Workbook()
+    wb.properties.created = wb.properties.modified = WORKBOOK_STAMP
     ws = wb.active
     assert ws is not None
     ws.title = "Report"
@@ -347,12 +397,26 @@ def build_settlement(path: Path) -> None:
         (1, datetime(2026, 8, 12), time(15, 12, 34), "10000001", "000101", "TESTGUEST ALPHA", "ALPHA", "TESTGUEST", "201", "MASTER", "1111", 300.00),
         (2, datetime(2026, 8, 13), time(12, 5, 34), "10000002", "000102", "TESTGUEST BRAVO", "BRAVO", "TESTGUEST", "202", "MASTER", "2222", 150.50),
         (3, datetime(2026, 8, 13), time(11, 32, 35), "10000003", "000103", "TESTGUEST CHARLIE", "CHARLIE", "TESTGUEST", "203", "MASTER", "3333", 249.50),
-        # subtotal row: ordinal + amount only, as the export prints it
+        # subtotal row: ordinal + amount only, as the export prints it (measured 2026-09-20)
         (4, None, None, None, None, None, None, None, None, None, None, 700.00),
         (4, datetime(2026, 8, 13), time(21, 47, 48), "10000004", "000104", "TESTGUEST DELTA", "DELTA", "TESTGUEST", "301", "VISA", "4444", 120.25),
         (5, datetime(2026, 8, 13), time(7, 0, 8), "10000005", "000105", "TESTGUEST ECHO", "ECHO", "TESTGUEST", "302", "VISA", "5555", 79.75),
         (5, None, None, None, None, None, None, None, None, None, None, 200.00),
     ]
+    summary = [("MASTER", 700.00, 3), ("VISA", 200.00, 2)]
+    grand_total = 900.00
+    # The detail rows foot to the subtotal rows, the summary and the grand total.
+    by_type: dict[str, list[float]] = {}
+    subtotals = [row[11] for row in details if row[1] is None]
+    for row in details:
+        if row[1] is not None:
+            by_type.setdefault(row[9], []).append(row[11])
+    assert [(t, round(sum(a), 2), len(a)) for t, a in by_type.items()] == summary, (
+        "settlement details do not foot to the summary", by_type)
+    assert [round(sum(a), 2) for a in by_type.values()] == subtotals, (
+        "settlement details do not foot to the subtotal rows", subtotals)
+    assert round(sum(sum(a) for a in by_type.values()), 2) == grand_total, (
+        "settlement details do not foot to the grand total", grand_total)
     r = 13
     for ordinal, d, t, txn, folio, guest, first, last, room, ptype, desc, amount in details:
         ws.cell(row=r, column=1, value=ordinal)
@@ -371,25 +435,33 @@ def build_settlement(path: Path) -> None:
             ws.cell(row=r, column=15, value="testusr01")
         ws.cell(row=r, column=14, value=amount)
         r += 1
-    ws.cell(row=r, column=14, value=900.00)  # grand total, unnumbered
+    ws.cell(row=r, column=14, value=grand_total)  # grand total, unnumbered
     ws["B23"] = "Summary"
     for i, h in enumerate(["Payment Type", "Amount", "Count"]):
         ws.cell(row=24, column=2 + i, value=h)
-    ws["A25"], ws["B25"], ws["C25"], ws["D25"] = 1, "MASTER", 700.00, 3
-    ws["A26"], ws["B26"], ws["C26"], ws["D26"] = 2, "VISA", 200.00, 2
-    ws["C27"], ws["D27"] = 900.00, 5
+    for i, (ptype, amount, count) in enumerate(summary):
+        ws.cell(row=25 + i, column=1, value=i + 1)
+        ws.cell(row=25 + i, column=2, value=ptype)
+        ws.cell(row=25 + i, column=3, value=amount)
+        ws.cell(row=25 + i, column=4, value=count)
+    ws["C27"], ws["D27"] = grand_total, sum(count for _, _, count in summary)
     ws["A30"] = "END OF REPORT"
-    path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(path)
 
 
 def build_all_payments(path: Path) -> None:
     wb, ws = _sheet("All Payments", "I", "Date Range: Aug 13, 2026 - Aug 13, 2026")
+    rows = [("MASTER", 700.00), ("VISA", 200.00)]
+    total = 900.00
+    assert round(sum(amount for _, amount in rows), 2) == total, (
+        "all-payments rows do not foot to the total", rows, total)
     ws["B14"] = "All Payments - Payment Type"
     ws["B15"], ws["C15"] = "Payment Type", "Amount"
-    ws["A16"], ws["B16"], ws["C16"] = 1, "MASTER", 700.00
-    ws["A17"], ws["B17"], ws["C17"] = 2, "VISA", 200.00
-    ws["C18"] = 900.00
+    for i, (ptype, amount) in enumerate(rows):
+        ws.cell(row=16 + i, column=1, value=i + 1)
+        ws.cell(row=16 + i, column=2, value=ptype)
+        ws.cell(row=16 + i, column=3, value=amount)
+    ws["C18"] = total
     ws["A20"] = "END OF REPORT"
     wb.save(path)
 
@@ -413,6 +485,9 @@ def build_ar_aging(path: Path) -> None:
                                 ("CHECKED OUT", [0, 1000.00, 2000.00, 500.00, 0, 0, 0, 3500.00])]),
     ]
     for name, rows in sections:
+        for col in range(len(AR_COLS)):
+            assert round(sum(values[col] for _, values in rows), 2) == AR_TOTAL[col], (
+                "AR section does not foot to AR_TOTAL", name, AR_COLS[col])
         ws.cell(row=r, column=2, value=f"AR Aging Details - {name}")
         r += 1
         ws.cell(row=r, column=2, value=name)
@@ -433,9 +508,19 @@ def build_ar_aging(path: Path) -> None:
 
 
 def main() -> None:
-    build_statistics_pdf(PDF_OUT)
-    check_statistics_geometry(PDF_OUT)
+    check_statistics_footing()
+    # Draw to a temp path and check it there, so a failed check leaves the
+    # committed PDF + words JSON pair untouched.
+    tmp = PDF_OUT.with_suffix(".tmp.pdf")
+    build_statistics_pdf(tmp)
+    try:
+        check_statistics_geometry(tmp)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+    tmp.replace(PDF_OUT)
     write_statistics_words(PDF_OUT, WORDS_OUT)
+    XLSX_DIR.mkdir(parents=True, exist_ok=True)
     build_settlement(XLSX_DIR / "Settlement By Payment Type.xlsx")
     build_all_payments(XLSX_DIR / "All Payments.xlsx")
     build_ar_aging(XLSX_DIR / "AR Invoice Aging.xlsx")
