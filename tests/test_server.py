@@ -81,7 +81,7 @@ def test_ingest_rejects_oversized_pdf_without_touching_filesystem(
     )
 
     assert resp.status_code == 413
-    assert resp.json()["detail"] == "PDF too large"
+    assert resp.json()["detail"] == "upload too large"
     assert not (tmp_path / "inbox").exists()
 
 
@@ -103,10 +103,12 @@ def test_ingest_accepts_a_pdf_at_exactly_the_size_limit(db_url, founding_org, tm
     )
 
     assert resp.status_code != 413
-    assert resp.json()["detail"] != "PDF too large"
+    assert resp.json()["detail"] != "upload too large"
 
 
-def test_ingest_rejects_non_pdf_without_touching_filesystem(db_url, founding_org, tmp_path):
+def test_ingest_refuses_bytes_that_are_neither(db_url, founding_org, tmp_path):
+    """Neither PDF nor XLSX magic: refused before the inbox exists. The suffix
+    says .pdf and the content type says PDF; only the bytes decide."""
     client = TestClient(create_app(inbox_dir=tmp_path / "inbox",
                                    processed_dir=tmp_path / "processed",
                                    failed_dir=tmp_path / "failed",
@@ -118,5 +120,32 @@ def test_ingest_rejects_non_pdf_without_touching_filesystem(db_url, founding_org
     )
 
     assert resp.status_code == 422
-    assert resp.json()["detail"] == "upload must be a PDF"
+    assert resp.json()["detail"] == "upload must be a PDF or XLSX"
+    assert "PDF or XLSX" in resp.json()["detail"]
     assert not (tmp_path / "inbox").exists()
+
+
+def test_ingest_accepts_an_xlsx_workbook(db_url, founding_org, tmp_path):
+    """A HotelKey spreadsheet export goes through /ingest exactly as a PDF does:
+    the reader dispatches on magic bytes, detection resolves the seeded HKDEMO
+    property, and the response names the report type."""
+    _seed()
+    client = TestClient(create_app(inbox_dir=tmp_path / "inbox",
+                                   processed_dir=tmp_path / "processed",
+                                   failed_dir=tmp_path / "failed",
+                                   token_verifier=_VERIFIER))
+    client.headers["Authorization"] = f"Bearer {_MINT(roles=['accountant'])}"
+    workbook = Path("tests/fixtures/hotelkey/All Payments.xlsx")
+
+    resp = client.post(
+        "/ingest",
+        files={"file": (workbook.name, workbook.read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["pms_source"] == "HOTELKEY"
+    assert body["property_id"] == "HKDEMO"
+    assert body["report_type"] == "all_payments"
+    assert body["business_date"] == "2026-08-13"

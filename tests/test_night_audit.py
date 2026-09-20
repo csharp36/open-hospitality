@@ -41,17 +41,20 @@ def _admin_headers(mint, db_session):
     return {"Authorization": f"Bearer {tok}"}
 
 
-def _seed_ledger_facts(db_session, facts, pid="HISJ", tag="lf"):
-    """Promote (code, kind, amount, on) rows as OPERA trial-balance ledger facts."""
+def _seed_ledger_facts(
+    db_session, facts, pid="HISJ", tag="lf", source="OPERA", report_type="trial_balance",
+):
+    """Promote (code, kind, amount, on) rows as ledger facts for `source` —
+    OPERA trial-balance rows unless a caller says otherwise."""
     from usali.models import IngestBatch, PmsLedgerBalanceStage, UsaliLedgerBalanceFact
 
-    batch = IngestBatch(pms_source="OPERA", report_type="trial_balance",
+    batch = IngestBatch(pms_source=source, report_type=report_type,
                         source_file=f"{tag}.pdf", file_hash=f"{tag}-h")
     db_session.add(batch)
     db_session.flush()
     for code, kind, amount, on in facts:
         stage = PmsLedgerBalanceStage(
-            property_id=pid, pms_source="OPERA", report_type="trial_balance",
+            property_id=pid, pms_source=source, report_type=report_type,
             business_date=on, ledger_label=code, kind=kind, amount=amount,
             source_file=f"{tag}.pdf", row_hash=f"{tag}-{code}-{on}",
             ingest_batch_id=batch.batch_id,
@@ -59,7 +62,7 @@ def _seed_ledger_facts(db_session, facts, pid="HISJ", tag="lf"):
         db_session.add(stage)
         db_session.flush()
         db_session.add(UsaliLedgerBalanceFact(
-            property_id=pid, pms_source="OPERA", business_date=on,
+            property_id=pid, pms_source=source, business_date=on,
             ledger_code=code, ledger_name=code, kind=kind, amount=amount,
             ingest_batch_id=batch.batch_id, ledger_stage_id=stage.ledger_stage_id,
         ))
@@ -587,6 +590,69 @@ def test_pack_upload_rejects_wrong_business_date(db_session, db_engine, tmp_path
         select(func.count()).select_from(PmsDailyFinancialStage)
     ).scalar_one()
     assert staged == 0
+
+
+# ---- HotelKey: four per-report uploads, three of them spreadsheets ---------
+
+
+def _seed_hotelkey_world(db_session):
+    from usali.mapping.loader import load_mappings
+    from usali.mapping.property_registry import seed_properties
+    from usali.mapping.schedules import seed_schedules
+
+    db_session.merge(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS, name="Org"))
+    db_session.commit()
+    seed_schedules(db_session, "mapping/usali_schedules.yaml")
+    load_mappings(db_session, "mapping/hotelkey.yaml")
+    seed_properties(db_session, "mapping/properties.yaml")
+    db_session.commit()
+
+
+def test_hotelkey_slots_are_the_four_exports(db_session):
+    """One slot per export, in the vendor's own order; the mode stays
+    per-report (HotelKey is not in PACK_UPLOAD)."""
+    from usali.night_audit import PACK_UPLOAD
+
+    _org_and_property(db_session, pid="HKDEMO", pms_source="HOTELKEY")
+    slots = slot_status(db_session, "HKDEMO", date(2026, 8, 13), "HOTELKEY")
+    assert [(s["report_type"], s["label"], s["landed"]) for s in slots] == [
+        ("hotel_statistics", "Hotel Statistics", False),
+        ("settlement", "Settlement By Payment Type", False),
+        ("all_payments", "All Payments", False),
+        ("ar_aging", "AR Invoice Aging", False),
+    ]
+    assert "HOTELKEY" not in PACK_UPLOAD
+
+
+def test_hotelkey_night_audit_accepts_a_spreadsheet_slot(db_session, db_engine, tmp_path):
+    """The night-audit upload takes an XLSX export: magic-byte accepted, read
+    through the content-dispatching reader, detected as HKDEMO, dated against
+    the current business date, and landed in its slot."""
+    from pathlib import Path
+
+    _seed_hotelkey_world(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    db_session.add(NightAuditState(property_id="HKDEMO",
+                                   current_business_date=date(2026, 8, 13)))
+    db_session.commit()
+
+    workbook = Path("tests/fixtures/hotelkey/AR Invoice Aging.xlsx")
+    r = client.post(
+        "/api/properties/HKDEMO/night-audit/upload", headers=headers,
+        files={"file": (workbook.name, workbook.read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["report_type"] == "ar_aging"
+    assert body["upload_mode"] == "reports"
+    landed = {s["report_type"]: s["landed"] for s in body["slots"]}
+    assert landed == {"hotel_statistics": False, "settlement": False,
+                      "all_payments": False, "ar_aging": True}
+    assert body["all_reports_landed"] is False
 
 
 # ---- direct-edit adjustment (cross-night correction) -----------------------
@@ -1131,9 +1197,9 @@ def test_adjust_reason_is_validated_after_strip(db_session, db_engine, tmp_path)
 
 
 def test_upload_refuses_non_pdf_bytes(db_session, db_engine, tmp_path):
-    """The /ingest %PDF- magic refusal, mirrored — and checked before the
-    inbox write, so a non-PDF blob leaves nothing in the inbox and nothing
-    staged."""
+    """The /ingest magic-byte refusal (PDF or XLSX), mirrored — and checked
+    before the inbox write, so a blob that is neither leaves nothing in the
+    inbox and nothing staged."""
     from sqlalchemy import func, select
     from usali.models import PmsDailyFinancialStage
 
@@ -1147,7 +1213,7 @@ def test_upload_refuses_non_pdf_bytes(db_session, db_engine, tmp_path):
         files={"file": ("evil.pdf", b"MZ this is not a pdf", "application/pdf")},
     )
     assert r.status_code == 422, r.text
-    assert "PDF" in r.json()["detail"]
+    assert "PDF or XLSX" in r.json()["detail"]
     inbox = tmp_path / "inbox"
     assert not inbox.exists() or not any(inbox.iterdir())
     staged = db_session.execute(

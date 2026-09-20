@@ -52,6 +52,18 @@ REQUIRED_REPORTS: dict[str, tuple[tuple[str, str], ...]] = {
         ("hotel_journal", "Hotel Journal Summary"),
         ("hotel_statistics", "Hotel Statistics"),
     ),
+    # HotelKey exports four files per night (one PDF, three XLSX); each is its
+    # own upload. All Payments duplicates the settlement Summary block, but the
+    # auditor exports what the vendor produces, so it is a slot rather than a
+    # refusal. HotelKey is deliberately NOT in LEDGER_BLOCK_REPORT: its AR aging
+    # yields AR balances only, and the ledger identity check below sums the four
+    # Opera sub-ledgers, which HotelKey does not report.
+    "HOTELKEY": (
+        ("hotel_statistics", "Hotel Statistics"),
+        ("settlement", "Settlement By Payment Type"),
+        ("all_payments", "All Payments"),
+        ("ar_aging", "AR Invoice Aging"),
+    ),
 }
 
 # pms_source -> single-upload label. A PMS listed here takes ONE drop (the

@@ -14,6 +14,7 @@ from starlette.types import Scope
 from usali import integrations
 from usali.adaptors import autoclerk_transaction_summary, opera_trial_balance
 from usali.adaptors.pdf import extract_words_from_bytes
+from usali.adaptors.reader import ACCEPTED_FORMATS, is_pdf, is_xlsx
 from usali.auth import (
     TokenVerifier,
     request_session_factory,
@@ -521,9 +522,15 @@ def create_app(
 
             payload = await file.read(_MAX_PDF_BYTES + 1)
             if len(payload) > _MAX_PDF_BYTES:
-                raise HTTPException(status_code=413, detail="PDF too large")
-            if not payload.startswith(b"%PDF-"):
-                raise HTTPException(status_code=422, detail="upload must be a PDF")
+                raise HTTPException(status_code=413, detail="upload too large")
+            # Magic bytes, never the suffix: the is_pdf/is_xlsx pair that
+            # usali.adaptors.reader.read_words_from_bytes dispatches on, and
+            # ingestion.process_file reads through read_words, so this
+            # boundary and the reader decide a format the same way.
+            if not (is_pdf(payload) or is_xlsx(payload)):
+                raise HTTPException(
+                    status_code=422, detail=f"upload must be a {ACCEPTED_FORMATS}"
+                )
 
             inbox.mkdir(parents=True, exist_ok=True)
             dest = inbox / upload_name
