@@ -64,3 +64,11 @@ def test_only_the_first_worksheet_is_read():
 def test_not_a_workbook_raises():
     with pytest.raises(ValueError, match="not an XLSX workbook"):
         extract_words_from_xlsx_bytes(b"PK\x03\x04 not really a zip")
+
+
+def test_cell_text_renders_a_whole_number_float_without_a_point():
+    from usali.adaptors.xlsx import _cell_text
+
+    assert _cell_text(700.0) == "700"
+    assert _cell_text(150.5) == "150.5"
+    assert _cell_text(361.63) == "361.63"

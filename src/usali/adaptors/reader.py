@@ -1,9 +1,10 @@
 """Content-dispatching reader: the one place a file's format is decided.
 
 Magic bytes, never the suffix -- a renamed file must not change how it is
-parsed, and the upload endpoints already refuse on magic (server.py /ingest,
-night_audit_api upload). ``read_words`` is what ``ingestion.process_file``,
-the night-audit upload and the watch folder call.
+parsed, so a caller that checks magic before writing to disk and this reader
+agree on what a format is. ``read_words`` is the one entry point for reading
+a report file; a caller that needs Words from a path or bytes comes here
+rather than choosing a reader itself.
 """
 
 from pathlib import Path

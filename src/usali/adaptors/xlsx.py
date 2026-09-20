@@ -2,8 +2,9 @@
 
 Every non-empty cell becomes one Word on a synthetic grid: ``x0`` is the
 1-based column index times ``XLSX_COL_STEP`` and ``top`` the 1-based row index
-times ``XLSX_ROW_STEP``. ``cluster_rows`` (y_tol 3.0) then recovers the sheet's
-rows exactly, and a parser can recover the column with
+times ``XLSX_ROW_STEP``. ``cluster_rows`` at its default tolerance then
+recovers the sheet's rows exactly, because rows sit ``XLSX_ROW_STEP`` apart,
+well beyond that tolerance. A parser can recover the column with
 ``round(x0 / XLSX_COL_STEP)``. A cell's text is its value rendered exactly:
 integers as digits, floats through ``Decimal(repr(...))`` so ``361.63`` stays
 ``361.63``, midnight datetimes as ISO dates, other datetimes and times as ISO.
@@ -36,7 +37,11 @@ def _cell_text(value: object) -> str | None:
         return str(value)
     if isinstance(value, float):
         if value.is_integer():
-            return str(int(value))  # 700.0 -> "700": an Excel amount, not a float artefact
+            # openpyxl yields int for a whole number in its own files and float
+            # when the sheet XML spells one with a point; either way an amount
+            # prints without it. Pinned by
+            # test_cell_text_renders_a_whole_number_float_without_a_point.
+            return str(int(value))
         return format(Decimal(repr(value)), "f")
     if isinstance(value, datetime):
         if value.time() == time(0, 0):
