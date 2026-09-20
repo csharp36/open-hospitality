@@ -20,7 +20,9 @@ test_financial_section_totals_are_statistics_and_their_lines_are_not); the
 header row's prefix names a sub-section when it is not "Description" ("Room
 Revenue", "Misc Revenue");
 rows that repeat the report title are the running footer and are skipped
-(test_page_furniture_never_becomes_a_metric).
+(test_page_furniture_never_becomes_a_metric). A page break may repeat the
+header row with no heading; the previous heading carries
+(test_rows_after_the_page_three_bare_header_are_parsed).
 
 Columns are located from the header row's five period tokens by x0 (all five
 present, ascending) and values are assigned to the NEAREST column, because
@@ -32,10 +34,17 @@ Periods are emitted canonical -- DAY / MTD / YTD with ``is_prior_year`` for
 the two LY columns -- the labels ``stats_promote._CANONICAL_PERIODS`` maps
 (tests/test_stats_promote.py::test_promotes_curated_metrics_and_canonical_periods).
 
+The statistics side is lenient about non-numeric tokens in the value zone --
+a ``(6)`` or a stray ``,`` is skipped
+(test_stray_commas_in_the_value_zone_are_not_numbers) -- while the financial
+side refuses a line missing a column.
+
 ``parse_financial_rows`` returns the Revenue Statistics, Taxes and Payments
 lines (never the "Totals" rows) as StagedRecords at the Actual Today value, and
-refuses the file if any of those sections does not foot to its Totals row
-(test_a_financial_section_that_does_not_foot_is_refused). D-OH22.6 stages
+refuses the file if any of those sections, or any sub-section that appeared
+under them, does not foot to its Totals row
+(test_a_financial_section_that_does_not_foot_is_refused,
+test_a_report_without_misc_revenue_still_foots). D-OH22.6 stages
 these rows and does not promote them; the section Totals are emitted as
 statistics instead, labelled "<section> / Totals".
 """
@@ -48,7 +57,8 @@ from decimal import Decimal
 from usali.adaptors.pdf import Word, cluster_rows
 from usali.schemas import StagedRecord, StatisticRecord
 
-_NUM_RE = re.compile(r"^-?[\d,]+(\.\d+)?$")
+# Grouped ("1,120,000.00") or plain ("2480") digits; a stray "," or "2,,200" is not a number.
+_NUM_RE = re.compile(r"^-?\d{1,3}(,\d{3})*(\.\d+)?$|^-?\d+(\.\d+)?$")
 _PERIOD_TOKENS = ("Today", "M-T-D", "LY-M-T-D", "Y-T-D", "LY-T-D")
 # column index -> (canonical period, is_prior_year)
 _PERIODS: list[tuple[str, bool]] = [("DAY", False), ("MTD", False), ("MTD", True),
@@ -99,19 +109,28 @@ def _nearest_column(x0: float, anchors: list[float]) -> int:
     return min(range(len(anchors)), key=lambda i: abs(anchors[i] - x0))
 
 
-def _blocks(words: list[Word], y_tol: float) -> list[_Block]:
+def _blocks(words: list[Word], y_tol: float) -> tuple[list[_Block], list[tuple[str, str]]]:
+    """Blocks in page order, plus every (heading, sub-section) that had a header row."""
     rows = [sorted(r, key=lambda w: w.x0) for r in cluster_rows(words, y_tol)]
     headers = [_header(cells) for cells in rows]
     blocks: list[_Block] = []
+    subsections: list[tuple[str, str]] = []
     header: _Header | None = None
     heading = ""     # last heading row seen ("Room Statistics", "Revenue Statistics", ...)
     section = ""     # heading, or the header row's prefix when it names a sub-section
+    header_since_totals = False
     for i, cells in enumerate(rows):
         found = headers[i]
         if found is not None:
             header = found
+            header_since_totals = True
             prefix = header.prefix
-            section = prefix if prefix and prefix != "Description" else heading
+            if prefix and prefix != "Description":
+                section = prefix
+                if (heading, section) not in subsections:
+                    subsections.append((heading, section))
+            else:
+                section = heading
             continue
         text = " ".join(w.text for w in cells)
         if text == _REPORT_TITLE:
@@ -143,23 +162,30 @@ def _blocks(words: list[Word], y_tol: float) -> list[_Block]:
                     f"HotelKey Hotel Statistics row {label!r} has two values under one column"
                 )
             block.values[column] = Decimal(w.text.replace(",", ""))
-        if (label == _TOTALS and blocks and blocks[-1].label == _TOTALS
-                and blocks[-1].heading == heading):
-            block.section = heading       # Totals right after Totals: the enclosing section's
+        if label == _TOTALS:
+            # Totals directly after Totals with no header row between them is
+            # the enclosing section's grand total. A header between them means
+            # a sub-section with no lines, whose own Totals this is
+            # (test_an_empty_sub_section_keeps_its_own_totals_row).
+            if (blocks and blocks[-1].label == _TOTALS and blocks[-1].heading == heading
+                    and not header_since_totals):
+                block.section = heading
+            header_since_totals = False
         blocks.append(block)
     if header is None:
         raise ValueError(
             "HotelKey Hotel Statistics column header not found: expected a row carrying "
             "'Today', 'M-T-D', 'LY-M-T-D', 'Y-T-D' and 'LY-T-D' in ascending column order"
         )
-    return blocks
+    return blocks, subsections
 
 
 def parse_hotel_statistics(
     words: list[Word], *, property_id: str, business_date: date, y_tol: float = 3.0
 ) -> list[StatisticRecord]:
     out: list[StatisticRecord] = []
-    for block in _blocks(words, y_tol):
+    blocks, _ = _blocks(words, y_tol)
+    for block in blocks:
         financial = block.heading in _FINANCIAL_HEADINGS
         if financial and block.label != _TOTALS:
             continue  # a financial line: parse_financial_rows owns it
@@ -187,7 +213,9 @@ def parse_financial_rows(
     out: list[StagedRecord] = []
     sums: dict[str, list[Decimal]] = {}       # section -> per-column running sums
     totals: dict[str, list[Decimal]] = {}     # section -> the Totals row's five values
-    for block in _blocks(words, y_tol):
+    zeros = [Decimal("0")] * len(_PERIODS)
+    blocks, subsections = _blocks(words, y_tol)
+    for block in blocks:
         if block.heading not in _FINANCIAL_HEADINGS:
             continue
         if len(block.values) != len(_PERIODS):
@@ -199,7 +227,7 @@ def parse_financial_rows(
         if block.label == _TOTALS:
             totals[block.section] = column_values
             continue
-        acc = sums.setdefault(block.section, [Decimal("0")] * len(_PERIODS))
+        acc = sums.setdefault(block.section, list(zeros))
         for c, v in enumerate(column_values):
             acc[c] += v
         out.append(
@@ -214,16 +242,24 @@ def parse_financial_rows(
                 section=block.section,
             )
         )
-    for section in ("Room Revenue", "Misc Revenue", "Revenue Statistics", "Taxes", "Payments"):
+    # Which sub-sections exist is the report's decision: every one that had a
+    # header row must close with a Totals row, as must the three sections.
+    financial_subsections = [(h, s) for h, s in subsections if h in _FINANCIAL_HEADINGS]
+    for section in ("Revenue Statistics", "Taxes", "Payments", *(s for _, s in financial_subsections)):
         if section not in totals:
             raise ValueError(f"HotelKey Hotel Statistics has no Totals row for {section!r}")
     for section, expected in totals.items():
-        if section == "Revenue Statistics":
-            got = [a + b for a, b in zip(sums["Room Revenue"], sums["Misc Revenue"])]
+        subs = [s for h, s in financial_subsections if h == section]
+        if subs:
+            # Revenue Statistics has no lines of its own; its Totals row is the
+            # grand total of the sub-section lines, so it foots against their sums.
+            got = [sum(col, Decimal("0")) for col in zip(*(sums.get(s, zeros) for s in subs))]
         else:
-            got = sums.get(section, [Decimal("0")] * len(_PERIODS))
+            got = sums.get(section, zeros)
         if got != expected:
             raise ValueError(
-                f"HotelKey {section} does not foot: lines sum to {got}, Totals row says {expected}"
+                f"HotelKey {section} does not foot: lines sum to "
+                f"{', '.join(str(v) for v in got)}, Totals row says "
+                f"{', '.join(str(v) for v in expected)}"
             )
     return out

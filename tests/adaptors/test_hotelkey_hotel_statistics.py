@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from usali.adaptors.hotelkey_hotel_statistics import parse_financial_rows, parse_hotel_statistics
-from usali.adaptors.pdf import Word
+from usali.adaptors.pdf import Word, cluster_rows
 
 BD = date(2026, 8, 13)
 
@@ -94,7 +94,6 @@ def test_financial_rows_are_day_grain_and_section_qualified():
 
 def _mutate(words: list[Word], label: str, old: str, new: str) -> list[Word]:
     # Change one value token in the row whose first label token is `label`.
-    from usali.adaptors.pdf import cluster_rows
     out = list(words)
     position = {id(w): i for i, w in enumerate(out)}
     for row in cluster_rows(words):
@@ -137,3 +136,87 @@ def test_two_values_under_one_column_are_refused():
         ("2,480", 334.0), ("18,160", 424.0), ("18,160", 517.0)]]
     with pytest.raises(ValueError, match="two values under one column"):
         parse_hotel_statistics(header + row, property_id="HKDEMO", business_date=BD)
+
+
+# Hand-built pages: one Word per (text, x0), rows 14pt apart, header tokens
+# and value x0s where the fixture puts them.
+_HEADER_TOKENS = [("Actual", 134.0), ("Today", 160.0), ("M-T-D", 240.0), ("LY-M-T-D", 326.0),
+                  ("Y-T-D", 426.0), ("LY-T-D", 516.0)]
+_VALUE_X0 = (155.0, 242.0, 334.0, 424.0, 517.0)
+
+
+def _hand(rows: list[list[tuple[str, float]]]) -> list[Word]:
+    return [Word(text=t, x0=x, top=100.0 + 14.0 * i) for i, row in enumerate(rows) for t, x in row]
+
+
+def _heading(text: str) -> list[tuple[str, float]]:
+    return [(tok, 24.0 + 30.0 * i) for i, tok in enumerate(text.split())]
+
+
+def _header(prefix: str = "Description") -> list[tuple[str, float]]:
+    return [(tok, 37.0 + 25.0 * i) for i, tok in enumerate(prefix.split())] + _HEADER_TOKENS
+
+
+def _line(label: str, *values: str) -> list[tuple[str, float]]:
+    cells = [(tok, 30.0 + 20.0 * i) for i, tok in enumerate(label.split())]
+    return cells + list(zip(values, _VALUE_X0))
+
+
+def _five(value: str) -> list[str]:
+    return [value] * 5
+
+
+def _taxes_and_payments() -> list[list[tuple[str, float]]]:
+    return [
+        _heading("Taxes"), _header(),
+        _line("CITY TAX", *_five("5.00")), _line("Totals", *_five("5.00")),
+        _heading("Payments"), _header(),
+        _line("VISA", *_five("9.00")), _line("Totals", *_five("9.00")),
+    ]
+
+
+def test_an_empty_sub_section_keeps_its_own_totals_row():
+    # Misc Revenue on a day with no misc lines: a header row, then its Totals
+    # row directly after Room Revenue's Totals. That Totals row is Misc
+    # Revenue's, not the enclosing section's; the grand total follows it.
+    words = _hand([
+        _heading("Revenue Statistics"),
+        _header("Room Revenue"),
+        _line("Taxable Room Revenue", *_five("100.00")), _line("Totals", *_five("100.00")),
+        _header("Misc Revenue"),
+        _line("Totals", *_five("0.00")),
+        _line("Totals", *_five("100.00")),
+        *_taxes_and_payments(),
+    ])
+    fin = parse_financial_rows(words, property_id="HKDEMO", business_date=BD)
+    assert [(r.section, r.pms_trx_code) for r in fin] == [
+        ("Room Revenue", "Taxable Room Revenue"), ("Taxes", "CITY TAX"), ("Payments", "VISA")]
+    labels = {r.metric_label for r in parse_hotel_statistics(words, property_id="HKDEMO", business_date=BD)}
+    assert {"Room Revenue / Totals", "Misc Revenue / Totals", "Revenue Statistics / Totals"} <= labels
+
+
+def test_a_report_without_misc_revenue_still_foots():
+    words = _hand([
+        _heading("Revenue Statistics"),
+        _header("Room Revenue"),
+        _line("Taxable Room Revenue", *_five("100.00")), _line("Exempt Room Revenue", *_five("20.00")),
+        _line("Totals", *_five("120.00")),
+        _line("Totals", *_five("120.00")),  # grand total: the one sub-section that appeared
+        *_taxes_and_payments(),
+    ])
+    fin = parse_financial_rows(words, property_id="HKDEMO", business_date=BD)
+    assert [(r.section, r.pms_trx_code) for r in fin] == [
+        ("Room Revenue", "Taxable Room Revenue"), ("Room Revenue", "Exempt Room Revenue"),
+        ("Taxes", "CITY TAX"), ("Payments", "VISA")]
+    labels = {r.metric_label for r in parse_hotel_statistics(words, property_id="HKDEMO", business_date=BD)}
+    assert "Revenue Statistics / Totals" in labels and "Misc Revenue / Totals" not in labels
+
+
+def test_stray_commas_in_the_value_zone_are_not_numbers():
+    words = _hand([
+        _heading("Room Statistics"), _header(),
+        [("Total", 43.0), ("Rooms", 63.0), ("80", 155.0), (",", 200.0), ("2,,200", 242.0), ("2,480", 334.0)],
+    ])
+    recs = parse_hotel_statistics(words, property_id="HKDEMO", business_date=BD)
+    assert {(r.period_label, r.is_prior_year): r.value for r in recs} == {
+        ("DAY", False): Decimal("80"), ("MTD", True): Decimal("2480")}
