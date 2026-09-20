@@ -99,3 +99,19 @@ def test_unknown_skytouch_section_raises():
     words = _hdr("Vacant", "Room", "List", "Property", "Name:", "Redstone", "Test", "Inn")
     with pytest.raises(ValueError):
         detect(words, _ST_REGISTRY)
+
+
+def test_skytouch_property_uploading_hotelkey_statistics_fails_as_unrecognised():
+    # The HotelKey statistics header (the real sample's words, in extraction
+    # order) names the SkyTouch-registered property and titles itself "Hotel
+    # Statistics", but carries no `Property Name:` banner. It must be an
+    # unrecognised REPORT TYPE, not a SkyTouch statistics report that then
+    # trips the "registered for" cross-check.
+    words = _hdr(
+        "Redstone", "Test", "Inn", "Redstone,", "TX", "Date:", "Aug", "13,", "2026",
+        "Report", "Run", "Date:", "Aug", "14", "2026",
+        "Report", "Run", "Time:", "10:04:20", "AM", "User:", "Sample",
+        "Hotel", "Statistics", "Room", "Statistics", "Description", "Actual", "Today",
+    )
+    with pytest.raises(ValueError, match="report type"):
+        detect(words, _ST_REGISTRY)

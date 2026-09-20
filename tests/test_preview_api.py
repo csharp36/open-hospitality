@@ -151,3 +151,34 @@ def test_preview_persists_nothing(tmp_path: Path) -> None:
     # (b) nothing was spooled to any of the ingest dirs.
     for d in (inbox, processed, failed):
         assert not d.exists() or not any(d.iterdir())
+
+
+def test_preview_hotelkey_statistics_is_named_hotelkey(client: TestClient, monkeypatch) -> None:
+    # The customer-visible pin for the HOTEL STATISTICS collision: the real
+    # HotelKey sample's header words (extraction order, file never committed)
+    # used to preview as SkyTouch, because both vendors title the report
+    # "Hotel Statistics".
+    import usali.server as srv
+    from usali.adaptors.pdf import Word
+
+    header = [
+        "Summit", "Lodge", "Redstone,", "TX", "Date:", "Aug", "13,", "2026", "RDQSM",
+        "Report", "Run", "Date:", "Aug", "14", "2026", "S",
+        "Report", "Run", "Time:", "10:04:20", "AM", "MOCK", "DATA", "User:", "Sample",
+        "DEVUSER", "RDQSM", "Hotel", "Statistics",
+        "Room", "Statistics", "Description", "Actual", "Today", "M-T-D", "LY-M-T-D",
+        "Y-T-D", "LY-T-D",
+    ]
+    monkeypatch.setattr(
+        srv,
+        "extract_words_from_bytes",
+        lambda data, max_pages=None: [
+            Word(text=t, x0=float(i), top=0.0) for i, t in enumerate(header)
+        ],
+    )
+    r = client.post("/api/preview", content=b"%PDF-xx", headers=_PDF_HEADERS)
+    assert r.json() == {
+        "status": "unsupported",
+        "vendor": "HotelKey",
+        "reason": "vendor_not_supported",
+    }
