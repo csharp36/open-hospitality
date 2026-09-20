@@ -243,7 +243,10 @@ def _run_hotelkey_hotel_statistics(
     # D-OH22.6: the revenue, tax and payment lines ride under the same batch and
     # are NOT transformed -- no usali_financial_fact row, so gl_posting finds no
     # plan and writes nothing. Held from this side by
-    # tests/test_hotelkey_end_to_end.py::test_hotelkey_never_produces_financial_facts_or_journal_entries.
+    # tests/test_hotelkey_end_to_end.py::test_hotelkey_never_produces_financial_facts_or_journal_entries
+    # and from the CLI's `transform --source HOTELKEY` by
+    # tests/test_hotelkey_end_to_end.py::test_the_transform_cli_cannot_promote_hotelkey_rows
+    # (transform() refuses a source in SOURCE_NOTICES).
     stage_records(session, financial, source_file=path.name, file_hash=file_hash, batch=batch)
     batch.row_count += len(financial)
     r = promote_statistics(

@@ -14,9 +14,12 @@ import pytest
 from sqlalchemy import func, select
 
 from usali import gl_chart
+from usali.db import make_session_factory
 from usali.ingestion import ProcessingError, process_file
+from usali.mapping.property_registry import create_first_property, seed_properties
+from usali.tenancy import bind_org_context
+from usali.transform import transform
 from usali.mapping.loader import load_mappings
-from usali.mapping.property_registry import seed_properties
 from usali.mapping.schedules import seed_schedules
 from usali.models import (
     GlPostingLedger,
@@ -26,6 +29,7 @@ from usali.models import (
     MappingException,
     PmsDailyFinancialStage,
     PmsDailyStatisticStage,
+    PmsLedgerBalanceStage,
     UsaliFinancialFact,
     UsaliLedgerBalanceFact,
     UsaliStatisticFact,
@@ -130,6 +134,26 @@ def test_hotelkey_never_produces_financial_facts_or_journal_entries(seeded, tmp_
     assert ledger_rows == [], [(r.status, r.message) for r in ledger_rows]
 
 
+def test_the_transform_cli_cannot_promote_hotelkey_rows(seeded, tmp_path):
+    """The handlers never call transform(); this closes the other door. `usali
+    transform --source HOTELKEY` calls transform() directly, and without a gate
+    it would promote the staged rows and the next upload's gl_posting would
+    post them. Same GL-ON setup as the journal test, so a promoted row WOULD
+    have had a chart to post against."""
+    gl_chart.seed_chart(seeded, org_id=1)
+    _seed_calendar(seeded, "HKDEMO")
+    seeded.commit()
+    _ingest(seeded, tmp_path, PDF)
+    with pytest.raises(ValueError, match=r"HOTELKEY .*D-OH22\.6.*never transformed"):
+        transform(seeded, source="HOTELKEY", business_date=BD, edition=12)
+    seeded.rollback()
+    assert seeded.scalar(
+        select(func.count()).select_from(UsaliFinancialFact)
+        .where(UsaliFinancialFact.pms_source == "HOTELKEY")
+    ) == 0
+    assert seeded.scalar(select(func.count()).select_from(JournalEntry)) == 0
+
+
 def test_hotelkey_statistics_file_opens_exactly_one_batch(seeded, tmp_path):
     _ingest(seeded, tmp_path, PDF)
     batches = seeded.scalars(select(IngestBatch)).all()
@@ -184,3 +208,56 @@ def test_reingest_is_idempotent(seeded, tmp_path):
     # One IngestBatch per process_file call is the contract; row idempotency is the
     # row_hash's (file_hash + ordinal), not the batch's.
     assert seeded.scalar(select(func.count()).select_from(IngestBatch)) == 2
+
+
+_TENANT_TABLES = (
+    IngestBatch,
+    PmsDailyFinancialStage,
+    PmsDailyStatisticStage,
+    PmsLedgerBalanceStage,
+    UsaliStatisticFact,
+    UsaliLedgerBalanceFact,
+    IngestionCoverage,
+)
+
+
+def test_hotelkey_ingest_under_the_app_role_stays_inside_its_org(
+    db_session, two_tenant_world, app_role_engine, tmp_path
+):
+    """The whole HotelKey path on an org-2-bound `usali_app` session: a
+    signup-created property, all four exports through process_file, and every
+    row it writes carries org 2. Org 1 holds the seeded HKDEMO under the SAME
+    match phrase, so detection under org 2 has a decoy to get wrong; an
+    org-1-bound session then sees none of org 2's rows."""
+    seed_schedules(db_session, "mapping/usali_schedules.yaml")
+    load_mappings(db_session, "mapping/hotelkey.yaml")
+    seed_properties(db_session, "mapping/properties.yaml")  # HKDEMO, org 1
+    db_session.commit()
+    org2 = two_tenant_world.org2_id
+    factory = make_session_factory(app_role_engine)
+
+    with factory() as s:
+        bind_org_context(s, org2)
+        pid = create_first_property(s, org2, name="Lakeside Test Lodge", pms_source="hotelkey")
+        s.commit()
+        for src in (
+            PDF,
+            FIX / "Settlement By Payment Type.xlsx",
+            FIX / "All Payments.xlsx",
+            FIX / "AR Invoice Aging.xlsx",
+        ):
+            assert _ingest(s, tmp_path, src).property_id == pid
+
+    with factory() as s:
+        bind_org_context(s, org2)
+        for table in _TENANT_TABLES:
+            rows = s.scalars(select(table)).all()
+            assert rows, table.__tablename__
+            assert {r.org_id for r in rows} == {org2}, table.__tablename__
+            if hasattr(table, "property_id"):
+                assert {r.property_id for r in rows} == {pid}, table.__tablename__
+
+    with factory() as s:
+        bind_org_context(s, 1)
+        for table in _TENANT_TABLES:
+            assert s.scalar(select(func.count()).select_from(table)) == 0, table.__tablename__

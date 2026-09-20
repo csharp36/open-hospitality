@@ -4,7 +4,9 @@
 # names), the sample is mock, and no real export exists to calibrate against,
 # so EVERY row is confidence: LOW / review_status: needs-review (D-OH22.4).
 # These rows are staged and never promoted (D-OH22.6); they exist so the
-# coverage worklist can show an operator what would be classified how.
+# coverage worklist can show an operator what would be classified how. The
+# refusal lives in usali.transform.transform and is pinned by
+# tests/test_hotelkey_end_to_end.py::test_the_transform_cli_cannot_promote_hotelkey_rows.
 # DIFFERENCE DROP is deliberately unmapped: a cash-handling variance whose
 # meaning changes the statement -- let the worklist ask.
 - {source: HOTELKEY, code: "Taxable Room Revenue", edition: 12, schedule_id: 1, major: "Operated Departments", sub: "Rooms", line_item: "Room Revenue", gl_account_code: "4000", confidence: LOW, review_status: needs-review, notes: "Revenue Statistics / Room Revenue"}

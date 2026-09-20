@@ -348,9 +348,13 @@ def transform_cmd(
 ) -> None:
     """Map staged rows to usali_financial_fact and reconcile."""
     with _session_factory()() as s:
-        result = transform(
-            s, source=source, business_date=date.fromisoformat(business_date), edition=edition
-        )
+        try:
+            result = transform(
+                s, source=source, business_date=date.fromisoformat(business_date), edition=edition
+            )
+        except ValueError as exc:
+            typer.echo(f"FAILED: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
         s.commit()
     typer.echo(
         f"mapped={result.mapped} unmapped={result.unmapped} "
