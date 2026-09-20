@@ -111,6 +111,12 @@ export interface SosReport {
   // Pillar C3: estimate vs provider-actual for the pay periods intersecting
   // the window. Null when no processed pay run touches it.
   labor_variance: LaborVariance | null
+  // Set by the API for a source that does not back the statement's revenue
+  // side; src/usali/reporting.py chooses it, and tests/test_sos_source_notice.py::
+  // test_statistics_only_statement_carries_the_notice_and_the_statistics pins
+  // the shape it arrives with. Statement renders it in place of the revenue
+  // sections and keeps statistics and labor.
+  source_notice: string | null
 }
 
 // --- Coverage report --------------------------------------------------------

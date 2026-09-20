@@ -47,7 +47,7 @@ function pdf(name: string): File {
 }
 
 async function pickFiles(...files: File[]) {
-  const input = await screen.findByLabelText('PDF files')
+  const input = await screen.findByLabelText('PDF or XLSX files')
   fireEvent.change(input, { target: { files } })
 }
 
@@ -56,10 +56,10 @@ beforeEach(() => {
 })
 
 describe('UploadPage', () => {
-  it('accepts multiple .pdf files through the hidden picker input', async () => {
+  it('accepts multiple PDF or XLSX files through the hidden picker input', async () => {
     renderPage()
-    const input = await screen.findByLabelText('PDF files')
-    expect(input).toHaveAttribute('accept', '.pdf')
+    const input = await screen.findByLabelText('PDF or XLSX files')
+    expect(input).toHaveAttribute('accept', 'application/pdf,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     expect(input).toHaveAttribute('multiple')
     expect(input).toHaveAttribute('type', 'file')
   })
@@ -140,7 +140,7 @@ describe('UploadPage', () => {
     vi.mocked(postIngest).mockResolvedValue(OPERA_RESULT)
     renderPage()
 
-    const zone = await screen.findByText('Drag and drop PDF reports here')
+    const zone = await screen.findByText('Drag and drop PDF or XLSX reports here')
     fireEvent.drop(zone, { dataTransfer: { files: [pdf('dropped.pdf')] } })
 
     const card = await screen.findByRole('region', { name: 'Upload result: dropped.pdf' })
@@ -163,7 +163,7 @@ describe('UploadPage', () => {
 
     // Mid-batch: no drop-here affordance, and a drop attempt gets a visible
     // notice instead of a silent discard.
-    const zone = screen.getByText('Drag and drop PDF reports here')
+    const zone = screen.getByText('Drag and drop PDF or XLSX reports here')
     fireEvent.dragOver(zone)
     expect(zone.closest('div')?.className).not.toMatch(/border-accent/)
 

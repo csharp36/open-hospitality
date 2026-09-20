@@ -85,25 +85,29 @@ def render_sos_text(sos: SosReport) -> str:
         f"Property: {sos.property_id}    PMS source: {sos.pms_source}",
         _period_heading(sos),
         _EDITION_NOTE,
-        rule,
-        "",
-        "OPERATED DEPARTMENTS",
     ]
-    for dept in sos.operated_departments:
-        out.append(f"  {dept.sub_category}")
-        for line in dept.lines:
-            out.append(_amount_row(line.line_item, line.total, indent=4))
-        out.append(_amount_row(f"Total {dept.sub_category}", dept.total, indent=2))
+    if sos.source_notice is not None:
+        out.append(f"NOTE: {sos.source_notice}")
+    out.append(rule)
+    # Under a notice the revenue block is not printed at all: the notice says
+    # no revenue section is shown, and a 0.00 total would contradict it.
+    if sos.source_notice is None:
+        out += ["", "OPERATED DEPARTMENTS"]
+        for dept in sos.operated_departments:
+            out.append(f"  {dept.sub_category}")
+            for line in dept.lines:
+                out.append(_amount_row(line.line_item, line.total, indent=4))
+            out.append(_amount_row(f"Total {dept.sub_category}", dept.total, indent=2))
 
-    _line_section(
-        out,
-        "MISCELLANEOUS INCOME",
-        sos.misc_income,
-        "Total Miscellaneous Income",
-        sos.misc_income_total,
-    )
-    out.append("")
-    out.append(_amount_row("TOTAL OPERATING REVENUE", sos.total_operating_revenue))
+        _line_section(
+            out,
+            "MISCELLANEOUS INCOME",
+            sos.misc_income,
+            "Total Miscellaneous Income",
+            sos.misc_income_total,
+        )
+        out.append("")
+        out.append(_amount_row("TOTAL OPERATING REVENUE", sos.total_operating_revenue))
 
     if sos.rooms_segments:
         out.append("")
@@ -179,6 +183,7 @@ def render_sos_json(sos: SosReport) -> str:
         "business_date": None if sos.business_date is None else sos.business_date.isoformat(),
         "date_from": None if sos.date_from is None else sos.date_from.isoformat(),
         "date_to": None if sos.date_to is None else sos.date_to.isoformat(),
+        "source_notice": sos.source_notice,
         "operated_departments": [
             {
                 "sub_category": dept.sub_category,
@@ -248,6 +253,10 @@ def render_sos_csv(sos: SosReport) -> str:
         rows.append(
             ["meta", "date_to", "", "", "" if sos.date_to is None else sos.date_to.isoformat()]
         )
+    # A meta row appears only when set, as with date_to above; the JSON key is
+    # always present to mirror portal_api.SosReportModel.
+    if sos.source_notice is not None:
+        rows.append(["meta", "source_notice", "", "", sos.source_notice])
 
     for dept in sos.operated_departments:
         rows += _line_rows("operated_departments", dept.lines)

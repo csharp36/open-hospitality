@@ -7,6 +7,7 @@ from decimal import Decimal
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from usali.detect import SOURCE_NOTICES
 from usali.models import (
     MappingException,
     PmsDailyFinancialStage,
@@ -36,7 +37,18 @@ def transform(
     Reruns are idempotent: stage rows whose stage_id already has a persisted fact or
     exception are skipped rather than re-inserted. Reconciliation verifies persisted
     totals (facts + exceptions, across all runs) still equal the full staged total.
+
+    A source in `usali.detect.SOURCE_NOTICES` is refused before any read: its
+    financial rows are staged for the coverage worklist only, and a fact row
+    would give gl_posting a plan to post. This is the enforcement point;
+    tests/test_hotelkey_end_to_end.py::test_the_transform_cli_cannot_promote_hotelkey_rows
+    holds it from the CLI's entry.
     """
+    if source in SOURCE_NOTICES:
+        raise ValueError(
+            f"{source} is a statistics-and-balances source (design D-OH22.6): "
+            "its financial rows stay staged and are never transformed"
+        )
     stage_rows = (
         session.execute(
             select(PmsDailyFinancialStage).where(

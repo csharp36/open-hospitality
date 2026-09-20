@@ -20,20 +20,31 @@ def _row_hash(rec: StagedRecord, file_hash: str, index: int) -> str:
 
 
 def stage_records(
-    session: Session, records: Sequence[StagedRecord], *, source_file: str, file_hash: str
+    session: Session,
+    records: Sequence[StagedRecord],
+    *,
+    source_file: str,
+    file_hash: str,
+    batch: IngestBatch | None = None,
 ) -> IngestBatch:
-    source = records[0].pms_source if records else "UNKNOWN"
-    report_type = records[0].report_type if records else "unknown"
-    batch = IngestBatch(
-        pms_source=source,
-        report_type=report_type,
-        source_file=source_file,
-        file_hash=file_hash,
-        status="staged",
-        row_count=len(records),
-    )
-    session.add(batch)
-    session.flush()  # assign batch_id
+    """Stage financial rows. Opens a new IngestBatch unless `batch` is given, in
+    which case the rows ride under it and its `row_count` is left to the caller
+    -- process_file guarantees exactly one batch per file, and the HotelKey
+    statistics PDF stages both statistics and financial rows from one file
+    (tests/test_hotelkey_end_to_end.py::test_hotelkey_statistics_file_opens_exactly_one_batch)."""
+    if batch is None:
+        source = records[0].pms_source if records else "UNKNOWN"
+        report_type = records[0].report_type if records else "unknown"
+        batch = IngestBatch(
+            pms_source=source,
+            report_type=report_type,
+            source_file=source_file,
+            file_hash=file_hash,
+            status="staged",
+            row_count=len(records),
+        )
+        session.add(batch)
+        session.flush()  # assign batch_id
 
     # L8-F3: the Core insert() below BYPASSES the L6a before_flush write-wall,
     # so org_id would fall to the server default '1' and an org != 1 session's

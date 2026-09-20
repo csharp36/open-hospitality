@@ -14,6 +14,7 @@ from starlette.types import Scope
 from usali import integrations
 from usali.adaptors import autoclerk_transaction_summary, opera_trial_balance
 from usali.adaptors.pdf import extract_words_from_bytes
+from usali.adaptors.reader import ACCEPTED_FORMATS, is_pdf, is_xlsx
 from usali.auth import (
     TokenVerifier,
     request_session_factory,
@@ -44,7 +45,7 @@ from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
 from usali.preview import PreviewPayload, build_financial_preview
 from usali.ratelimit import RateLimiter
-from usali.recognition import recognize_vendor
+from usali.recognition import display_name, recognize_vendor
 from usali.redaction import redact
 from usali.sick_leave_api import router as sick_leave_router
 from usali.portal_api import router as portal_router
@@ -63,7 +64,7 @@ _DEFAULT_DIST = Path(__file__).parent.parent.parent / "frontend" / "dist"
 # PMS reports are normally well under 1 MiB. 25 MiB leaves ample room for
 # unusually image-heavy exports while keeping one authenticated request from
 # consuming an unbounded amount of worker memory.
-_MAX_PDF_BYTES = 25 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 _T = TypeVar("_T")
 
@@ -121,7 +122,7 @@ def _parse_preview_sync(data: bytes) -> dict[str, object]:
         )
         return {"status": "ok", "payload": _payload_json(payload)}
     if sig is not None:
-        return {"status": "unsupported", "vendor": sig[0].title(), "reason": "no_preview_for_report"}
+        return {"status": "unsupported", "vendor": display_name(sig[0]), "reason": "no_preview_for_report"}
     vendor = recognize_vendor(words)
     if vendor is not None:
         return {"status": "unsupported", "vendor": vendor, "reason": "vendor_not_supported"}
@@ -507,7 +508,7 @@ def create_app(
         # into org 1's data.
         factory = request_session_factory(request)
         with factory() as session:
-            upload_name = file.filename or "upload.pdf"
+            upload_name = file.filename or "upload"
             # Multipart filenames are attacker-controlled. Keep them as a
             # display name only: path components (including Windows separators
             # on a Linux server) must never influence where the API writes.
@@ -519,11 +520,17 @@ def create_app(
             ):
                 raise HTTPException(status_code=422, detail="unsafe upload filename")
 
-            payload = await file.read(_MAX_PDF_BYTES + 1)
-            if len(payload) > _MAX_PDF_BYTES:
-                raise HTTPException(status_code=413, detail="PDF too large")
-            if not payload.startswith(b"%PDF-"):
-                raise HTTPException(status_code=422, detail="upload must be a PDF")
+            payload = await file.read(_MAX_UPLOAD_BYTES + 1)
+            if len(payload) > _MAX_UPLOAD_BYTES:
+                raise HTTPException(status_code=413, detail="upload too large")
+            # Magic bytes, never the suffix: the is_pdf/is_xlsx pair that
+            # usali.adaptors.reader.read_words_from_bytes dispatches on, and
+            # ingestion.process_file reads through read_words, so this
+            # boundary and the reader decide a format the same way.
+            if not (is_pdf(payload) or is_xlsx(payload)):
+                raise HTTPException(
+                    status_code=422, detail=f"upload must be a {ACCEPTED_FORMATS}"
+                )
 
             inbox.mkdir(parents=True, exist_ok=True)
             dest = inbox / upload_name

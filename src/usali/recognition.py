@@ -28,6 +28,17 @@ _VENDOR_SIGNATURES: list[tuple[tuple[str, ...], str]] = [
 ]
 _HEADER_WORD_LIMIT = 120
 
+# One entry per registered source, pinned in tests/test_recognition.py by
+# test_every_supported_source_has_a_display_name.
+_DISPLAY_NAMES = {"OPERA": "Opera", "AUTOCLERK": "AutoClerk", "SKYTOUCH": "SkyTouch",
+                  "HOTELKEY": "HotelKey"}
+
+
+def display_name(pms_source: str) -> str:
+    """The vendor name the preview shows for a registered source; `str.title()`
+    would print 'Skytouch' and 'Hotelkey'."""
+    return _DISPLAY_NAMES.get(pms_source.upper(), pms_source.title())
+
 
 def recognize_vendor(words: list[Word]) -> str | None:
     header_text = " ".join(w.text for w in words[:_HEADER_WORD_LIMIT]).upper()

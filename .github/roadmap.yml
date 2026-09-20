@@ -274,7 +274,7 @@ roadmap:
       ingesting an exported report. Named targets: HotelKey (API and event
       stream), Oracle OPERA Cloud via OHIP, and Cloudbeds. Distinct from OH-2,
       which extends the existing file-based path to more report shapes.
-    status: planned
+    status: in-progress
     tags: [ingestion, pms, integrations]
 
   - id: OH-23

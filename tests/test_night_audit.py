@@ -2,6 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -41,17 +42,20 @@ def _admin_headers(mint, db_session):
     return {"Authorization": f"Bearer {tok}"}
 
 
-def _seed_ledger_facts(db_session, facts, pid="HISJ", tag="lf"):
-    """Promote (code, kind, amount, on) rows as OPERA trial-balance ledger facts."""
+def _seed_ledger_facts(
+    db_session, facts, pid="HISJ", tag="lf", source="OPERA", report_type="trial_balance",
+):
+    """Promote (code, kind, amount, on) rows as ledger facts for `source` —
+    OPERA trial-balance rows unless a caller says otherwise."""
     from usali.models import IngestBatch, PmsLedgerBalanceStage, UsaliLedgerBalanceFact
 
-    batch = IngestBatch(pms_source="OPERA", report_type="trial_balance",
+    batch = IngestBatch(pms_source=source, report_type=report_type,
                         source_file=f"{tag}.pdf", file_hash=f"{tag}-h")
     db_session.add(batch)
     db_session.flush()
     for code, kind, amount, on in facts:
         stage = PmsLedgerBalanceStage(
-            property_id=pid, pms_source="OPERA", report_type="trial_balance",
+            property_id=pid, pms_source=source, report_type=report_type,
             business_date=on, ledger_label=code, kind=kind, amount=amount,
             source_file=f"{tag}.pdf", row_hash=f"{tag}-{code}-{on}",
             ingest_batch_id=batch.batch_id,
@@ -59,7 +63,7 @@ def _seed_ledger_facts(db_session, facts, pid="HISJ", tag="lf"):
         db_session.add(stage)
         db_session.flush()
         db_session.add(UsaliLedgerBalanceFact(
-            property_id=pid, pms_source="OPERA", business_date=on,
+            property_id=pid, pms_source=source, business_date=on,
             ledger_code=code, ledger_name=code, kind=kind, amount=amount,
             ingest_batch_id=batch.batch_id, ledger_stage_id=stage.ledger_stage_id,
         ))
@@ -589,6 +593,130 @@ def test_pack_upload_rejects_wrong_business_date(db_session, db_engine, tmp_path
     assert staged == 0
 
 
+# ---- HotelKey: four per-report uploads, three of them spreadsheets ---------
+
+
+def _seed_hotelkey_world(db_session):
+    from usali.mapping.loader import load_mappings
+    from usali.mapping.property_registry import seed_properties
+    from usali.mapping.schedules import seed_schedules
+
+    db_session.merge(Organization(org_id=1, kc_org_alias=DEFAULT_ORG_ALIAS, name="Org"))
+    db_session.commit()
+    seed_schedules(db_session, "mapping/usali_schedules.yaml")
+    load_mappings(db_session, "mapping/hotelkey.yaml")
+    seed_properties(db_session, "mapping/properties.yaml")
+    db_session.commit()
+
+
+def test_hotelkey_slots_are_the_four_exports(db_session):
+    """One slot per export, in the vendor's own order; the mode stays
+    per-report (HotelKey is not in PACK_UPLOAD)."""
+    from usali.night_audit import PACK_UPLOAD
+
+    _org_and_property(db_session, pid="HKDEMO", pms_source="HOTELKEY")
+    slots = slot_status(db_session, "HKDEMO", date(2026, 8, 13), "HOTELKEY")
+    assert [(s["report_type"], s["label"], s["landed"]) for s in slots] == [
+        ("hotel_statistics", "Hotel Statistics", False),
+        ("settlement", "Settlement By Payment Type", False),
+        ("all_payments", "All Payments", False),
+        ("ar_aging", "AR Invoice Aging", False),
+    ]
+    assert "HOTELKEY" not in PACK_UPLOAD
+
+
+def test_hotelkey_night_audit_accepts_a_spreadsheet_slot(db_session, db_engine, tmp_path):
+    """The night-audit upload takes an XLSX export: magic-byte accepted, read
+    through the content-dispatching reader, detected as HKDEMO, dated against
+    the current business date, and landed in its slot."""
+    _seed_hotelkey_world(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    db_session.add(NightAuditState(property_id="HKDEMO",
+                                   current_business_date=date(2026, 8, 13)))
+    db_session.commit()
+
+    workbook = Path("tests/fixtures/hotelkey/AR Invoice Aging.xlsx")
+    r = client.post(
+        "/api/properties/HKDEMO/night-audit/upload", headers=headers,
+        files={"file": (workbook.name, workbook.read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["report_type"] == "ar_aging"
+    assert body["upload_mode"] == "reports"
+    landed = {s["report_type"]: s["landed"] for s in body["slots"]}
+    assert landed == {"hotel_statistics": False, "settlement": False,
+                      "all_payments": False, "ar_aging": True}
+    assert body["all_reports_landed"] is False
+
+
+def test_hotelkey_ar_rollforward_is_an_honest_skip_without_activity(db_session):
+    """HOTELKEY is in BALANCES_ONLY_SOURCES (its AR aging maps AR_LEDGER and
+    no activity codes; test_balances_only_sources_match_the_ledger_dictionary
+    pins the registry to mapping/ledgers.yaml). Two nights of differing AR
+    closes must therefore NOT read as a failed roll-forward with an "adjust
+    the prior close" affordance: the check skips and says why."""
+    _org_and_property(db_session, pid="HKDEMO", pms_source="HOTELKEY")
+    day = date(2026, 8, 13)
+    _seed_ledger_facts(db_session, [
+        ("AR_LEDGER", "balance", Decimal("3400"), day),
+        ("AR_AGING_CURRENT", "balance", Decimal("1000"), day),
+        ("AR_LEDGER", "balance", Decimal("2900"), day - timedelta(days=1)),
+        ("AR_AGING_CURRENT", "balance", Decimal("800"), day - timedelta(days=1)),
+    ], pid="HKDEMO", tag="hk", source="HOTELKEY", report_type="ar_aging")
+
+    checks = {c.name: c for c in ledger_checks(db_session, "HKDEMO", day, "HOTELKEY")}
+    assert checks["ar_rollforward"].status == "skipped", checks["ar_rollforward"]
+    assert "HOTELKEY" in checks["ar_rollforward"].detail
+    assert checks["ar_rollforward"].adjust is None
+    assert checks["ar_rollforward"].delta is None
+    # No sub-ledger block either: the identity check stays its existing skip.
+    assert checks["balance_identity"].status == "skipped"
+
+
+def test_opera_ar_rollforward_still_computes_without_activity_facts(db_session):
+    """The skip is PER SOURCE, not per day's data: OPERA is not in
+    BALANCES_ONLY_SOURCES, so AR closes on both nights with no activity facts
+    on file compute with zero activity and FAIL on the residual, adjust
+    affordance and all -- a missing activity line in a trial balance is a
+    hole to surface, not a reason to wave the roll through."""
+    _org_and_property(db_session)
+    day = date(2026, 8, 18)
+    _seed_ledger_facts(db_session, [
+        ("AR_LEDGER", "balance", Decimal("210"), day),
+        ("AR_LEDGER", "balance", Decimal("200"), day - timedelta(days=1)),
+    ])
+    checks = {c.name: c for c in ledger_checks(db_session, "HISJ", day, "OPERA")}
+    assert checks["ar_rollforward"].status == "fail"
+    assert checks["ar_rollforward"].delta == "-10.00"
+    assert checks["ar_rollforward"].adjust == {
+        "business_date": "2026-08-17", "ledger_code": "AR_LEDGER",
+        "stored": "200.00", "suggested": "210.00",
+    }
+
+
+def test_balances_only_sources_match_the_ledger_dictionary():
+    """BALANCES_ONLY_SOURCES is a hand-kept registry; mapping/ledgers.yaml is
+    where a source's ledger codes are actually declared. Pin them together:
+    the registry must be exactly the sources with balance rows and no
+    activity rows, so adding activity codes for a source (or a new
+    balances-only source) fails here until the registry follows."""
+    import yaml
+
+    from usali.night_audit import BALANCES_ONLY_SOURCES
+
+    rows = yaml.safe_load(Path("mapping/ledgers.yaml").read_text())
+    kinds: dict[str, set[str]] = {}
+    for row in rows:
+        kinds.setdefault(row["source"], set()).add(row["kind"])
+    balances_only = {src for src, k in kinds.items() if k == {"balance"}}
+    assert balances_only == BALANCES_ONLY_SOURCES == frozenset({"HOTELKEY"})
+
+
 # ---- direct-edit adjustment (cross-night correction) -----------------------
 
 
@@ -865,6 +993,25 @@ def test_every_required_report_has_a_business_date_extractor():
     assert not missing, f"no _DATE_FNS business-date extractor for: {missing}"
 
 
+def test_every_required_report_has_an_ingestion_handler():
+    """REQUIRED_REPORTS and ingestion._PIPELINES are the other pair of dicts
+    that must agree: the night-audit upload accepts a (source, report_type) it
+    lists, and process_file can only run it if _PIPELINES has a handler for
+    that same key. A required report with no handler would be accepted at the
+    boundary and quarantined by the pipeline, every night.
+    """
+    from usali.ingestion import _PIPELINES
+    from usali.night_audit import REQUIRED_REPORTS
+
+    missing = [
+        (source, report_type)
+        for source, reports in REQUIRED_REPORTS.items()
+        for report_type, _label in reports
+        if (source, report_type) not in _PIPELINES
+    ]
+    assert not missing, f"no ingestion handler for: {missing}"
+
+
 def test_ledger_reads_are_keyed_by_pms_source(db_session):
     """A property-day can hold ledger facts from two sources: the fact table's
     uniqueness is (property_id, pms_source, business_date, ledger_code), so a PMS
@@ -1131,9 +1278,9 @@ def test_adjust_reason_is_validated_after_strip(db_session, db_engine, tmp_path)
 
 
 def test_upload_refuses_non_pdf_bytes(db_session, db_engine, tmp_path):
-    """The /ingest %PDF- magic refusal, mirrored — and checked before the
-    inbox write, so a non-PDF blob leaves nothing in the inbox and nothing
-    staged."""
+    """The /ingest magic-byte refusal (PDF or XLSX), mirrored — and checked
+    before the inbox write, so a blob that is neither leaves nothing in the
+    inbox and nothing staged."""
     from sqlalchemy import func, select
     from usali.models import PmsDailyFinancialStage
 
@@ -1147,7 +1294,7 @@ def test_upload_refuses_non_pdf_bytes(db_session, db_engine, tmp_path):
         files={"file": ("evil.pdf", b"MZ this is not a pdf", "application/pdf")},
     )
     assert r.status_code == 422, r.text
-    assert "PDF" in r.json()["detail"]
+    assert "PDF or XLSX" in r.json()["detail"]
     inbox = tmp_path / "inbox"
     assert not inbox.exists() or not any(inbox.iterdir())
     staged = db_session.execute(

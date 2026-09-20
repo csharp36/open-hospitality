@@ -8,21 +8,26 @@ def test_seed_properties_loads_rows(db_session):
     n = seed_properties(db_session, "mapping/properties.yaml")
     db_session.commit()
 
-    assert n == 3
+    # One row per registered source's demo property: Opera, AutoClerk,
+    # SkyTouch, HotelKey. A fifth row in mapping/properties.yaml means a fifth
+    # source, and this count says so on purpose.
+    assert n == 4
     props = {
         p.property_id: p
         for p in db_session.execute(select(Property)).scalars().all()
     }
-    assert set(props) == {"HISJ", "SSSJ", "STDEMO"}
+    assert set(props) == {"HISJ", "SSSJ", "STDEMO", "HKDEMO"}
     assert props["HISJ"].pms_source == "OPERA"
     assert props["SSSJ"].pms_source == "AUTOCLERK"
     assert props["STDEMO"].pms_source == "SKYTOUCH"
+    assert props["HKDEMO"].pms_source == "HOTELKEY"
 
     aliases = db_session.execute(select(PropertyDetectionAlias)).scalars().all()
     assert {(a.property_id, a.pms_source, a.match_phrase) for a in aliases} == {
         ("HISJ", "OPERA", "HOLIDAY INN & SUITES SAN JOSE"),
         ("SSSJ", "AUTOCLERK", "SURESTAY PLUS BY BW"),
         ("STDEMO", "SKYTOUCH", "REDSTONE TEST INN"),
+        ("HKDEMO", "HOTELKEY", "LAKESIDE TEST LODGE"),
     }
     # A single default organization is created and shared by all properties.
     org_count = db_session.execute(
@@ -31,6 +36,7 @@ def test_seed_properties_loads_rows(db_session):
     assert org_count == 1
     assert props["HISJ"].org_id == props["SSSJ"].org_id
     assert props["STDEMO"].org_id == props["HISJ"].org_id
+    assert props["HKDEMO"].org_id == props["HISJ"].org_id
 
 
 def test_seed_properties_is_idempotent(db_session):
@@ -38,12 +44,14 @@ def test_seed_properties_is_idempotent(db_session):
     seed_properties(db_session, "mapping/properties.yaml")
     db_session.commit()
 
+    # Four rows in mapping/properties.yaml (one demo property per source),
+    # seeded twice, still four.
     assert db_session.execute(
         select(func.count()).select_from(Property)
-    ).scalar_one() == 3
+    ).scalar_one() == 4
     assert db_session.execute(
         select(func.count()).select_from(PropertyDetectionAlias)
-    ).scalar_one() == 3
+    ).scalar_one() == 4
     assert db_session.execute(
         select(func.count()).select_from(Organization)
     ).scalar_one() == 1

@@ -23,7 +23,7 @@ _DICTIONARY_KEYS = frozenset(
     {"source", "code", "edition", "major", "sub", "line_item"}
 )
 
-_KNOWN_DICTIONARIES = {"opera.yaml", "skytouch.yaml", "autoclerk.yaml"}
+_KNOWN_DICTIONARIES = {"opera.yaml", "skytouch.yaml", "autoclerk.yaml", "hotelkey.yaml"}
 
 
 def _discover_dictionaries() -> dict[str, list[MappingEntry]]:

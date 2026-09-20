@@ -28,3 +28,29 @@
 - {source: SKYTOUCH, label: "ADR for Total Occupied Rooms", code: ADR}
 - {source: SKYTOUCH, label: "RevPar", code: REVPAR}
 - {source: SKYTOUCH, label: "Total Room Revenue", code: ROOM_REVENUE}
+# HotelKey Hotel Statistics (OH-22). Labels are the report's wrapped lines
+# joined with spaces, exactly as adaptors/hotelkey_hotel_statistics emits them.
+# The four occupancy variants and two ADR/RevPAR variants each get their own
+# code (design D-OH22.3): collapsing them would silently pick one definition.
+- {source: HOTELKEY, label: "Total Rooms", code: TOTAL_ROOMS}
+- {source: HOTELKEY, label: "Rooms Available To Sell", code: ROOMS_AVAILABLE}
+- {source: HOTELKEY, label: "Room Sold", code: ROOMS_OCCUPIED}
+- {source: HOTELKEY, label: "Rooms Sold Excluding Comp House Use Rooms", code: ROOMS_SOLD_EX_COMP_HOUSE}
+# The all-inclusive variants take the shared codes (OCCUPANCY_PCT, ADR, REVPAR)
+# because they are the as-reported figures; performance.py recomputes occupancy
+# on the ex-OOO basis, so its divergence check may flag HotelKey days by
+# definition -- a calibration item for the first real export.
+- {source: HOTELKEY, label: "Occupancy Including Out of Order Rooms, Comp, House Use Rooms", code: OCCUPANCY_PCT}
+- {source: HOTELKEY, label: "Occupancy Excluding Out of Order Rooms, Comp, House Use Rooms", code: OCCUPANCY_PCT_EX_OOO_EX_COMP}
+- {source: HOTELKEY, label: "Occupancy Including Out of Order Rooms and Excluding Comp", code: OCCUPANCY_PCT_EX_COMP}
+- {source: HOTELKEY, label: "Occupancy Excluding Out of Order Rooms and Including Comp, House Use Rooms", code: OCCUPANCY_PCT_EX_OOO}
+- {source: HOTELKEY, label: "ADR Including Comp House Use Rooms", code: ADR}
+- {source: HOTELKEY, label: "ADR Excluding Comp House Use Rooms", code: ADR_EX_COMP_HOUSE}
+- {source: HOTELKEY, label: "RevPar With Out Of Order Rooms", code: REVPAR_INCL_OOO}
+- {source: HOTELKEY, label: "RevPAR", code: REVPAR}
+- {source: HOTELKEY, label: "Room Revenue / Totals", code: ROOM_REVENUE}
+- {source: HOTELKEY, label: "Revenue Statistics / Totals", code: TOTAL_REVENUE}
+- {source: HOTELKEY, label: "Total Guests", code: IN_HOUSE_PERSONS}
+- {source: HOTELKEY, label: "Arrivals", code: ARRIVALS}
+- {source: HOTELKEY, label: "Departures", code: DEPARTURES}
+- {source: HOTELKEY, label: "No Shows", code: NO_SHOWS}

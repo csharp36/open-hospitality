@@ -14,3 +14,19 @@
 # Activity — A/R movement for the CPA pack's receivables report:
 - {source: OPERA, label: "AR Ledger / Charges and Transfers", code: AR_CHARGES, name: "AR Charges and Transfers", kind: activity}
 - {source: OPERA, label: "AR Ledger / Payments", code: AR_PAYMENTS, name: "AR Payments", kind: activity}
+# HotelKey AR Invoice Aging (OH-22): the Transaction Type section's total row,
+# one balance per aging column. Labels are "<section> / Total / <column>" as
+# adaptors/hotelkey_ar_aging emits them.
+# Reuses AR_LEDGER so the A/R report shows the balance. Every HOTELKEY row is
+# kind: balance -- no AR_CHARGES/AR_PAYMENTS -- which is why HOTELKEY is in
+# night_audit.BALANCES_ONLY_SOURCES (its ar_rollforward is an honest skip).
+# test_balances_only_sources_match_the_ledger_dictionary in
+# tests/test_night_audit.py pins that registry to the kinds mapped here.
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Total", code: AR_LEDGER, name: "AR / City Ledger", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Payment On Account", code: AR_AGING_PAYMENT_ON_ACCOUNT, name: "AR Payments on Account", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Current", code: AR_AGING_CURRENT, name: "AR Current", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / 31 to 60", code: AR_AGING_31_60, name: "AR 31-60 days", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / 61 to 90", code: AR_AGING_61_90, name: "AR 61-90 days", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / 91 to 120", code: AR_AGING_91_120, name: "AR 91-120 days", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / 121 to 150", code: AR_AGING_121_150, name: "AR 121-150 days", kind: balance}
+- {source: HOTELKEY, label: "AR Aging Details - Transaction Type / Total / Over 150", code: AR_AGING_OVER_150, name: "AR over 150 days", kind: balance}

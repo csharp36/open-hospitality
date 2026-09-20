@@ -36,3 +36,8 @@ def parse_paren_amount(text: str) -> Decimal:
 
 def parse_skytouch_date(text: str) -> date:
     return datetime.strptime(text.strip(), "%m/%d/%Y").date()
+
+
+def parse_hotelkey_date(text: str) -> date:
+    # "Aug 13, 2026" on report headers, "Aug 14 2026" on the run stamp.
+    return datetime.strptime(text.replace(",", "").strip(), "%b %d %Y").date()

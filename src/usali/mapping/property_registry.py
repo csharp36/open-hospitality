@@ -273,17 +273,40 @@ def create_first_property(
     wage_jurisdiction: str | None = None,
     timezone: str | None = None,
 ) -> str:
-    """Insert the workspace's first property under an ORG-BOUND session (the
-    caller must have called bind_org_context(session, org_id) first — the
-    provisioner role cannot write `property`, D-B7). Returns the generated,
-    globally-unique property_id. `timezone`/`wage_jurisdiction` fall back to the
-    column defaults / NULL when omitted. The caller commits."""
+    """Insert the workspace's first property, and its detection alias, under
+    an ORG-BOUND session (the caller must have called bind_org_context(session,
+    org_id) first — the provisioner role cannot write `property`, D-B7).
+    Returns the generated, globally-unique property_id. `timezone`/
+    `wage_jurisdiction` fall back to the column defaults / NULL when omitted.
+    The caller commits.
+
+    `pms_source` is stored UPPERCASE on both rows whatever the caller passes
+    (the signup API's Literal is lowercase). Uppercase is the spelling every
+    other writer uses -- properties.yaml, the report signatures in
+    usali.detect, the pms_source the adapters stamp on staged rows and facts --
+    and detect() compares the alias's pms_source with the signature's as plain
+    strings, while night_audit reads facts filtered by the property row's
+    pms_source verbatim. A lowercase row therefore never detects and never
+    sees its own facts. The alias's match phrase is the name typed at signup:
+    the only text the property's exports can be matched on until someone
+    registers a better one. The residual: detect() substring-matches the
+    alias, uppercased, against the report header, so a short or generic name
+    matches broadly within the org and source. tests/test_b1_signup_api.py::
+    test_a_signup_created_property_takes_its_first_night_audit_upload holds
+    the whole path.
+    """
+    name = name.strip()
+    if not name:
+        # The name is the alias's match phrase; blank matches every header.
+        # The API strips and refuses first (CompleteRequest); this is the belt.
+        raise ValueError("a property name must not be blank")
+    source = pms_source.upper()
     base = _slugify(name)
     for _ in range(5):
         property_id = f"{base}-{secrets.token_hex(2)}"
         values: dict[str, object] = {
             "property_id": property_id, "org_id": org_id,
-            "name": name, "pms_source": pms_source,
+            "name": name, "pms_source": source,
         }
         if wage_jurisdiction is not None:
             values["wage_jurisdiction"] = wage_jurisdiction
@@ -292,9 +315,18 @@ def create_first_property(
         try:
             with session.begin_nested():  # SAVEPOINT: a collision rolls back to
                 session.execute(insert(Property).values(**values))  # here only
-            return property_id
         except IntegrityError:
             continue  # astronomically rare 4-hex collision — try a new suffix
+        # org_id explicit, as on the property row: a Core insert bypasses the
+        # before_flush org stamp, and the alias table's RLS WITH CHECK wants
+        # the session's org.
+        session.execute(
+            insert(PropertyDetectionAlias).values(
+                org_id=org_id, property_id=property_id,
+                pms_source=source, match_phrase=name,
+            )
+        )
+        return property_id
     raise RuntimeError(
         f"could not generate a unique property_id for {name!r} after 5 attempts"
     )

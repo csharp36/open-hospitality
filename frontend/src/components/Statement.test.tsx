@@ -107,6 +107,40 @@ describe('Statement', () => {
       total: '410.0000',
     })
   })
+  it('renders the source notice in place of the revenue sections', () => {
+    // The lists are empty as the API sends them for a notice source, except
+    // rooms_segments, kept populated so the hidden ROOMS SEGMENT SPLIT proves
+    // the notice gate and not the section's own emptiness guard.
+    render(
+      <Statement
+        report={makeSosReport({
+          source_notice: 'HotelKey is ingested as a statistics-and-balances source.',
+          operated_departments: [],
+          misc_income: [],
+          taxes: [],
+          settlements: [],
+          other: [],
+        })}
+        onLineClick={() => {}}
+      />,
+    )
+    expect(screen.getByRole('note')).toHaveTextContent('statistics-and-balances')
+    expect(screen.queryByText('OPERATED DEPARTMENTS')).toBeNull()
+    expect(screen.queryByText('MISCELLANEOUS INCOME')).toBeNull()
+    expect(screen.queryByText('TOTAL OPERATING REVENUE')).toBeNull()
+    expect(screen.queryByText('ROOMS SEGMENT SPLIT')).toBeNull()
+    expect(screen.queryByText('TAXES COLLECTED (PASS-THROUGH)')).toBeNull()
+    expect(screen.queryByText('SETTLEMENTS')).toBeNull()
+    expect(screen.queryByText('OTHER (UNSCHEDULED)')).toBeNull()
+    expect(screen.getByText('STATISTICS')).toBeInTheDocument()
+  })
+
+  it('renders no notice for a journal-backed source', () => {
+    render(<Statement report={makeSosReport({ source_notice: null })} onLineClick={() => {}} />)
+    expect(screen.queryByRole('note')).toBeNull()
+    expect(screen.getByText('OPERATED DEPARTMENTS')).toBeInTheDocument()
+    expect(screen.getByText('ROOMS SEGMENT SPLIT')).toBeInTheDocument()
+  })
 })
 
 // C3: one alerted two-employee department + one suppressed solo department,

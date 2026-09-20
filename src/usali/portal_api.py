@@ -52,6 +52,7 @@ from sqlalchemy.orm import Session
 
 from usali import qbo_push, reporting
 from usali.auth import Principal, request_session_factory, require_operator
+from usali.detect import SOURCE_NOTICES
 from usali.fiscal import (
     FiscalCalendarNotConfigured,
     require_config,
@@ -266,6 +267,10 @@ class SosReportModel(BaseModel):
     # Pillar C3: estimate vs provider-actual for the pay periods intersecting
     # the window. Null when no processed pay run touches it.
     labor_variance: LaborVarianceModel | None
+    # D-OH22.6: why the revenue sections are empty, for a source in
+    # detect.SOURCE_NOTICES (the `sos` route picks the builder by it). Null for
+    # every journal-backed statement.
+    source_notice: str | None = None
 
 
 class NeedsReviewEntryModel(BaseModel):
@@ -551,6 +556,7 @@ def _sos_model(sos: reporting.SosReport) -> SosReportModel:
         sick_suppressed_departments=sos.sick_suppressed_departments,
         sick_unpriced_hours=str(sos.sick_unpriced_hours),
         labor_variance=_labor_variance_model(sos.labor_variance),
+        source_notice=sos.source_notice,
     )
 
 
@@ -769,15 +775,38 @@ def sos(
         )
     if ranged and (date_from is None or date_to is None):
         raise HTTPException(status_code=422, detail="from and to must be given together")
-    report = _run(
-        lambda: reporting.summary_operating_statement_from_journal(
-            session,
-            property_id=property_id,
-            business_date=business_date,
-            date_from=date_from,
-            date_to=date_to,
+    # D-OH22.6: a source that does not back the SOS gets the statistics-plus-
+    # notice statement, never the journal path. `Property.pms_source` is
+    # stored uppercase: `property_registry.create_first_property` uppercases
+    # on signup, and `seed_properties` writes mapping/properties.yaml's rows
+    # as-is (tests/test_detect_registry.py::
+    # test_load_registry_returns_seeded_rows_in_legacy_shape pins them).
+    # SOURCE_NOTICES is keyed uppercase; the .upper() is belt-and-braces.
+    prop = session.get(Property, property_id)
+    pms_source = None if prop is None else prop.pms_source.upper()
+    notice = None if pms_source is None else SOURCE_NOTICES.get(pms_source)
+    if pms_source is not None and notice is not None:
+        report = _run(
+            lambda: reporting.statistics_only_statement(
+                session,
+                property_id=property_id,
+                pms_source=pms_source,
+                notice=notice,
+                business_date=business_date,
+                date_from=date_from,
+                date_to=date_to,
+            )
         )
-    )
+    else:
+        report = _run(
+            lambda: reporting.summary_operating_statement_from_journal(
+                session,
+                property_id=property_id,
+                business_date=business_date,
+                date_from=date_from,
+                date_to=date_to,
+            )
+        )
     return _sos_model(report)
 
 

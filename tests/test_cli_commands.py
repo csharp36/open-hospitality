@@ -1,5 +1,6 @@
 import re
 from decimal import Decimal
+from pathlib import Path
 
 from sqlalchemy import select
 from typer.testing import CliRunner
@@ -23,7 +24,8 @@ def test_seed_schedules_command_runs(db_url):
 def test_seed_properties_command_runs(db_url):
     result = runner.invoke(app, ["seed-properties", "mapping/properties.yaml"])
     assert result.exit_code == 0, result.output
-    assert "Seeded 3 propert" in result.output
+    # One demo property per registered source in mapping/properties.yaml.
+    assert "Seeded 4 propert" in result.output
 
 
 def test_ingest_opera_trial_balance(db_url):
@@ -194,3 +196,54 @@ def test_gl_parity_command_rejects_start_after_end():
     result = runner.invoke(app, ["gl-parity", "HISJ", "2026-07-02", "2026-07-01"])
     assert result.exit_code != 0
     assert "isafter" in _squashed(result.output)
+
+
+def test_watch_drains_every_accepted_suffix_already_in_the_inbox(tmp_path, monkeypatch):
+    """The startup drain and the live handler accept the same suffixes: a file
+    already waiting when watch starts is processed exactly as one arriving
+    later would be. No DB and no observer thread: process_file is replaced by
+    a recorder, the Observer by a stub, and the first main-loop sleep raises
+    KeyboardInterrupt so the command exits through its own Ctrl-C path. The
+    Observer and time.sleep patches work because watch_cmd imports both lazily
+    and reaches them through the module attribute; if that import moves to
+    module level the stub goes inert and a real observer thread would start."""
+    import contextlib
+    import time
+    from types import SimpleNamespace
+
+    import watchdog.observers
+
+    import usali.cli as cli
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "b.pdf").touch()  # contents irrelevant: process_file is stubbed below
+    (inbox / "a.xlsx").touch()
+    (inbox / "notes.txt").write_text("not a report")
+
+    seen: list[str] = []
+
+    def fake_process_file(session, path, **kwargs):
+        seen.append(Path(path).name)
+        return SimpleNamespace(mapped=0, skipped=0)
+
+    class StubObserver:
+        def schedule(self, handler, path): ...
+        def start(self): ...
+        def stop(self): ...
+        def join(self): ...
+
+    def stop_now(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "process_file", fake_process_file)
+    monkeypatch.setattr(cli, "_session_factory", lambda: lambda: contextlib.nullcontext(None))
+    monkeypatch.setattr(watchdog.observers, "Observer", StubObserver)
+    monkeypatch.setattr(time, "sleep", stop_now)
+
+    result = runner.invoke(app, [
+        "watch", "--inbox-dir", str(inbox),
+        "--processed-dir", str(tmp_path / "done"), "--failed-dir", str(tmp_path / "fail"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert seen == ["a.xlsx", "b.pdf"], seen  # sorted, both suffixes, the .txt ignored

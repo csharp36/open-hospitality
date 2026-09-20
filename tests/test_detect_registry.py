@@ -11,6 +11,7 @@ def test_load_registry_returns_seeded_rows_in_legacy_shape(db_session):
         ("HISJ", "OPERA", "HOLIDAY INN & SUITES SAN JOSE"),
         ("SSSJ", "AUTOCLERK", "SURESTAY PLUS BY BW"),
         ("STDEMO", "SKYTOUCH", "REDSTONE TEST INN"),
+        ("HKDEMO", "HOTELKEY", "LAKESIDE TEST LODGE"),
     }
 
 

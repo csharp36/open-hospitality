@@ -7,6 +7,17 @@ from sqlalchemy.orm import Session
 from usali.adaptors.pdf import Word
 from usali.models import PropertyDetectionAlias
 
+# Every HotelKey export read 2026-09-20, the statistics PDF and the three
+# spreadsheets alike, carries its run date and time in the header. Both are
+# required so a "Report Run Date:" printed by some other vendor does not claim
+# the row; the title phrase alone is generic for three of the four ("HOTEL
+# STATISTICS" is SkyTouch's too, "ALL PAYMENTS" could be anyone's). Pinned in
+# tests/test_detect_signature.py by
+# test_a_generic_all_payments_title_without_the_stamp_is_nobody and
+# test_the_hotel_statistics_pair_is_decided_by_banner_not_table_order.
+_HOTELKEY_STAMP = ("REPORT RUN DATE:", "REPORT RUN TIME:")
+
+
 # Report signatures: an UPPERCASED phrase that appears in the report's own text.
 @dataclass(frozen=True)
 class _Signature:
@@ -40,10 +51,14 @@ _REPORT_SIGNATURES: list[_Signature] = [
         # `PROPERTY NAME:` is the SkyTouch page banner; HotelKey titles its
         # statistics report identically and does not print it. Pinned both ways
         # in tests/test_detect_signature.py by
-        # test_hotelkey_statistics_does_not_match_skytouch and
+        # test_hotelkey_statistics_resolves_to_hotelkey_not_skytouch and
         # test_skytouch_statistics_still_matches_with_its_banner.
         anchors=("PROPERTY NAME:",),
     ),
+    _Signature("HOTEL STATISTICS", "HOTELKEY", "hotel_statistics", anchors=_HOTELKEY_STAMP),
+    _Signature("SETTLEMENT BY PAYMENT TYPE", "HOTELKEY", "settlement", anchors=_HOTELKEY_STAMP),
+    _Signature("ALL PAYMENTS", "HOTELKEY", "all_payments", anchors=_HOTELKEY_STAMP),
+    _Signature("AR INVOICE AGING", "HOTELKEY", "ar_aging", anchors=_HOTELKEY_STAMP),
 ]
 # Only the header area is needed; scanning a bounded prefix keeps false positives out
 # of table bodies further down the page.
@@ -60,6 +75,23 @@ def supported_pms_sources() -> frozenset[str]:
     whose pack quarantines on ingest, or a working one is never offered.
     """
     return frozenset(sig.pms_source.lower() for sig in _REPORT_SIGNATURES)
+
+
+# Sources that ingest statistics and ledger balances but do not back the
+# operating statement (design D-OH22.6). The value is the notice the statement
+# shows in place of its revenue sections; a source absent here backs the
+# statement. Every key is a registered source, pinned in
+# tests/test_detect_signature.py by test_every_notice_source_is_a_supported_source;
+# tests/test_hotelkey_end_to_end.py::test_hotelkey_never_produces_financial_facts_or_journal_entries
+# holds HotelKey to it from the ingestion side.
+SOURCE_NOTICES: dict[str, str] = {
+    "HOTELKEY": (
+        "HotelKey is ingested as a statistics-and-balances source. The operating "
+        "statement is built from transaction-grain postings, which need HotelKey's "
+        "night audit pack; that pack has not been provided for this property, so no "
+        "revenue, tax or settlement section is shown."
+    ),
+}
 
 
 @dataclass(frozen=True)

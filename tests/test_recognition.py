@@ -35,3 +35,12 @@ def test_one_stamp_alone_names_nobody():
     assert recognize_vendor(words) is None
     words = _words("Summit", "Lodge", "Report", "Run", "Time:", "10:04:20", "AM")
     assert recognize_vendor(words) is None
+
+
+def test_every_supported_source_has_a_display_name():
+    # A source registered in detect without a spelling here would print through
+    # str.title() ("Skytouch", "Hotelkey") in the preview.
+    from usali.detect import supported_pms_sources
+    from usali.recognition import _DISPLAY_NAMES
+
+    assert set(_DISPLAY_NAMES) == {s.upper() for s in supported_pms_sources()}

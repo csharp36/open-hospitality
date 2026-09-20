@@ -348,9 +348,13 @@ def transform_cmd(
 ) -> None:
     """Map staged rows to usali_financial_fact and reconcile."""
     with _session_factory()() as s:
-        result = transform(
-            s, source=source, business_date=date.fromisoformat(business_date), edition=edition
-        )
+        try:
+            result = transform(
+                s, source=source, business_date=date.fromisoformat(business_date), edition=edition
+            )
+        except ValueError as exc:
+            typer.echo(f"FAILED: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
         s.commit()
     typer.echo(
         f"mapped={result.mapped} unmapped={result.unmapped} "
@@ -360,12 +364,13 @@ def transform_cmd(
 
 @app.command("process")
 def process_cmd(
-    pdf_path: str = typer.Argument(..., help="PDF to run through the full pipeline"),
+    pdf_path: str = typer.Argument(..., help="PDF or XLSX to run through the full pipeline"),
     processed_dir: str | None = typer.Option(None, help="Where successful files are filed"),
     failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
     edition: int = typer.Option(12, help="USALI edition"),
 ) -> None:
-    """Detect, parse, stage, transform, and file one PDF (auto-detects source/report/property)."""
+    """Detect, parse, stage, transform, and file one PDF or XLSX (auto-detects
+    source/report/property)."""
     settings = get_settings()
     with _session_factory()() as s:
         try:
@@ -386,14 +391,21 @@ def process_cmd(
     )
 
 
+# The one accepted-suffix set for `watch`: the startup drain and the live handler
+# both read it, so a file already waiting when watch starts is treated exactly as
+# one arriving later (tests/test_cli_commands.py::
+# test_watch_drains_every_accepted_suffix_already_in_the_inbox).
+_WATCH_SUFFIXES = frozenset({".pdf", ".xlsx"})
+
+
 @app.command("watch")
 def watch_cmd(
-    inbox_dir: str | None = typer.Option(None, help="Sentinel directory to watch for PDFs"),
+    inbox_dir: str | None = typer.Option(None, help="Directory to watch for PDF/XLSX reports"),
     processed_dir: str | None = typer.Option(None, help="Where successful files are filed"),
     failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
     edition: int = typer.Option(12, help="USALI edition"),
 ) -> None:
-    """Watch the inbox directory and run the full pipeline on every PDF that appears."""
+    """Watch the inbox directory and run the full pipeline on every PDF or XLSX that appears."""
     import time
 
     from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -406,7 +418,7 @@ def watch_cmd(
     inbox.mkdir(parents=True, exist_ok=True)
 
     def handle(path: Path) -> None:
-        if path.suffix.lower() != ".pdf":
+        if path.suffix.lower() not in _WATCH_SUFFIXES:
             return
         with _session_factory()() as s:
             try:
@@ -426,7 +438,8 @@ def watch_cmd(
                 time.sleep(0.5)  # allow the writer (mail client, scp, cp) to finish
                 handle(Path(str(event.src_path)))
 
-    for existing in sorted(inbox.glob("*.pdf")):  # drain anything already waiting
+    # Drain anything already waiting, in name order for determinism.
+    for existing in sorted(p for p in inbox.iterdir() if p.suffix.lower() in _WATCH_SUFFIXES):
         handle(existing)
 
     observer = Observer()

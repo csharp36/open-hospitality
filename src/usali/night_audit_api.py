@@ -6,9 +6,10 @@ upload and roll gate on `require_grants(ORG_ADMIN, PROPERTY_GM)` composed with
 properties). The roll emits one AuditEvent; uploads are audited by their
 IngestBatch rows, as every ingest already is.
 
-The upload VALIDATES BEFORE it ingests: the PDF is parsed once up front to check
-it detects as this property, as one of the night's required report types, and as
-the CURRENT business date — a mismatched file is refused with nothing staged
+The upload VALIDATES BEFORE it ingests: the file (PDF or XLSX, by magic bytes)
+is parsed once up front to check it detects as this property, as one of the
+night's required report types, and as the CURRENT business date — a mismatched
+file is refused with nothing staged
 (the generic /ingest stays unrestricted for backfills and corrections). Only a
 valid file reaches `process_file`, which owns staging, transform, coverage, and
 filing exactly as it does for every other ingest path.
@@ -40,11 +41,13 @@ from sqlalchemy.orm import Session
 from usali.adaptors import autoclerk_manager_report as mgr
 from usali.adaptors import autoclerk_rate_plan as rate_plan
 from usali.adaptors import autoclerk_transaction_summary as autoclerk
+from usali.adaptors import hotelkey as hk
 from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
-from usali.adaptors.pdf import extract_pages, extract_words
+from usali.adaptors.pdf import extract_pages
+from usali.adaptors.reader import ACCEPTED_FORMATS, is_pdf, is_xlsx, read_words
 from usali.auth import (
     ORG_ADMIN,
     PROPERTY_GM,
@@ -88,7 +91,7 @@ require_auditor = require_grants(ORG_ADMIN, PROPERTY_GM)
 
 router = APIRouter(prefix="/api/properties")
 
-_MAX_PDF_BYTES = 25 * 1024 * 1024
+_MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 
 def _safe_component(value: str) -> str:
@@ -106,6 +109,10 @@ _DATE_FNS = {
     ("AUTOCLERK", "rate_plan"): rate_plan.extract_business_date,
     ("SKYTOUCH", "hotel_journal"): sky_journal.extract_business_date,
     ("SKYTOUCH", "hotel_statistics"): sky_stats.extract_business_date,
+    ("HOTELKEY", "hotel_statistics"): hk.extract_business_date,
+    ("HOTELKEY", "settlement"): hk.extract_business_date,
+    ("HOTELKEY", "all_payments"): hk.extract_business_date,
+    ("HOTELKEY", "ar_aging"): hk.extract_business_date,
 }
 
 
@@ -173,7 +180,7 @@ async def upload_night_audit_report(
     property_id: str, request: Request, file: UploadFile,
     principal: Principal = Depends(require_auditor),
 ) -> dict[str, object]:
-    upload_name = file.filename or "upload.pdf"
+    upload_name = file.filename or "upload"
     # Multipart filenames are attacker-controlled (the /ingest rule): display
     # only, never a path component.
     if (
@@ -181,13 +188,14 @@ async def upload_night_audit_report(
         or "/" in upload_name or "\\" in upload_name or "\x00" in upload_name
     ):
         raise HTTPException(status_code=422, detail="unsafe upload filename")
-    payload = await file.read(_MAX_PDF_BYTES + 1)
-    if len(payload) > _MAX_PDF_BYTES:
-        raise HTTPException(status_code=413, detail="PDF too large")
+    payload = await file.read(_MAX_UPLOAD_BYTES + 1)
+    if len(payload) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="upload too large")
     # The /ingest magic-byte refusal, mirrored — and checked BEFORE the inbox
-    # write below, so a non-PDF never touches the filesystem at all.
-    if not payload.startswith(b"%PDF-"):
-        raise HTTPException(status_code=422, detail="upload must be a PDF")
+    # write below, so a blob that is neither format never touches the
+    # filesystem at all. The same is_pdf/is_xlsx pair read_words dispatches on.
+    if not (is_pdf(payload) or is_xlsx(payload)):
+        raise HTTPException(status_code=422, detail=f"upload must be a {ACCEPTED_FORMATS}")
 
     inbox, processed, failed = request.app.state.ingest_dirs
     with _session(request) as session:
@@ -224,7 +232,7 @@ async def upload_night_audit_report(
 
         # -- Pre-ingest validation: right property, right report, right day. --
         try:
-            words = extract_words(dest)
+            words = read_words(dest)
             det = detect(words, load_registry(session))
         except Exception as exc:
             raise _refuse(422, f"could not read report: {exc}") from exc

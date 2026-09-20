@@ -28,6 +28,7 @@ const SUPPORTED_PMS = [
   { value: 'opera', label: 'Opera' },
   { value: 'autoclerk', label: 'AutoClerk' },
   { value: 'skytouch', label: 'SkyTouch' },
+  { value: 'hotelkey', label: 'HotelKey' },
   { value: 'other', label: 'Other — my PMS isn’t listed' },
 ] as const satisfies readonly { value: PmsSource; label: string }[]
 const JURISDICTIONS = ['US-CA', 'US-FL'] as const
