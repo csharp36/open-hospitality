@@ -213,9 +213,9 @@ def _open_batch(
     session: Session, det: Detection, path: Path, file_hash: str, row_count: int
 ) -> IngestBatch:
     """An IngestBatch named from the DETECTION, for handlers whose stager does not
-    open one (ledger-only files) or whose export can legitimately be empty (a
-    settlement day with no payments) -- `stage_records` would otherwise label an
-    empty batch UNKNOWN/unknown."""
+    open one (ledger-only files) or that stage financial rows -- `stage_records`
+    names its own batch from the first record and would label an empty one
+    UNKNOWN/unknown."""
     batch = IngestBatch(
         pms_source=det.pms_source,
         report_type=det.report_type,

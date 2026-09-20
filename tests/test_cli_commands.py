@@ -203,9 +203,11 @@ def test_watch_drains_every_accepted_suffix_already_in_the_inbox(tmp_path, monke
     already waiting when watch starts is processed exactly as one arriving
     later would be. No DB and no observer thread: process_file is replaced by
     a recorder, the Observer by a stub, and the first main-loop sleep raises
-    KeyboardInterrupt so the command exits through its own Ctrl-C path."""
+    KeyboardInterrupt so the command exits through its own Ctrl-C path. The
+    Observer and time.sleep patches work because watch_cmd imports both lazily
+    and reaches them through the module attribute; if that import moves to
+    module level the stub goes inert and a real observer thread would start."""
     import contextlib
-    import shutil
     import time
     from types import SimpleNamespace
 
@@ -215,8 +217,8 @@ def test_watch_drains_every_accepted_suffix_already_in_the_inbox(tmp_path, monke
 
     inbox = tmp_path / "inbox"
     inbox.mkdir()
-    shutil.copy("docs/reference/samples/HotelKey - Hotel Statistics (mock).pdf", inbox / "b.pdf")
-    shutil.copy("tests/fixtures/hotelkey/Settlement By Payment Type.xlsx", inbox / "a.xlsx")
+    (inbox / "b.pdf").touch()  # contents irrelevant: process_file is stubbed below
+    (inbox / "a.xlsx").touch()
     (inbox / "notes.txt").write_text("not a report")
 
     seen: list[str] = []

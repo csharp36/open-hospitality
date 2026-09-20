@@ -360,12 +360,13 @@ def transform_cmd(
 
 @app.command("process")
 def process_cmd(
-    pdf_path: str = typer.Argument(..., help="PDF to run through the full pipeline"),
+    pdf_path: str = typer.Argument(..., help="PDF or XLSX to run through the full pipeline"),
     processed_dir: str | None = typer.Option(None, help="Where successful files are filed"),
     failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
     edition: int = typer.Option(12, help="USALI edition"),
 ) -> None:
-    """Detect, parse, stage, transform, and file one PDF (auto-detects source/report/property)."""
+    """Detect, parse, stage, transform, and file one PDF or XLSX (auto-detects
+    source/report/property)."""
     settings = get_settings()
     with _session_factory()() as s:
         try:

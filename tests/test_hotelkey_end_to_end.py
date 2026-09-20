@@ -181,3 +181,6 @@ def test_reingest_is_idempotent(seeded, tmp_path):
         select(func.count()).select_from(PmsDailyFinancialStage)
         .where(PmsDailyFinancialStage.pms_source == "HOTELKEY")
     ) == 5
+    # One IngestBatch per process_file call is the contract; row idempotency is the
+    # row_hash's (file_hash + ordinal), not the batch's.
+    assert seeded.scalar(select(func.count()).select_from(IngestBatch)) == 2
