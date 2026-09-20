@@ -134,7 +134,14 @@ def _blocks(words: list[Word], y_tol: float) -> list[_Block]:
             continue
         block = _Block(heading=heading, section=section, label_parts=[label])
         for w in values:
-            block.values[_nearest_column(w.x0, header.anchors)] = Decimal(w.text.replace(",", ""))
+            column = _nearest_column(w.x0, header.anchors)
+            if column in block.values:
+                # Nearest-column assignment must never overwrite a value
+                # (test_two_values_under_one_column_are_refused).
+                raise ValueError(
+                    f"HotelKey Hotel Statistics row {label!r} has two values under one column"
+                )
+            block.values[column] = Decimal(w.text.replace(",", ""))
         if (label == _TOTALS and blocks and blocks[-1].label == _TOTALS
                 and blocks[-1].heading == heading):
             block.section = heading       # Totals right after Totals: the enclosing section's

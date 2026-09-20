@@ -117,3 +117,23 @@ def test_a_missing_column_header_is_refused():
     words = [w for w in _words() if w.text != "LY-T-D"]
     with pytest.raises(ValueError, match="column header"):
         parse_hotel_statistics(words, property_id="HKDEMO", business_date=BD)
+
+
+def test_rows_after_the_page_three_bare_header_are_parsed():
+    # Page 3 opens with a header row and no heading above it; the rows under
+    # it belong to the "Guest Statistics" heading that closed page 2.
+    day = {r.metric_label: r.value for r in _stats() if r.period_label == "DAY" and not r.is_prior_year}
+    assert day["Adults"] == Decimal("45")
+    assert day["Total Guests"] == Decimal("48")
+    assert day["Departures"] == Decimal("14")
+
+
+def test_two_values_under_one_column_are_refused():
+    header = [Word(text=t, x0=x, top=100.0) for t, x in [
+        ("Description", 46.0), ("Actual", 134.0), ("Today", 160.0), ("M-T-D", 240.0),
+        ("LY-M-T-D", 326.0), ("Y-T-D", 426.0), ("LY-T-D", 516.0)]]
+    row = [Word(text=t, x0=x, top=114.0) for t, x in [
+        ("Total", 43.0), ("Rooms", 63.0), ("80", 150.0), ("81", 165.0), ("2,480", 242.0),
+        ("2,480", 334.0), ("18,160", 424.0), ("18,160", 517.0)]]
+    with pytest.raises(ValueError, match="two values under one column"):
+        parse_hotel_statistics(header + row, property_id="HKDEMO", business_date=BD)
