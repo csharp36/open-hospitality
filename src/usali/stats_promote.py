@@ -9,10 +9,19 @@ from sqlalchemy.orm import Session
 
 from usali.models import PmsDailyStatisticStage, UsaliStatisticFact
 
-# Canonical reporting periods. Anything not listed (Yesterday, Tomorrow, ...) stays
-# stage-only by design — the model is lenient, these are KPIs not ledger data.
-_CANONICAL_PERIODS = {"DAY": "DAY", "Today": "DAY", "MONTH": "MTD", "MTD": "MTD",
-                      "YEAR": "YTD", "YTD": "YTD"}
+# Canonical reporting periods, keyed by the label each adapter stages. Opera
+# and AutoClerk stage DAY/Today, MONTH/MTD, YEAR/YTD; SkyTouch stages its
+# column headings (ACTUAL, PTD, LY_PTD, YTD, LY_YTD) and already sets
+# is_prior_year on the LY_* rows, which is copied through unchanged. Anything
+# not listed (Yesterday, Tomorrow, ...) stays stage-only by design; the model
+# is lenient, these are KPIs not ledger data. The SkyTouch label set is pinned
+# against this table in
+# tests/test_stats_promote.py::test_every_skytouch_period_label_is_canonical.
+_CANONICAL_PERIODS = {
+    "DAY": "DAY", "Today": "DAY", "ACTUAL": "DAY",
+    "MONTH": "MTD", "MTD": "MTD", "PTD": "MTD", "LY_PTD": "MTD",
+    "YEAR": "YTD", "YTD": "YTD", "LY_YTD": "YTD",
+}
 
 
 class MetricMapping(BaseModel):
