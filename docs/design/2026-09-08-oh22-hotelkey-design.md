@@ -1,6 +1,6 @@
 # OH-22 — HotelKey ingestion (design)
 
-Status: **DECIDED (2026-09-20) — IMPLEMENTED on branch feat/oh22-hotelkey; PR number below** — §8 records the review outcome; D-OH22.6
+Status: **DECIDED (2026-09-20) — IMPLEMENTED in PR #136** — §8 records the review outcome; D-OH22.6
 carries the one decision that changed the scope. Scoped deliberately: the
 sample set in hand does not include a HotelKey night audit pack, so the
 trx-code-grain financial path this repo's other sources are built on cannot be
