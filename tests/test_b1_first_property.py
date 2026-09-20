@@ -1,10 +1,11 @@
-"""create_first_property: inserts a bare property under the org-bound session,
-generates a unique property_id, defaults timezone when omitted."""
+"""create_first_property: inserts a property and its detection alias under the
+org-bound session, stores pms_source uppercase, generates a unique
+property_id, defaults timezone when omitted."""
 
 from sqlalchemy import select
 
 from usali.mapping.property_registry import create_first_property, ensure_default_org
-from usali.models import Property
+from usali.models import Property, PropertyDetectionAlias
 from usali.tenancy import FOUNDING_ORG_ID, bind_org_context
 
 
@@ -19,9 +20,19 @@ def test_creates_a_property_under_the_bound_org(db_session):
     row = db_session.execute(
         select(Property).where(Property.property_id == pid)
     ).scalar_one()
-    assert row.name == "Sunset Inn" and row.pms_source == "opera"
+    # Stored UPPERCASE from the lowercase API spelling: the form the adapters
+    # stamp on facts and the detection registry is compared against
+    # (create_first_property's docstring).
+    assert row.name == "Sunset Inn" and row.pms_source == "OPERA"
     assert row.org_id == FOUNDING_ORG_ID and row.wage_jurisdiction == "US-CA"
     assert pid.startswith("sunset-inn-")
+    # The detection alias: the typed name, under the same uppercase source,
+    # in the same org -- what load_registry hands detect().
+    alias = db_session.execute(
+        select(PropertyDetectionAlias).where(PropertyDetectionAlias.property_id == pid)
+    ).scalar_one()
+    assert (alias.org_id, alias.pms_source, alias.match_phrase) == (
+        FOUNDING_ORG_ID, "OPERA", "Sunset Inn")
 
 
 def test_defaults_timezone_when_omitted(db_session):

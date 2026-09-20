@@ -21,11 +21,14 @@ from usali.server import create_app
 
 
 def _signup_client(db_url, tmp_path, *, notifier, kc, spy=None, admin_email: str = "",
-                   public_base_url: str = "http://testserver"):
+                   public_base_url: str = "http://testserver", verifier=None):
     """A serving app whose PUBLIC surfaces run as usali_app and whose
     provisioner seam runs as usali_provisioner. `spy` wraps the provisioner
-    factory so a test can assert it is (or is not) opened."""
-    verifier, _ = make_authkit()
+    factory so a test can assert it is (or is not) opened. `verifier` lets a
+    test that goes on to call a GATED endpoint pass the authkit verifier whose
+    minter it holds."""
+    if verifier is None:
+        verifier, _ = make_authkit()
     base = make_session_factory(make_engine(app_role_url(db_url)))
     prov = make_session_factory(make_engine(provisioner_role_url(db_url)))
     if spy is not None:
@@ -337,7 +340,11 @@ def test_complete_creates_the_first_property(db_url, tmp_path, _founding_committ
             Organization.kc_org_alias == "new-owner-group")).scalar_one()
         prop = s.execute(select(Property).where(
             Property.org_id == org.org_id)).scalar_one()
-        assert prop.name == "Owner Hotel" and prop.pms_source == "opera"
+        # Stored UPPERCASE from the lowercase API Literal: the spelling the
+        # adapters stamp on facts and the detection registry compares against
+        # (create_first_property's docstring; the end-to-end proof is
+        # test_a_signup_created_property_takes_its_first_night_audit_upload).
+        assert prop.name == "Owner Hotel" and prop.pms_source == "OPERA"
         assert prop.wage_jurisdiction == "US-CA"
         assert prop.timezone == "America/New_York"
 
@@ -423,7 +430,7 @@ def test_complete_skytouch_pms_creates_a_property(db_url, tmp_path, _founding_co
             Organization.kc_org_alias == "redstone-group")).scalar_one()
         prop = s.execute(select(Property).where(
             Property.org_id == org.org_id)).scalar_one()
-        assert prop.name == "Redstone Test Inn" and prop.pms_source == "skytouch"
+        assert prop.name == "Redstone Test Inn" and prop.pms_source == "SKYTOUCH"
         assert prop.timezone == "America/Denver"
         # A supported source records NO interest row and emails no admin.
         assert s.execute(select(PmsInterestRequest).where(
@@ -471,12 +478,91 @@ def test_complete_hotelkey_pms_creates_a_property(db_url, tmp_path, _founding_co
             Organization.kc_org_alias == "lakeside-group")).scalar_one()
         prop = s.execute(select(Property).where(
             Property.org_id == org.org_id)).scalar_one()
-        assert prop.name == "Lakeside Test Lodge" and prop.pms_source == "hotelkey"
+        assert prop.name == "Lakeside Test Lodge" and prop.pms_source == "HOTELKEY"
         assert prop.timezone == "America/Chicago"
         # A supported source records NO interest row and emails no admin.
         assert s.execute(select(PmsInterestRequest).where(
             PmsInterestRequest.org_alias == "lakeside-group")).scalar_one_or_none() is None
     assert [e for e in notifier.emails if e["to"] == "ops@example.test"] == []
+
+
+def test_a_signup_created_property_takes_its_first_night_audit_upload(
+    db_url, tmp_path, _founding_committed
+):
+    """End to end across the casing seam: signup stores the property from the
+    lowercase API Literal, the adapters and REQUIRED_REPORTS spell sources
+    uppercase, and the night audit reads facts by the property row's own
+    pms_source. A property created by signup must take a night-audit upload
+    for the very first night and see its AR close in the state payload --
+    which needs the property to be DETECTABLE (a detection alias, from the
+    name typed at signup) and its stored pms_source to match what the adapter
+    stamps on the facts."""
+    from datetime import date
+    from decimal import Decimal
+    from pathlib import Path
+
+    from tests.grants import grant_role
+    from usali.db import make_engine as me
+    from usali.db import make_session_factory as msf
+    from usali.models import NightAuditState, Organization, Property, UsaliLedgerBalanceFact
+
+    verifier, mint = make_authkit()
+    raw = _make_invite(db_url, "owner@example.test")
+    notifier = CapturingNotifier()
+    client = _signup_client(db_url, tmp_path, notifier=notifier,
+                            kc=InMemoryKeycloakAdmin(), verifier=verifier)
+    client.post("/api/signup/otp", json={"token": raw, "cell": "+15550000000"})
+    code = _last_code(notifier)
+    done = client.post("/api/signup/complete", json={
+        "token": raw, "otp": code,
+        "workspace_name": "Lakeside Group", "workspace_alias": "lakeside-group",
+        # The name the fixture header prints (tests/fixtures/hotelkey/*.xlsx,
+        # cell A1): what detection has to match.
+        "property_name": "Lakeside Test Lodge", "pms_source": "hotelkey",
+        "wage_jurisdiction": "US-TX", "timezone": "America/Chicago",
+        "cell": "+15550000000", "password": "chosen-password",
+    })
+    assert done.status_code == 201, done.text
+
+    su = msf(me(db_url))
+    with su() as s:
+        org = s.execute(select(Organization).where(
+            Organization.kc_org_alias == "lakeside-group")).scalar_one()
+        prop = s.execute(select(Property).where(
+            Property.org_id == org.org_id)).scalar_one()
+        property_id, org_id, stored_source = prop.property_id, org.org_id, prop.pms_source
+        grant_role(s, "org_admin", sub="lakeside-admin", org_id=org_id)
+        # Pin the state to the fixture's business date.
+        s.add(NightAuditState(org_id=org_id, property_id=property_id,
+                              current_business_date=date(2026, 8, 13)))
+        s.commit()
+
+    token = mint(roles=["org_admin"], sub="lakeside-admin",
+                 organizations=("lakeside-group",))
+    workbook = Path("tests/fixtures/hotelkey/AR Invoice Aging.xlsx")
+    r = client.post(
+        f"/api/properties/{property_id}/night-audit/upload",
+        headers={"Authorization": f"Bearer {token}"},
+        files={"file": (workbook.name, workbook.read_bytes(),
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert {s_["report_type"]: s_["landed"] for s_ in body["slots"]}["ar_aging"] is True
+    # The AR close is visible to the night audit only if _balances found it
+    # under the property row's pms_source: with balances on file the
+    # verification list is the two named checks, not the "no ledger balances"
+    # ledger_block skip.
+    assert [c["name"] for c in body["verification"]] == [
+        "balance_identity", "ar_rollforward"]
+
+    with su() as s:
+        fact = s.execute(select(UsaliLedgerBalanceFact).where(
+            UsaliLedgerBalanceFact.property_id == property_id,
+            UsaliLedgerBalanceFact.ledger_code == "AR_LEDGER",
+        )).scalar_one()
+        assert fact.pms_source == stored_source == "HOTELKEY"
+        assert Decimal(str(fact.amount)) != 0
 
 
 def test_signup_literal_tracks_the_detection_registry():
