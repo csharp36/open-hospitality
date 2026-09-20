@@ -85,6 +85,10 @@ def render_sos_text(sos: SosReport) -> str:
         f"Property: {sos.property_id}    PMS source: {sos.pms_source}",
         _period_heading(sos),
         _EDITION_NOTE,
+    ]
+    if sos.source_notice is not None:
+        out.append(f"NOTE: {sos.source_notice}")
+    out += [
         rule,
         "",
         "OPERATED DEPARTMENTS",
@@ -179,6 +183,7 @@ def render_sos_json(sos: SosReport) -> str:
         "business_date": None if sos.business_date is None else sos.business_date.isoformat(),
         "date_from": None if sos.date_from is None else sos.date_from.isoformat(),
         "date_to": None if sos.date_to is None else sos.date_to.isoformat(),
+        "source_notice": sos.source_notice,
         "operated_departments": [
             {
                 "sub_category": dept.sub_category,
@@ -248,6 +253,8 @@ def render_sos_csv(sos: SosReport) -> str:
         rows.append(
             ["meta", "date_to", "", "", "" if sos.date_to is None else sos.date_to.isoformat()]
         )
+    if sos.source_notice is not None:
+        rows.append(["meta", "source_notice", "", "", sos.source_notice])
 
     for dept in sos.operated_departments:
         rows += _line_rows("operated_departments", dept.lines)

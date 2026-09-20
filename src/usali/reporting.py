@@ -269,6 +269,12 @@ class SosReport:
     sick_pay_total: Decimal = Decimal("0.00")
     sick_suppressed_departments: int = 0
     sick_unpriced_hours: Decimal = Decimal("0.00")
+    # D-OH22.6: set only by `statistics_only_statement`, for a source in
+    # detect.SOURCE_NOTICES; the statement renders it in place of its revenue
+    # sections. None for every SOS-backing source. Not a "_total", so
+    # tests/test_sos_journal.py::test_the_journal_owned_totals_set_is_closed
+    # is unaffected.
+    source_notice: str | None = None
 
 
 def _grouped_lines(facts: Iterable[UsaliFinancialFact]) -> list[SosLine]:
@@ -1221,6 +1227,71 @@ def summary_operating_statement_from_journal(
     return replace(report, **changes)
 
 
+def statistics_only_statement(
+    session: Session,
+    *,
+    property_id: str,
+    pms_source: str,
+    notice: str,
+    business_date: date | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> SosReport:
+    """The statement for a source that does not back the SOS (D-OH22.6):
+    statistics and the labor block, every revenue section empty, and
+    `source_notice` saying why. Raises NoFactsError when the window holds no
+    promoted statistics, so the API's 404 means the same thing it does for a
+    journal-backed property: nothing landed for that day."""
+    start, end = _sos_window(business_date, date_from, date_to)
+    statistics = _statistics(session, property_id, start, end)
+    if not statistics:
+        raise NoFactsError(
+            f"no statistic facts for property {property_id} between {start} and {end}"
+        )
+    (payroll_expense, payroll_expense_total, labor_hours_total,
+     labor_ot_hours_total, labor_fte, labor_suppressed_departments,
+     labor_unpriced_hours) = _labor_sections(session, property_id, start, end)
+    labor_variance = _labor_variance(
+        session, property_id, start, end,
+        alert_pct=get_settings().labor_variance_alert_pct,
+    )
+    (sick_pay, sick_pay_total, sick_suppressed_departments,
+     sick_unpriced_hours) = _sick_pay(session, property_id, start, end)
+    zero = Decimal("0")
+    return SosReport(
+        property_id=property_id,
+        pms_source=pms_source,
+        business_date=business_date,
+        date_from=date_from,
+        date_to=date_to,
+        operated_departments=[],
+        misc_income=[],
+        misc_income_total=zero,
+        total_operating_revenue=zero,
+        taxes=[],
+        taxes_total=zero,
+        settlements=[],
+        settlements_total=zero,
+        other=[],
+        other_total=zero,
+        rooms_segments=[],
+        statistics=statistics,
+        payroll_expense=payroll_expense,
+        payroll_expense_total=payroll_expense_total,
+        labor_hours_total=labor_hours_total,
+        labor_ot_hours_total=labor_ot_hours_total,
+        labor_fte=labor_fte,
+        labor_suppressed_departments=labor_suppressed_departments,
+        labor_unpriced_hours=labor_unpriced_hours,
+        sick_pay=sick_pay,
+        sick_pay_total=sick_pay_total,
+        sick_suppressed_departments=sick_suppressed_departments,
+        sick_unpriced_hours=sick_unpriced_hours,
+        labor_variance=labor_variance,
+        source_notice=notice,
+    )
+
+
 # --- Mapping coverage and confidence report -------------------------------------
 
 # The staged segment TOTAL pseudo-code is the report's own reconciliation row, not a
@@ -1604,29 +1675,34 @@ def line_transactions(
 
 
 def list_properties(session: Session) -> list[PropertyInfo]:
-    """List every (property_id, pms_source) with promoted financial facts.
+    """List every (property_id, pms_source) with promoted financial OR statistic
+    facts. A statistics-and-balances source (D-OH22.6) has no financial facts and
+    must still reach the property picker:
+    tests/test_sos_source_notice.py::test_a_statistics_only_property_is_in_the_property_list.
 
-    First/last dates are the min/max fact business dates — the window the portal
-    can meaningfully query. Ordered by property_id; empty database yields [].
+    First/last dates are the min/max fact business dates across both — the window
+    the portal can meaningfully query. Ordered by (property_id, pms_source); an
+    empty database yields [].
     """
-    rows = session.execute(
-        select(
-            UsaliFinancialFact.property_id,
-            UsaliFinancialFact.pms_source,
-            func.min(UsaliFinancialFact.business_date),
-            func.max(UsaliFinancialFact.business_date),
-        )
-        .group_by(UsaliFinancialFact.property_id, UsaliFinancialFact.pms_source)
-        .order_by(UsaliFinancialFact.property_id, UsaliFinancialFact.pms_source)
-    ).all()
+    windows: dict[tuple[str, str], tuple[date, date]] = {}
+    for model in (UsaliFinancialFact, UsaliStatisticFact):
+        rows = session.execute(
+            select(
+                model.property_id,
+                model.pms_source,
+                func.min(model.business_date),
+                func.max(model.business_date),
+            ).group_by(model.property_id, model.pms_source)
+        ).all()
+        for property_id, pms_source, first, last in rows:
+            key = (property_id, pms_source)
+            if key in windows:
+                first = min(first, windows[key][0])
+                last = max(last, windows[key][1])
+            windows[key] = (first, last)
     return [
-        PropertyInfo(
-            property_id=property_id,
-            pms_source=pms_source,
-            first_date=first_date,
-            last_date=last_date,
-        )
-        for property_id, pms_source, first_date, last_date in rows
+        PropertyInfo(property_id=pid, pms_source=src, first_date=first, last_date=last)
+        for (pid, src), (first, last) in sorted(windows.items())
     ]
 
 
