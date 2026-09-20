@@ -8,7 +8,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.0.52",
-    "alembic>=1.19.1",
+    "alembic>=1.19.2",
     "psycopg[binary]>=3.3.5",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
@@ -20,10 +20,10 @@ dependencies = [
     "uvicorn>=0.52.4",
     "python-multipart>=0.0.32",
     "httpx>=0.28.1",
-    "pyjwt[crypto]>=2.13.0",
+    "pyjwt[crypto]>=2.14.0",
     "cryptography>=50.0.1",
     "pyhpke>=0.6.5",
-    "google-cloud-storage>=3.13.1",
+    "google-cloud-storage>=3.14.1",
     "defusedxml>=0.7.1",
     "openpyxl>=3.1.5",
 ]
@@ -32,14 +32,14 @@ dependencies = [
 # Face matching (Pillar F): heavy, optional, dark-flagged. The core install
 # never pays for onnxruntime; the engine imports lazily and fails loudly.
 face = [
-    "onnxruntime>=1.29.0",
-    "numpy>=2.5.2",
+    "onnxruntime>=1.30.0",
+    "numpy>=2.5.3",
     "pillow>=12.3.0",
 ]
 dev = [
     "pytest>=9.1.1",
     "testcontainers[postgres]>=4.15.0",
-    "ruff>=0.16.6",
+    "ruff>=0.16.7",
     "mypy>=2.3.1",
     "types-PyYAML",
     "types-defusedxml",
