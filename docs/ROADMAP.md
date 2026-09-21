@@ -160,7 +160,7 @@ G3+G4 → OH-29, G5+G6+G7 → OH-30, G8 → the forecasting item in Tier 2.
 | 1 | **HotelKey integration** — API + event stream where the property grants credentials; a parser for Hilton PEP's emailed audit pack where the API is franchisor-gated. Include settlement-by-payment-type from day one; bank matching (#6) needs it. | OH-31 (shipped), OH-22 | Integration #1 of seven: the largest and fastest-growing brand platform, and the only API-first accounting feed among the brand systems. Credentials are property-initiated and already requested. **File ingestion shipped as OH-31**, a statistics-and-balances source (design D-OH22.6, 2026-09-20): all four HotelKey exports ingest; statistics and AR balances promote; financial rows stage and do not post, and the operating statement says so. Not SOS-backing until the night audit pack arrives; the API/event stream promised above is pending vendor access. |
 | 2 | **Ingestion-boundary redaction on the authenticated path** | OH-32 (shipped) | The gate that lets a stranger upload a real audit pack; the first line of every security review. More important, not less, once OH holds bank tokens. **Shipped 2026-09-21, destructive**: uploads never persist; a redacted words extract of the recognized reports is the only copy (design 2026-09-21). It was not the smallest item on the list: the first cut's card masker erased statistics rows and its retained XLSX could not be re-parsed; both are pinned now. |
 | 3 | **General ledger posting core** — USALI chart of accounts with per-org extensions, immutable double-entry journal with source links to staged PMS rows and labor facts, fiscal periods with an audited close, trial balance and balance sheet; the operating statement re-pointed at the journal; the QBO push becomes an export from it. | OH-27 | Everything later posts into it, and it is smaller than it sounds: the fiscal calendar, the USALI dictionary, the staged facts, and the journal generator already exist. Needs the GL posting-model ADR first (§6). **Backend, the /gl page, and the SOS cutover shipped**: the operating statement's totals now render from the journal (shape C of docs/design/2026-09-07-oh27-sos-cutover-decision.md), with tests/test_gl_parity.py staying in CI as the tripwire. |
-| 4 | **Emailed-report intake** — an inbound address per property, detection-registry routed. | OH-23 | Four of the seven target PMSs deliver by scheduled email; until this exists, each is a daily manual upload and self-service onboarding is a slogan. Depends on #2. |
+| 4 | **Emailed-report intake** — an inbound address per property, detection-registry routed. | OH-23 (shipped) | Four of the seven target PMSs deliver by scheduled email; until this exists, each is a daily manual upload and self-service onboarding is a slogan. #2 shipped (OH-32). **Shipped: Cloudflare Email Worker → signed webhook; per-property token address; sender policy; event log on the property page (design 2026-09-21)**, PR #TBD. Turning it on is a manual Cloudflare and Secret Manager sequence — `docs/runbooks/email-intake.md` is the ten-step procedure, and nothing in it has been run yet. |
 
 ### Tier 1 — a tenant that pays; the books become real; the seven fill in
 
@@ -309,7 +309,43 @@ said such movements belong.
   boundary, so a repository of whole packs is no longer what the roadmap
   promises. A viewer that wants more extends the retention policy section by
   section.
-- **OH-23 unchanged** and next: its intake inherits the gate.
+- **OH-23 unchanged** and next: its intake inherits the gate. (Superseded
+  later the same day by §7.3, which ships it.)
+
+### 7.3 Deltas applied 2026-09-21 (second revision)
+
+- **OH-23 `planned` → `shipped`** — emailed night-audit intake, Tier 0 row 4.
+  A Cloudflare Email Worker signs the raw message and POSTs it to
+  `POST /api/intake/email`; a per-property token address resolves the tenant;
+  the sender policy reads Cloudflare's `Authentication-Results`; every message
+  becomes a row in `email_intake_event`, shown on the property page. Design
+  `2026-09-21-oh23-emailed-intake-design.md` (D-OH23.1–9). The status is about
+  the code, not the mailbox: no Cloudflare zone, secret, or routing rule has
+  been created, and `docs/runbooks/email-intake.md` is the procedure that
+  remains to be worked through by hand.
+- **The tenancy shape is deliberately mixed, and §1.2's two-wall reading
+  needs the exception.** `email_intake_event` is `OrgScoped` and carries the
+  `org_wall` policy like every other tenant table.
+  `property_intake_address` does not: the webhook has to resolve a local part
+  to a property before any org is known, so the row cannot sit behind a
+  predicate that reads the org variable. It still carries a `NOT NULL`
+  `org_id`, and every operator-facing read and write of it filters
+  `org_id == tenancy.current_org_id(session)` in the query itself.
+  `tests/test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`
+  carries the table in its named exclusion tuple rather than its policy set,
+  which is where that choice is written down.
+- **The RLS inventory is five hand-maintained lists, not four.** The design
+  doc and the plan both said four. The fifth is the exact `ix_<table>_org_id` index
+  set in `tests/test_l1_org_wall_migration.py`, which a new tenant table
+  changes as surely as `test_models`, `test_l2_rls_wall`, `test_l4_org_grants`
+  and `test_migration_on_populated_data` do. The memory note "Adding a tenant
+  table: four lists" is one short for the same reason.
+- **The frontend type gate in CI was checking nothing.** `frontend/tsconfig.json`
+  is solution-style — `files: []` plus project references — so
+  `npx tsc --noEmit` type-checked zero files and passed on anything. It is now
+  `npx tsc -b --force` in `.github/workflows/ci.yml`. The defect that exposed
+  it: an `IntakeOutcome` literal that no union member matched passed
+  `--noEmit` and failed `-b`.
 
 ## 8. Deliberately not building
 

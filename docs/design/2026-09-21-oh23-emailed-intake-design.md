@@ -259,13 +259,32 @@ PMS ──SMTP──> Cloudflare Email Routing (intake.<domain>, catch-all)
 
 ## 4. Tenancy and security notes
 
-- Two new tables, two different shapes: `property_intake_address` is
-  org-independent (joins `invite`, `otp_challenge` in the migration test's
-  `_L1_ORG_INDEPENDENT`, and `test_tables_registered`);
-  `email_intake_event` is `OrgScoped` with `ENABLE`/`FORCE ROW LEVEL
-  SECURITY` and the `org_wall` policy (the `l5a0orgsettings` template),
-  and joins the RLS inventory in `test_l2_rls_wall`. The alembic head
-  literal in `test_l4_org_grants` moves. Four hand-maintained lists.
+- Two new tables, two different shapes. `property_intake_address` is
+  org-KEYED but UNWALLED: it carries a `NOT NULL org_id` like any tenant
+  table, and `test_l1_org_wall_migration` and
+  `test_migration_on_populated_data` treat it as tenant-owned for exactly
+  that reason — it does not join `invite` and `otp_challenge` in the latter's
+  `_L1_ORG_INDEPENDENT`, whose membership means "no `org_id` column at all".
+  What it lacks is the RLS policy, because the webhook resolves a local part
+  to a property before any org is bound and a predicate reading the org
+  variable would refuse the lookup. That choice is recorded in one place:
+  the table is absent from
+  `test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`'s
+  policy set and present in the same test's named exclusion tuple, so
+  removing the wall silently is not possible — the exclusion has to be
+  written down. Confinement for operator traffic is therefore the query's
+  job, not the database's: every read and write of the table filters
+  `org_id == tenancy.current_org_id(session)` explicitly.
+  `email_intake_event` is the ordinary shape — `OrgScoped` with
+  `ENABLE`/`FORCE ROW LEVEL SECURITY` and the `org_wall` policy (the
+  `l5a0orgsettings` template) — and joins the RLS inventory in
+  `test_l2_rls_wall`. The alembic head literal in `test_l4_org_grants` moves.
+  Five hand-maintained lists, not four: `test_models`'s
+  `test_tables_registered`, `test_l2_rls_wall`'s policy inventory,
+  `test_l4_org_grants`'s head literal, `test_migration_on_populated_data`'s
+  `_L1_ORG_INDEPENDENT`, and — the one the first draft of this doc missed —
+  the exact `ix_<table>_org_id` index set in
+  `tests/test_l1_org_wall_migration.py`.
 - The webhook is the second non-OIDC surface. Unlike the kiosk it is
   multi-org by construction, because the address row carries the org.
 - The secret is one value in two places (GitHub secret → `wrangler secret

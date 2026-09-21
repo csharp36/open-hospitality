@@ -60,7 +60,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - name: Types
-        run: npx tsc --noEmit
+        # frontend/tsconfig.json is solution-style (`files: []` + references),
+        # so `--noEmit` type-checks zero files and passes on anything; `-b` is
+        # the real gate. Found 2026-09-21: an invalid `IntakeOutcome` literal
+        # passed `--noEmit` and failed `-b`.
+        run: npx tsc -b --force
       - name: Lint
         run: npx oxlint
       - name: Tests
