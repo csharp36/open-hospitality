@@ -2409,8 +2409,10 @@ class PropertyIntakeAddress(Base):
 class EmailIntakeEvent(OrgScoped, Base):
     """One row per message received for a property's address (D-OH23.7).
     This table has no body column. D-OH23.7 requires subject and error text
-    pass mask_pans before the write; Task 3 owes
-    `test_event_text_carries_no_card_numbers`."""
+    pass mask_pans before the write; `intake_api._record` is where the subject
+    is masked and `intake_api._masked` where an error is, and
+    `tests/test_intake_email.py::test_event_text_carries_no_card_numbers` is
+    what fails if either stops."""
 
     __tablename__ = "email_intake_event"
     __table_args__ = (
