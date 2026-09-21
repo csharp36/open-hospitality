@@ -11,8 +11,7 @@ _DEV_DEFAULT_EMAIL_INTAKE_SECRET = "dev-intake-secret"
 # field name -> (its committed dev default, what to do about it). Every value
 # here is a secret whose plaintext is in the repository, so in production none
 # of them may still be in effect. `_refuse_dev_secrets_in_prod` below is where
-# that is enforced, and tests/test_config_failfast.py exercises one refusal and
-# one acceptance per entry.
+# that is enforced.
 _DEV_DEFAULT_SECRETS: dict[str, tuple[str, str]] = {
     "field_encryption_key": (
         _DEV_DEFAULT_FIELD_ENCRYPTION_KEY,
@@ -241,8 +240,8 @@ class Settings(BaseSettings):
     # default above is refused in production. `email_intake_domain` is the
     # domain the per-property addresses are minted under and is what the
     # property page shows the operator. `email_intake_max_bytes` caps the
-    # webhook body (Cloudflare Email Routing's own message limit is 25 MB, so a
-    # larger cap would only be reached by a caller that is not the worker).
+    # webhook body; D-OH23.2 is where the 25 MB figure and its reasoning are
+    # recorded.
     # `email_intake_window_seconds` is how far a signed timestamp may sit from
     # now, in either direction, before the call is refused as a replay.
     email_intake_secret: str = _DEV_DEFAULT_EMAIL_INTAKE_SECRET

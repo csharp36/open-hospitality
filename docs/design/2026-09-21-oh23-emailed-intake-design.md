@@ -54,7 +54,7 @@ message to `POST /api/intake/email`.** Email Routing on the subdomain
 the subdomain is Cloudflare's, added when the subdomain is enabled) with a
 catch-all rule → the worker. The worker does nothing clever: it reads
 `message.raw`, refuses anything over the size limit, and POSTs the bytes as
-`message/rfc822` with four headers: `X-Intake-Timestamp` (unix seconds),
+`message/rfc822` with five headers: `X-Intake-Timestamp` (unix seconds),
 `X-Intake-Signature` (`sha256=` + HMAC-SHA256 over
 `timestamp + "\n" + body` with the shared secret), `X-Intake-To` (the
 envelope recipient, `message.to`), `X-Intake-From` (the envelope sender,
@@ -107,7 +107,14 @@ or the insert is refused.
 **D-OH23.4 — Sender policy: authenticated or allowlisted, never
 unauthenticated.** From `X-Intake-Auth`, require `dkim=pass` or `spf=pass`
 for the envelope sender's domain; if the address has `sender_domains`, the
-envelope sender's domain must also be in it. A message failing either is
+envelope sender's domain must also be in it. A pass must be ALIGNED with the
+envelope sender, not merely present (review decision, 2026-09-21): a `dkim=pass`
+counts only when its `header.d` equals the envelope-from domain or is a parent
+of it on a label boundary (DMARC relaxed alignment), an `spf=pass` counts only
+when its `smtp.mailfrom` domain equals it exactly, a pass carrying no such
+property counts for nothing, and the `sender_domains` allowlist stays an exact
+match — without that binding, anyone holding a valid signature for a domain of
+their own could post a message under any envelope sender. A message failing either is
 recorded (`sender_rejected`) and not opened for attachments. Rejected: no
 sender check (the address is a capability but the PMS vendor's sending
 domain is a cheap second factor); DMARC-required (many PMS senders have no
@@ -122,7 +129,13 @@ to a different property than the address's. The report-type-in-required
 check is kept (`not_a_night_audit_report`). The business-date check is NOT
 applied: an email can arrive late, and a backfill by email is the point.
 The shared validator moves out of `night_audit_api.py` into `intake.py` so
-both callers run the same code.
+both callers run the same code. Two consequences of that move (review
+decision, 2026-09-21): the upload's PACK path now runs the report-type check
+too, which it did not before — it is symmetric with the single-report path and
+is a no-op for every pack reachable today — and the property and report-type
+checks now run over every recognized section before any business-date check,
+where they used to interleave section by section, so a pack that fails both
+ways names the wrong-property section rather than the wrong-date one.
 
 **D-OH23.6 — Duplicates are skipped by content hash before processing.**
 PMS schedulers re-send. An attachment whose sha256 already has a

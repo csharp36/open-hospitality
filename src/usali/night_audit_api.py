@@ -11,8 +11,8 @@ is parsed once up front to check it detects as this property, as one of the
 night's required report types, and as the CURRENT business date — a mismatched
 file is refused with nothing staged
 (the generic /ingest stays unrestricted for backfills and corrections). The
-property and report-type halves of that check are called out of `usali.intake`,
-so an emailed report is refused for the same reasons; the business-date half is
+property and report-type halves of that check are called out of `usali.intake`
+so a second caller can run them over the same bytes; the business-date half is
 this endpoint's own. Only a
 valid upload reaches `process_bytes`, which owns staging, transform, coverage,
 and filing exactly as it does for every other ingest path. Like /ingest, the
@@ -229,12 +229,12 @@ async def upload_night_audit_report(
             return _ingest_pack(session, request, prop, state, payload, name, _refuse)
 
         # -- Pre-ingest validation: right property, right report, right day. --
-        # The first two are usali.intake's, which the emailed-intake path runs
+        # The first two are usali.intake's, so a second caller can run them
         # over the same bytes; the DATE check below is this endpoint's alone
         # (D-OH23.5 keeps email open to a late night's backfill).
         checked = validate_single(session, payload, property_id, prop.pms_source)
         if checked.outcome is not None:
-            raise _refuse(422, checked.detail)
+            raise _refuse(422, checked.detail) from checked.cause
         words = checked.sections[0].words
         det = checked.sections[0].detection
         # "business date == the current date" is this endpoint's whole point, so
@@ -299,9 +299,9 @@ def _ingest_pack(
     contained and what was skipped.
 
     Recognizing a section by its TITLE and the property and report-type checks
-    are usali.intake.validate_sections' — the same code the emailed-intake path
-    runs. The split stays here because this endpoint answers a pack it cannot
-    read with its own 422, and because tests/test_night_audit.py::
+    are usali.intake.validate_sections', so a second caller can run them over
+    the same sections. The split stays here because this endpoint answers a
+    pack it cannot read with its own 422, and because tests/test_night_audit.py::
     test_pack_validation_recognizes_a_section_by_its_title patches `split_pack`
     at this module. The per-section BUSINESS-DATE check below stays here too,
     symmetric with the single-report path.
@@ -313,7 +313,7 @@ def _ingest_pack(
         raise _refuse(422, f"could not read the pack: {exc}") from exc
     checked = validate_sections(session, sections, prop.property_id, prop.pms_source)
     if checked.outcome is not None:
-        raise _refuse(422, checked.detail)
+        raise _refuse(422, checked.detail) from checked.cause
     recognized: list[ValidatedSection] = list(checked.sections)
     skipped_titles: list[str] = list(checked.skipped_titles)
     for section in recognized:
