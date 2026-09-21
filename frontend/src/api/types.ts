@@ -982,10 +982,17 @@ export interface PropertyConfig {
 // IntakeAddressModel/IntakeEventModel in src/usali/intake_address_api.py.
 
 /**
- * Every outcome a received message can be recorded with. The set is closed by
- * the `email_intake_event` CHECK constraint in src/usali/models.py; spelling
- * it as a union here is what makes an unhandled outcome a compile error in the
- * page that renders it.
+ * Every outcome a received message can be recorded with, as of this build. The
+ * set is closed on the server by the `email_intake_event` CHECK constraint in
+ * src/usali/models.py.
+ *
+ * It is NOT closed at runtime here: nothing validates a response against this
+ * union, so a release that adds an outcome delivers a value no build before it
+ * had heard of. What the union buys is a compile-time obligation on code that
+ * enumerates it — `OUTCOME_LABELS` in pages/IntakeSection.tsx is typed
+ * `Record<IntakeOutcome, string>`, so a member added here without a label
+ * fails `npx tsc -b`. Code that RENDERS an outcome still has to cope with a
+ * value outside the union.
  */
 export type IntakeOutcome =
   | 'ingested'
