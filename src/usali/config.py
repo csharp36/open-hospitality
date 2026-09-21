@@ -6,6 +6,23 @@ from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _DEV_DEFAULT_FIELD_ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
+_DEV_DEFAULT_EMAIL_INTAKE_SECRET = "dev-intake-secret"
+
+# field name -> (its committed dev default, what to do about it). Every value
+# here is a secret whose plaintext is in the repository, so in production none
+# of them may still be in effect. `_refuse_dev_secrets_in_prod` below is where
+# that is enforced, and tests/test_config_failfast.py exercises one refusal and
+# one acceptance per entry.
+_DEV_DEFAULT_SECRETS: dict[str, tuple[str, str]] = {
+    "field_encryption_key": (
+        _DEV_DEFAULT_FIELD_ENCRYPTION_KEY,
+        "set USALI_FIELD_ENCRYPTION_KEY to a real 32-byte key (Secrets Manager)",
+    ),
+    "email_intake_secret": (
+        _DEV_DEFAULT_EMAIL_INTAKE_SECRET,
+        "set USALI_EMAIL_INTAKE_SECRET to the secret the mail worker signs with",
+    ),
+}
 
 # URLs that must be HTTPS for a non-loopback host in production (see
 # _refuse_dev_secrets_in_prod). Mostly clients that transmit API credentials;
@@ -217,6 +234,22 @@ class Settings(BaseSettings):
     # Empty in dev -> the ConsoleNotifier just logs it; a real address in prod.
     admin_notify_email: str = ""
 
+    # Emailed night-audit intake (OH-23). The mail worker that receives a
+    # message for an intake address signs `timestamp + "\n" + body` with
+    # `email_intake_secret` under HMAC-SHA256 and posts it to the webhook;
+    # `usali.intake.verify_signature` is where that is checked, and the dev
+    # default above is refused in production. `email_intake_domain` is the
+    # domain the per-property addresses are minted under and is what the
+    # property page shows the operator. `email_intake_max_bytes` caps the
+    # webhook body (Cloudflare Email Routing's own message limit is 25 MB, so a
+    # larger cap would only be reached by a caller that is not the worker).
+    # `email_intake_window_seconds` is how far a signed timestamp may sit from
+    # now, in either direction, before the call is refused as a replay.
+    email_intake_secret: str = _DEV_DEFAULT_EMAIL_INTAKE_SECRET
+    email_intake_domain: str = "intake.example.test"
+    email_intake_max_bytes: int = 25 * 1024 * 1024
+    email_intake_window_seconds: int = 300
+
     @property
     def is_production(self) -> bool:
         # Fail closed: anything not explicitly a known non-prod env is treated as
@@ -225,16 +258,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _refuse_dev_secrets_in_prod(self) -> "Settings":
-        # In production the committed dev-default symmetric key must never be in
-        # effect — it would make every PII column decryptable by anyone with the
-        # repo. Fail closed at construction so nothing can run under it.
-        if self.is_production and (
-            self.field_encryption_key == _DEV_DEFAULT_FIELD_ENCRYPTION_KEY
-        ):
-            raise ValueError(
-                "field_encryption_key is the dev default but env=prod; set "
-                "USALI_FIELD_ENCRYPTION_KEY to a real 32-byte key (Secrets Manager)"
-            )
+        # In production no committed dev-default secret may be in effect. The
+        # field key would make every PII column decryptable by anyone with the
+        # repo; the intake secret would let anyone with the repo sign a mail
+        # webhook call. Fail closed at construction so nothing can run under one.
+        if self.is_production:
+            for field_name, (dev_default, remedy) in _DEV_DEFAULT_SECRETS.items():
+                if getattr(self, field_name) == dev_default:
+                    raise ValueError(
+                        f"{field_name} is the dev default but env=prod; {remedy}"
+                    )
         # These clients transmit API credentials and, for payroll, opened PII.
         # Match the JWKS client's fail-closed transport posture: cleartext is
         # acceptable only for a loopback development mock, never a remote host.

@@ -5,6 +5,11 @@ from usali.config import Settings
 _DEV_DEFAULT = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE="
 _REAL_KEY = "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ=="  # 32 bytes, base64
 
+# A prod-env Settings must override EVERY dev-default secret in
+# config._DEV_DEFAULT_SECRETS, not just the field key, or construction
+# refuses on the first one still at its committed default.
+_REAL_INTAKE = "not-the-committed-intake-secret"
+
 _CREDENTIAL_URL_FIELDS = (
     "qbo_base_url",
     # The Intuit CONSENT host (OH-17): the operator's browser carries the
@@ -30,13 +35,56 @@ def test_prod_with_dev_default_field_key_is_refused():
 
 
 def test_prod_with_a_real_field_key_is_allowed():
-    s = Settings(env="prod", field_encryption_key=_REAL_KEY)
+    s = Settings(env="prod", field_encryption_key=_REAL_KEY,
+                 email_intake_secret=_REAL_INTAKE)
     assert s.env == "prod"
 
 
 def test_dev_with_the_default_key_is_fine():
     s = Settings(env="dev")
     assert s.field_encryption_key == _DEV_DEFAULT
+
+
+# --- The emailed-intake secret (OH-23, D-OH23.2) -----------------------------
+# A second entry in config._DEV_DEFAULT_SECRETS: the value in the repo would let
+# anyone with a checkout sign a mail-webhook call, so prod must refuse it the
+# same way it refuses the dev field key.
+
+_DEV_DEFAULT_INTAKE = "dev-intake-secret"
+
+
+def test_prod_with_the_dev_default_intake_secret_is_refused():
+    with pytest.raises(ValueError, match="email_intake_secret"):
+        Settings(
+            env="prod",
+            field_encryption_key=_REAL_KEY,
+            email_intake_secret=_DEV_DEFAULT_INTAKE,
+        )
+
+
+def test_prod_with_a_real_intake_secret_is_allowed():
+    s = Settings(
+        env="prod", field_encryption_key=_REAL_KEY, email_intake_secret=_REAL_INTAKE,
+    )
+    assert s.email_intake_secret == _REAL_INTAKE
+
+
+def test_dev_with_the_default_intake_secret_is_fine():
+    s = Settings(env="dev")
+    assert s.email_intake_secret == _DEV_DEFAULT_INTAKE
+
+
+@pytest.mark.parametrize("env", ["production", "PROD", "prod\n", "staging"])
+def test_non_dev_envs_refuse_the_dev_default_intake_secret(env):
+    with pytest.raises(ValueError, match="email_intake_secret"):
+        Settings(env=env, field_encryption_key=_REAL_KEY)
+
+
+def test_the_intake_window_and_cap_have_the_documented_defaults():
+    s = Settings(env="dev")
+    assert s.email_intake_window_seconds == 300
+    assert s.email_intake_max_bytes == 25 * 1024 * 1024
+    assert s.email_intake_domain == "intake.example.test"
 
 
 # --- Fail closed: anything not explicitly dev/test/local is treated as prod ---
@@ -52,7 +100,9 @@ def test_non_dev_envs_refuse_the_dev_default_field_key(env):
 
 @pytest.mark.parametrize("env", ["production", "PROD", "prod\n", "staging"])
 def test_non_dev_envs_are_production(env):
-    assert Settings(env=env, field_encryption_key=_REAL_KEY).is_production is True
+    assert Settings(
+        env=env, field_encryption_key=_REAL_KEY, email_intake_secret=_REAL_INTAKE,
+    ).is_production is True
 
 
 @pytest.mark.parametrize("env", ["dev", "test", "local", " DEV ", "Local"])
@@ -68,6 +118,7 @@ def test_production_refuses_cleartext_remote_integration_urls(field_name):
         Settings(
             env="prod",
             field_encryption_key=_REAL_KEY,
+            email_intake_secret=_REAL_INTAKE,
             **{field_name: "http://api.example.com"},
         )
 
@@ -77,6 +128,7 @@ def test_production_accepts_https_integration_urls(field_name):
     settings = Settings(
         env="prod",
         field_encryption_key=_REAL_KEY,
+        email_intake_secret=_REAL_INTAKE,
         **{field_name: "https://api.example.com"},
     )
     assert getattr(settings, field_name) == "https://api.example.com"
@@ -96,6 +148,7 @@ def test_production_allows_cleartext_loopback_mocks(host):
     settings = Settings(
         env="prod",
         field_encryption_key=_REAL_KEY,
+        email_intake_secret=_REAL_INTAKE,
         qbo_base_url=f"http://{host}:9200",
     )
     assert settings.qbo_base_url.startswith("http://")
@@ -106,5 +159,6 @@ def test_fail_closed_environment_alias_also_refuses_cleartext_remote_url():
         Settings(
             env="staging",
             field_encryption_key=_REAL_KEY,
+            email_intake_secret=_REAL_INTAKE,
             adp_base_url="http://payroll.example.com",
         )

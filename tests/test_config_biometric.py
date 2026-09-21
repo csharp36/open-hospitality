@@ -12,6 +12,11 @@ from usali.config import Settings
 
 _REAL_KEY = "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ=="  # 32 bytes, base64
 
+# A prod-env Settings must override EVERY dev-default secret in
+# config._DEV_DEFAULT_SECRETS, not just the field key, or construction
+# refuses on the first one still at its committed default.
+_REAL_INTAKE = "not-the-committed-intake-secret"
+
 
 def test_matching_is_disabled_by_default():
     s = Settings()
@@ -37,6 +42,7 @@ def test_prod_cannot_enable_matching_without_a_notice_version():
         Settings(
             env="prod",
             field_encryption_key=_REAL_KEY,
+            email_intake_secret=_REAL_INTAKE,
             biometric_matching_enabled=True,
         )
 
@@ -45,6 +51,7 @@ def test_prod_with_a_notice_version_may_enable_matching():
     s = Settings(
         env="prod",
         field_encryption_key=_REAL_KEY,
+        email_intake_secret=_REAL_INTAKE,
         biometric_matching_enabled=True,
         biometric_notice_version="2026-07-notice-v1",
     )
@@ -58,5 +65,6 @@ def test_dev_may_enable_matching_without_a_notice_version():
 
 
 def test_prod_with_matching_off_needs_no_notice_version():
-    s = Settings(env="prod", field_encryption_key=_REAL_KEY)
+    s = Settings(env="prod", field_encryption_key=_REAL_KEY,
+                 email_intake_secret=_REAL_INTAKE)
     assert s.biometric_matching_enabled is False

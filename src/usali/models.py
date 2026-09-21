@@ -2415,9 +2415,12 @@ class EmailIntakeEvent(OrgScoped, Base):
     __tablename__ = "email_intake_event"
     __table_args__ = (
         # CHECK over D-OH23.7's closed outcome set, duplicated as o1a0intake's
-        # _OUTCOMES. compare_metadata does not compare CHECKs, so nothing in
-        # this file holds the two copies together; Task 3's INTAKE_OUTCOMES
-        # pin test is what will catch drift.
+        # _OUTCOMES and as intake.INTAKE_OUTCOMES. compare_metadata does not
+        # compare CHECKs, so nothing in this file holds the copies together;
+        # tests/test_intake_schema.py is where they are pinned --
+        # test_each_check_matches_the_models_declaration against the migrated
+        # catalog and test_intake_outcomes_match_the_check_constraint against
+        # the frozenset.
         CheckConstraint(
             "outcome IN ('ingested', 'partial', 'duplicate', 'no_attachment', "
             "'sender_rejected', 'wrong_property', 'not_a_night_audit_report', "

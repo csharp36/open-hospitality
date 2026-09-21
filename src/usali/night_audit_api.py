@@ -10,7 +10,10 @@ The upload VALIDATES BEFORE it ingests: the file (PDF or XLSX, by magic bytes)
 is parsed once up front to check it detects as this property, as one of the
 night's required report types, and as the CURRENT business date — a mismatched
 file is refused with nothing staged
-(the generic /ingest stays unrestricted for backfills and corrections). Only a
+(the generic /ingest stays unrestricted for backfills and corrections). The
+property and report-type halves of that check are called out of `usali.intake`,
+so an emailed report is refused for the same reasons; the business-date half is
+this endpoint's own. Only a
 valid upload reaches `process_bytes`, which owns staging, transform, coverage,
 and filing exactly as it does for every other ingest path. Like /ingest, the
 payload is processed in memory and never written anywhere (design D1).
@@ -27,7 +30,6 @@ night_audit_adjustment, which is append-only by grant (n2a0nightadjust; pinned
 by test_the_adjustment_log_is_append_only_by_grant in test_night_audit.py).
 """
 
-import re
 from datetime import UTC, datetime, timedelta
 
 from collections.abc import Callable
@@ -47,12 +49,7 @@ from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
 from usali.adaptors.pdf import extract_pages_from_bytes
-from usali.adaptors.reader import (
-    ACCEPTED_FORMATS,
-    is_pdf,
-    is_xlsx,
-    read_words_from_bytes,
-)
+from usali.adaptors.reader import ACCEPTED_FORMATS, is_pdf, is_xlsx
 from usali.auth import (
     ORG_ADMIN,
     PROPERTY_GM,
@@ -61,8 +58,13 @@ from usali.auth import (
     require_grants,
     require_operator,
 )
-from usali.detect import Detection, detect, load_registry
 from usali.ingestion import ProcessingError, process_bytes, process_pack_bytes
+from usali.intake import (
+    ValidatedSection,
+    _safe_component,
+    validate_sections,
+    validate_single,
+)
 from usali.segment_promote import (
     SegmentMappingError,
     SegmentReconciliationError,
@@ -98,10 +100,6 @@ router = APIRouter(prefix="/api/properties")
 
 _MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
-
-def _safe_component(value: str) -> str:
-    """Reduce request-controlled text to something safe to splice into a path."""
-    return re.sub(r"[^A-Za-z0-9._-]", "_", value)
 
 # (pms_source, report_type) -> the adaptor's own business-date extractor, for
 # the pre-ingest date check. Mirrors ingestion._PIPELINES' date derivation.
@@ -231,23 +229,14 @@ async def upload_night_audit_report(
             return _ingest_pack(session, request, prop, state, payload, name, _refuse)
 
         # -- Pre-ingest validation: right property, right report, right day. --
-        try:
-            words = read_words_from_bytes(payload)
-            det = detect(words, load_registry(session))
-        except Exception as exc:
-            raise _refuse(422, f"could not read report: {exc}") from exc
-        if det.property_id != property_id:
-            raise _refuse(
-                422, f"report is for property {det.property_id}, not {property_id}"
-            )
-        required = {str(s["report_type"]) for s in
-                    slot_status(session, property_id, state.current_business_date, prop.pms_source)}
-        if det.report_type not in required:
-            raise _refuse(
-                422,
-                f"{det.report_type} is not part of this property's night audit "
-                f"({prop.pms_source} requires: {', '.join(sorted(required))})",
-            )
+        # The first two are usali.intake's, which the emailed-intake path runs
+        # over the same bytes; the DATE check below is this endpoint's alone
+        # (D-OH23.5 keeps email open to a late night's backfill).
+        checked = validate_single(session, payload, property_id, prop.pms_source)
+        if checked.outcome is not None:
+            raise _refuse(422, checked.detail)
+        words = checked.sections[0].words
+        det = checked.sections[0].detection
         # "business date == the current date" is this endpoint's whole point, so
         # a missing extractor REFUSES rather than skipping the check. Skipping
         # would silently drop the guarantee the moment a report type is added to
@@ -303,39 +292,32 @@ def _ingest_pack(
     payload: bytes, name: str, _refuse: Callable[[int, str], HTTPException],
 ) -> dict[str, object]:
     """Split the pack, validate every RECOGNIZED section (right property, right
-    business date) BEFORE anything stages, then hand the bytes to
+    report type, right business date) BEFORE anything stages, then hand the bytes to
     process_pack_bytes — which owns the shared transaction, per-section
     coverage, and filing the redacted artifact or the error record. The
     response names every section so the auditor sees exactly what the pack
-    contained and what was skipped."""
+    contained and what was skipped.
+
+    Recognizing a section by its TITLE and the property and report-type checks
+    are usali.intake.validate_sections' — the same code the emailed-intake path
+    runs. The split stays here because this endpoint answers a pack it cannot
+    read with its own 422, and because tests/test_night_audit.py::
+    test_pack_validation_recognizes_a_section_by_its_title patches `split_pack`
+    at this module. The per-section BUSINESS-DATE check below stays here too,
+    symmetric with the single-report path.
+    """
     try:
         pages = extract_pages_from_bytes(payload)
         sections = split_pack(pages)
     except Exception as exc:
         raise _refuse(422, f"could not read the pack: {exc}") from exc
-    registry = load_registry(session)
-    recognized: list[tuple[str, Detection]] = []
-    skipped_titles: list[str] = []
-    for section in sections:
-        try:
-            # The section TITLE decides the report signature — the same call
-            # ingestion.process_pack_bytes makes over these same sections. A
-            # `Rate Plan` COLUMN heading inside the 120-word header window
-            # matches an earlier signature (issue #78), which skipped the
-            # section here while ingestion recognized it. Pinned by
-            # tests/test_night_audit.py::
-            # test_pack_validation_recognizes_a_section_by_its_title.
-            det = detect(section.words, registry, section.title)
-        except ValueError:
-            skipped_titles.append(section.title or "(untitled)")
-            continue
-        recognized.append((section.title, det))
-        if det.property_id != prop.property_id:
-            raise _refuse(
-                422,
-                f"pack section {section.title!r} is for property "
-                f"{det.property_id}, not {prop.property_id}",
-            )
+    checked = validate_sections(session, sections, prop.property_id, prop.pms_source)
+    if checked.outcome is not None:
+        raise _refuse(422, checked.detail)
+    recognized: list[ValidatedSection] = list(checked.sections)
+    skipped_titles: list[str] = list(checked.skipped_titles)
+    for section in recognized:
+        det = section.detection
         # The single-report path's refusal, symmetric: a recognized section
         # with no registered date extractor cannot be checked against the
         # current business date, so the PACK refuses loudly (nothing staged)
@@ -364,8 +346,6 @@ def _ingest_pack(
                 f"{state.current_business_date.isoformat()} — use the Upload "
                 "page for backfills",
             )
-    if not recognized:
-        raise _refuse(422, "no recognized report sections in this pack")
 
     _, processed, failed = request.app.state.ingest_dirs
     try:
@@ -377,10 +357,11 @@ def _ingest_pack(
 
     by_type = {r.report_type: r for r in results}
     section_rows = []
-    for title, det in recognized:
+    for section in recognized:
+        det = section.detection
         r = by_type.get(det.report_type)
         section_rows.append({
-            "title": title, "report_type": det.report_type,
+            "title": section.title, "report_type": det.report_type,
             "staged": r.staged if r else 0, "mapped": r.mapped if r else 0,
             "skipped": r is None,
         })

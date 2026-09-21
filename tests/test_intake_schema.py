@@ -6,8 +6,10 @@ tests/test_l1_org_wall_migration.py passed both times. Each is pinned here
 on a migrated database: the catalog text against the model's own
 declaration, and the refusal the constraint exists to produce.
 
-The outcome frozenset pin against `intake.INTAKE_OUTCOMES` is Task 3's, not
-this file's; nothing here reads an outcome set from anywhere but the model.
+`test_intake_outcomes_match_the_check_constraint` is the third leg: the CHECK
+is also duplicated as `intake.INTAKE_OUTCOMES`, which no schema comparison
+reaches either. Every other pin here reads its outcome set from the model
+alone.
 """
 
 import re
@@ -17,6 +19,7 @@ import pytest
 from sqlalchemy import CheckConstraint, text
 from sqlalchemy.exc import IntegrityError
 
+from usali import intake
 from usali.models import EmailIntakeEvent, Organization, Property, PropertyIntakeAddress
 
 _ACTIVE_INDEX = "uq_property_intake_address_active"
@@ -85,6 +88,17 @@ def test_the_active_address_index_is_a_partial_unique_on_un_revoked_rows(db_sess
     assert indexdef.startswith("CREATE UNIQUE INDEX"), indexdef
     assert "(org_id, property_id)" in indexdef, indexdef
     assert indexdef.endswith("WHERE (revoked_at IS NULL)"), indexdef
+
+
+def test_intake_outcomes_match_the_check_constraint():
+    """`intake.INTAKE_OUTCOMES` is the third copy of D-OH23.7's closed outcome
+    set (the model's CHECK and o1a0intake's `_OUTCOMES` are the other two).
+    Parse the values back out of the model's own declaration so this compares
+    the set the code branches on against the set the database will accept,
+    with no third literal in between."""
+    declared = set(re.findall(r"'([a-z_]+)'", _model_check(EmailIntakeEvent, _OUTCOME_CHECK)))
+    assert declared, "no quoted outcomes found in the model's CHECK"
+    assert declared == set(intake.INTAKE_OUTCOMES)
 
 
 @pytest.mark.parametrize(
