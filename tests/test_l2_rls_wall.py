@@ -458,6 +458,7 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
         "gl_account", "journal_entry", "journal_line",
         "gl_posting_ledger", "gl_period_event",
         "night_audit_state", "night_audit_adjustment",
+        "email_intake_event",
     }
     with db_engine.connect() as conn:
         policied = {

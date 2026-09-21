@@ -12,6 +12,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
     Numeric,
     String,
     Text,
@@ -2337,3 +2338,91 @@ class OccupancyForecast(OrgScoped, Base):
     occupied_rooms: Mapped[int] = mapped_column(Integer)
     entered_by: Mapped[str] = mapped_column(String(64))
     entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PropertyIntakeAddress(Base):
+    """Per-property inbound address (D-OH23.3). NOT OrgScoped: the webhook
+    looks it up by local part before any org is known, then binds a session
+    to `org_id`. Operator routes filter org_id explicitly
+    (tests/test_intake_email.py::test_an_address_of_another_org_is_invisible_and_unrotatable).
+
+    It therefore carries org_id WITHOUT the mixin's RLS wall. The two
+    inventory tests that between them fix that shape are
+    `test_migration_on_populated_data.py::test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
+    (org_id NOT NULL) and
+    `test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`
+    (an exact policy set this table is absent from). The composite
+    (org_id, property_id) FK below is what makes a row naming another
+    org's property unrepresentable.
+    """
+
+    __tablename__ = "property_intake_address"
+    __table_args__ = (
+        UniqueConstraint("local_part", name="uq_property_intake_address_local_part"),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_property_intake_address_property_org",
+        ),
+    )
+
+    address_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Stored in clear, unlike an invite's token_hash: D-OH23.3 requires the
+    # address be displayable. Knowing it is the capability to submit a report
+    # for this property, so it is revocable — `revoked_at` below.
+    local_part: Mapped[str] = mapped_column(String(64))
+    org_id: Mapped[int] = mapped_column(
+        ForeignKey("organization.org_id", name="fk_property_intake_address_org"),
+    )
+    property_id: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # D-OH23.4 defines the column: NULL is "any authenticated sender", a list
+    # narrows it to those envelope-sender domains.
+    sender_domains: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+
+
+class EmailIntakeEvent(OrgScoped, Base):
+    """One row per message received for a property's address (D-OH23.7).
+    Bodies are never stored; subject and errors pass mask_pans before the write
+    (tests/test_intake_email.py::test_event_text_carries_no_card_numbers).
+
+    `outcome` carries a CHECK over the closed set D-OH23.7 names; the
+    o1a0intake migration is where the schema enforces it."""
+
+    __tablename__ = "email_intake_event"
+    __table_args__ = (
+        CheckConstraint(
+            "outcome IN ('ingested', 'partial', 'duplicate', 'no_attachment', "
+            "'sender_rejected', 'wrong_property', 'not_a_night_audit_report', "
+            "'unreadable', 'failed', 'revoked_address')",
+            name="ck_email_intake_event_outcome",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_email_intake_event_property_org",
+        ),
+    )
+
+    event_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # Plain Integer, not an FK. A single-column FK to property_intake_address
+    # would let a row cite another org's address, and there is no
+    # (org_id, address_id) unique on that table to hang a composite FK from.
+    # This row's tenancy rides the composite property FK declared above.
+    address_id: Mapped[int] = mapped_column(Integer)
+    property_id: Mapped[str] = mapped_column(String(50))
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    envelope_from: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    auth_result: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32))
+    # Shape (D-OH23.7): [{name, sha256, bytes, outcome, batch_id?, error?}].
+    attachments: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, default=list, server_default=text("'[]'::json")
+    )
