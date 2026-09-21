@@ -129,6 +129,8 @@ def redact_words(words: list[Word]) -> tuple[list[Word], RedactionStats]:
 
 ### Task 2: `retention.py` — policy table, artifact, error record
 
+> Superseded in review (2026-09-21): the shipped `_apply_columns` is per section, filters the header row too, always keeps column A, and never raises for a missing kept column; the snippet below is the first cut. Design D5.2 is the record.
+
 **Files:**
 - Create: `src/usali/retention.py`
 - Create: `tests/test_retention.py`

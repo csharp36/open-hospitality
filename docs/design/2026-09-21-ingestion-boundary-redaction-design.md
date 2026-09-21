@@ -97,19 +97,36 @@ file.** `processed_dir/<stem>.<sha256[:8]>.redacted.json`:
 ```
 
 The `words` shape is the one the adapters consume and the committed
-fixtures already use, so an artifact can be re-parsed by any future adapter
-revision without the original file. A pack artifact holds its recognized
+fixtures already use, so an artifact can be re-parsed without the original
+file. That is pinned, not assumed:
+`tests/test_retention.py::test_settlement_artifact_round_trips_through_the_adapter`
+and `::test_ar_aging_artifact_round_trips_and_keeps_only_label_and_aging_columns`
+feed the artifact's words back to the adapter and compare the staged rows.
+The first cut failed this (the allowlist dropped the ordinal column the
+sheet splitter classifies rows by), which is why the test exists. A pack artifact holds its recognized
 sections only; unrecognized sections are named in `sections_dropped` and
 their words are discarded at the boundary. A single report is one section.
 The hash is of the original bytes, so `IngestBatch.file_hash` keeps its
 meaning and the seed's per-file skip keeps working.
 
-**D4. What is filed on failure is an error record, never content.**
-`failed_dir/<stem>.<sha256[:8]>.error.json` with `source_file`, `sha256`,
-`bytes`, `received_at`, `error`. A failed parse is exactly the case where
-the code cannot vouch for what the words contain, so nothing of them is
-kept. The operator re-sends the file to debug. `IngestBatch` keeps its
-`failed` row with the message as today.
+**D4. What is filed on failure is an error record; its text carries no
+report content.** `failed_dir/<stem>.<sha256[:8]>.error.json` with
+`source_file`, `sha256`, `bytes`, `received_at`, `error`. No words are
+kept: a failed parse is exactly the case where the code cannot vouch for
+what they contain. The operator re-sends the file to debug. `IngestBatch`
+keeps its `failed` row with the message.
+
+The message itself is a leak vector the first cut missed: handlers raise
+with report text in them. Two did so with cell values (the AutoClerk rate
+plan printed a whole row's tokens; the HotelKey XLSX refusal printed the
+first data column's value, an account name in AR aging's Company Name
+section and a guest name the day a vendor puts that column first). Both
+now name positions (row ordinal, column, token counts), pinned in
+`tests/adaptors/test_hotelkey_xlsx.py::test_a_refusal_names_the_row_ordinal_not_the_first_column_value`;
+and every message written to the batch, the record or the raised
+`ProcessingError` passes through `mask_pans` first
+(`tests/test_ingestion_boundary.py::test_a_card_number_in_an_exception_never_reaches_the_batch_or_the_record`).
+Log lines are out of scope (section 6).
 
 **D5. Redaction rules, applied to the retained words only.** The adapters
 parse the in-memory words unredacted (masking a label would break them;
@@ -118,12 +135,18 @@ stays identity-free by adapter construction, pinned per adapter (for
 example `tests/adaptors/test_hotelkey_xlsx.py::test_settlement_rows_are_transaction_grain_without_guest_names`).
 Retention applies:
 
-1. *PAN masking on every retained row.* Rows are `cluster_rows`; the row's
-   words are joined with single spaces and scanned with the existing
-   `_PAN_RUN` + Luhn check, so a card printed as four groups (`4111 1111
-   1111 1111`) is caught even though it is four words. Every covered word
-   becomes `••••`; the last covered word becomes `•••• <last4>`. Counted in
-   `redaction.pans_masked`.
+1. *PAN masking, by card shape, on every retained row.* Rows are
+   `cluster_rows`; within a row, a run of consecutive digit-only cells
+   (`\d+`, so dates and decimals are never digit cells) is scanned for
+   exactly three shapes: one cell of 13 to 19 digits, four consecutive
+   4-digit cells, or 4-6-5 cells. A shape masks only if its digits pass
+   Luhn and start with 3, 4, 5 or 6. Every covered word becomes `••••`;
+   the last keeps its final four digits. Counted in `redaction.pans_masked`.
+   A free window search over digit cells was the first cut and is rejected
+   in section 3: a random 16-digit run passes Luhn one time in ten and a
+   statistics row offers twenty windows. The pin against destroying figures
+   is `tests/test_redaction.py::test_redact_words_masks_nothing_in_a_report_with_no_card_numbers`,
+   parametrized over every committed sample and fixture.
 2. *XLSX column allowlist per report type.* For an XLSX report the policy
    names the header columns whose cells are retained; every other cell is
    dropped (an allowlist, so an unknown column is dropped, not kept). The
@@ -133,7 +156,9 @@ Retention applies:
    Category, Date, Time, Transaction Number, Folio Number, Room Number,
    Payment Type, Payment Description, Amount` and, in the Summary block,
    `Count`, which `parse_settlement` reads for the footing check. All
-   Payments keeps `Payment Type, Amount`. AR aging keeps each section's
+   Payments keeps `Payment Type, Amount`. The header row itself is
+   filtered too, so a dropped column's label is gone with its values. AR
+   aging keeps each section's
    first column — its label column, an account name (§1, last paragraph) —
    plus the eight aging columns the adapter reads, which is what the adapter
    itself uses; nothing wider. Title-block cells beginning `User:` are
@@ -175,6 +200,12 @@ policy table section by section.
   content streams is a dependency and a fidelity problem for a file nothing
   reads. The words artifact is what the product parses.
 - *Regex name masking on retained words.* Matches labels; see D5.4.
+- *Windowed Luhn search over digit cells (the first cut of D5.1).* Measured
+  2026-09-21 by the branch review across every committed sample: the Opera
+  Manager Flash lost five statistics rows (`62 383 12444 65 303` masked),
+  AR Invoice Aging lost two rows including amounts. Verified clean only on
+  the choiceADVANTAGE pack, which is the one family it happened not to
+  break. Replaced by the three card shapes plus issuer digit.
 
 ## 4. Data flow after the change
 
@@ -195,24 +226,32 @@ upload validator). Pinned in `tests/test_night_audit.py`.
 
 ## 5. Tests that carry the guarantee
 
-- `tests/test_ingestion_boundary.py::test_no_file_on_disk_carries_the_uploaded_bytes`:
-  after `POST /ingest` and after a night-audit upload (single and pack),
-  walk every file under the app's three directories and assert none has
-  the payload's sha256 and none contains a 16-byte slice of the payload.
-  This is the gate's own pin; the rest are supporting.
-- `test_retention.py`: the pack artifact holds exactly the recognized
-  sections and names the dropped ones; the settlement artifact has no
-  `Guest Name` / `Username` / `Remarks` cell and no `User:` cell; a spaced
-  PAN across four words is masked with last4 kept; a failed upload files an
-  error record with no `words`; every `_PIPELINES` key has a policy.
-- Existing filing assertions (18 sites) move from `<name>` to the artifact
-  or error-record name.
-- `usali watch` deletes the inbox file on success and on failure;
-  `usali process` leaves its argument in place.
+- `tests/test_ingestion_boundary.py::_assert_no_file_carries` is a closed-set
+  inventory, not a content scan: every file under `processed_dir` is
+  `*.redacted.json`, every file under `failed_dir` is `*.error.json`, the
+  inbox is absent or empty, and no file starts with `%PDF-` or the XLSX
+  zip magic, equals the payload's length, hashes to it, or contains a
+  16-byte probe of it. It runs after `process_document_bytes` (success and
+  failure), after `POST /ingest`, and after the night-audit upload (single
+  and pack). A mutation that filed an unredacted artifact on the failure
+  path passed the first, content-only version of this check; the inventory
+  is what killed it.
+- `test_success_files_a_redacted_artifact_and_no_raw_bytes` also asserts a
+  dropped section's guest name (`Test Guest One`, the mock pack's
+  Cancellation List) is in no file.
+- `test_redaction.py`: the three card shapes, neighbors, two cards in a row,
+  the 12-digit floor, and `masks_nothing_in_a_report_with_no_card_numbers`
+  over every committed sample and fixture.
+- `test_retention.py`: the per-section allowlist, the round trips, a kept
+  column the export lacks, `Guest Name` and `User:` gone, the pack artifact
+  holding only recognized sections, the error record with no `words`, and
+  every `_PIPELINES` key having a policy.
+- `test_night_audit.py::test_pack_validation_recognizes_a_section_by_its_title`;
+  `test_cli_commands.py` for `watch` deleting on both outcomes and `process`
+  leaving its argument.
 - Manual, recorded in the PR body, never committed: the real pack through
-  `process_pack_bytes`; expected roughly 536 retained words in 2 sections,
-  24 dropped section titles, `pans_masked == 0`, and a scan of the artifact
-  for Luhn-valid runs returning none.
+  `split_pack` and `build_artifact`, and the same corpus-wide `pans_masked`
+  count over every committed sample after the shape rule.
 
 ## 6. Out of scope, named
 
@@ -222,6 +261,10 @@ upload validator). Pinned in `tests/test_night_audit.py`.
   raw files and stays so for artifacts; OH-24 is where retention becomes a
   product feature and picks the bucket.
 - The anonymous preview: unchanged, persists nothing.
+- Log lines. `adaptors/autoclerk_rate_plan.py` warns with a skipped row's
+  tokens as the audit trail for a documented parser blind spot; that is
+  stdout/stderr, not the batch, the record or the HTTP body. Whether report
+  content belongs in logs is a logging-policy decision, not this gate's.
 - Hash-based duplicate refusal on upload. A re-sent file still creates a
   batch whose rows dedupe at the stage layer; refusing by hash is a
   night-audit UX decision, not a redaction one.

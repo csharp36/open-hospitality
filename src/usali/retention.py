@@ -91,7 +91,9 @@ def _apply_columns(
     a section in which no row names two kept columns. A kept column the export
     does not have is simply absent from that header
     (test_a_kept_column_the_export_lacks_does_not_fail_retention); nothing here
-    refuses an export, because this runs after the adapter has accepted one.
+    refuses an export; the one caller, `ingestion._file_artifact`, runs it after
+    the adapter's commit, and tests/test_retention.py::test_a_kept_column_the_export_lacks_does_not_fail_retention
+    pins that a missing kept column is tolerated.
     """
     rows: dict[int, list[tuple[int, int]]] = defaultdict(list)  # row -> [(column, index)]
     for i, w in enumerate(words):

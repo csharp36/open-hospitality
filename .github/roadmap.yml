@@ -290,8 +290,8 @@ roadmap:
   - id: OH-24
     title: Night-audit report repository
     summary: >
-      Every received audit pack is kept (redacted), searchable by business
-      date and report, with a record of who reviewed it and when.
+      Every recognized report is kept as a redacted extract, searchable by
+      business date and report, with a record of who reviewed it and when.
     status: planned
     tags: [reporting, compliance]
 
@@ -359,3 +359,14 @@ roadmap:
       preview recognize HotelKey. The direct API and event stream are OH-22.
     status: shipped  # PR #136, 2026-09-20; docs/design/2026-09-08-oh22-hotelkey-design.md (D-OH22.6)
     tags: [ingestion, pms, integrations]
+
+  - id: OH-32
+    title: Ingestion-boundary redaction
+    summary: >
+      A report you upload is read in memory and never stored as a file. The
+      only copy kept is a redacted extract of the figures the product uses,
+      with card numbers masked and guest-identity columns and unrecognized
+      pack sections discarded at the boundary, so a night-audit pack's guest
+      ledger and in-house lists are not held by the system at all.
+    status: shipped  # 2026-09-21; docs/design/2026-09-21-ingestion-boundary-redaction-design.md
+    tags: [ingestion, compliance, privacy]

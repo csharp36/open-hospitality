@@ -126,9 +126,11 @@ since is the `/integrations` page (PR #113), reflected below.
 
 **Open, carried forward from the previous analysis:**
 
-- **Ingestion-boundary redaction** is preview-only: the authenticated
-  `/ingest` path stores the raw uploaded PDF unredacted. A compliance gate on
-  the first real tenant's first real upload — now Tier 0 (§3).
+- **Ingestion-boundary redaction** shipped 2026-09-21 as OH-32: every
+  authenticated upload is processed in memory and the only copy kept is a
+  redacted words extract of the recognized reports (`retention.py`); raw
+  files no longer reach disk. The design is
+  `docs/design/2026-09-21-ingestion-boundary-redaction-design.md`.
 - **The invite gate** is a flag lifted at GA by design, but invite creation is
   a CLI command, so approving a signup means an operator shelling into a
   container. The admin surface around the gate is still missing.
@@ -156,7 +158,7 @@ G3+G4 → OH-29, G5+G6+G7 → OH-30, G8 → the forecasting item in Tier 2.
 | # | Work | Id | Why here |
 |---|---|---|---|
 | 1 | **HotelKey integration** — API + event stream where the property grants credentials; a parser for Hilton PEP's emailed audit pack where the API is franchisor-gated. Include settlement-by-payment-type from day one; bank matching (#6) needs it. | OH-31 (shipped), OH-22 | Integration #1 of seven: the largest and fastest-growing brand platform, and the only API-first accounting feed among the brand systems. Credentials are property-initiated and already requested. **File ingestion shipped as OH-31**, a statistics-and-balances source (design D-OH22.6, 2026-09-20): all four HotelKey exports ingest; statistics and AR balances promote; financial rows stage and do not post, and the operating statement says so. Not SOS-backing until the night audit pack arrives; the API/event stream promised above is pending vendor access. |
-| 2 | **Ingestion-boundary redaction on the authenticated path** | — | The gate that lets a stranger upload a real audit pack; the first line of every security review. More important, not less, once OH holds bank tokens. Smallest item on the list. |
+| 2 | **Ingestion-boundary redaction on the authenticated path** | OH-32 (shipped) | The gate that lets a stranger upload a real audit pack; the first line of every security review. More important, not less, once OH holds bank tokens. **Shipped 2026-09-21, destructive**: uploads never persist; a redacted words extract of the recognized reports is the only copy (design 2026-09-21). It was not the smallest item on the list: the first cut's card masker erased statistics rows and its retained XLSX could not be re-parsed; both are pinned now. |
 | 3 | **General ledger posting core** — USALI chart of accounts with per-org extensions, immutable double-entry journal with source links to staged PMS rows and labor facts, fiscal periods with an audited close, trial balance and balance sheet; the operating statement re-pointed at the journal; the QBO push becomes an export from it. | OH-27 | Everything later posts into it, and it is smaller than it sounds: the fiscal calendar, the USALI dictionary, the staged facts, and the journal generator already exist. Needs the GL posting-model ADR first (§6). **Backend, the /gl page, and the SOS cutover shipped**: the operating statement's totals now render from the journal (shape C of docs/design/2026-09-07-oh27-sos-cutover-decision.md), with tests/test_gl_parity.py staying in CI as the tripwire. |
 | 4 | **Emailed-report intake** — an inbound address per property, detection-registry routed. | OH-23 | Four of the seven target PMSs deliver by scheduled email; until this exists, each is a daily manual upload and self-service onboarding is a slogan. Depends on #2. |
 
@@ -241,11 +243,9 @@ the corresponding build starts:
    per-org override layer (recommended)? Blocks Tier 1 #8 (OH-20).
 5. **SMS vendor** — required for the verified cell (D-B5) and owner alerting;
    still unchosen. Blocks parts of OH-26.
-6. **Whether redaction is destructive** — does `/ingest` redact before
-   writing to the inbox, or store raw and redact on promote? D8.4 says "at
-   the boundary", which reads as the former. Blocks Tier 0 #2.
-
-Settled since the last revision: per-tenant secret storage (D-OH17.2, ADR-005
+Settled since the last revision: **redaction is destructive** (former item 6;
+raw bytes never persist, decided 2026-09-21, design
+`2026-09-21-ingestion-boundary-redaction-design.md`); per-tenant secret storage (D-OH17.2, ADR-005
 field encryption) — and the decisions in §1, each recorded in the positioning
 analysis.
 
@@ -298,6 +298,18 @@ said such movements belong.
   choiceADVANTAGE's audit pack under the in-code name `SKYTOUCH`.
 
 ---
+
+### 7.2 Deltas applied 2026-09-21
+
+- **OH-32 added, `shipped`** — ingestion-boundary redaction, Tier 0 row 2,
+  which had no id. Summary in user-facing terms: the original file is never
+  kept.
+- **OH-24's summary narrowed** to "every recognized report is kept as a
+  redacted extract": the gate discards unrecognized pack sections at the
+  boundary, so a repository of whole packs is no longer what the roadmap
+  promises. A viewer that wants more extends the retention policy section by
+  section.
+- **OH-23 unchanged** and next: its intake inherits the gate.
 
 ## 8. Deliberately not building
 
