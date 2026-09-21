@@ -416,8 +416,19 @@ def _attachment_name(
     return f"{stem}{suffix}{extension}"
 
 
-def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
+def attachments_of(
+    raw: bytes, *, limit: int | None = None
+) -> list[tuple[str, bytes]]:
     """The PDF and XLSX parts of a MIME message, as (name, bytes).
+
+    `limit` stops the walk once `limit + 1` parts have been kept: the caller
+    gets its ceiling plus ONE, which is how it can tell there were more
+    without this function deciding what to say about them. It bounds the work
+    a single message can demand — decoding every part of a message carrying
+    tens of thousands of them costs seconds and megabytes whether or not the
+    caller then ignores the surplus (tests/test_intake_email.py::
+    test_a_message_of_many_parts_is_bounded_by_the_ceiling). `None`, the
+    default, walks the whole message.
 
     Parts are kept by MAGIC BYTES, never by declared content type or file
     suffix — the same is_pdf/is_xlsx pair the reader dispatches on and the
@@ -460,4 +471,6 @@ def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
         )
         taken.add(name)
         found.append((name, payload))
+        if limit is not None and len(found) > limit:
+            break
     return found

@@ -536,6 +536,24 @@ def test_only_the_pdf_and_xlsx_parts_come_back():
     ]
 
 
+def test_a_limit_stops_the_walk_at_the_ceiling_plus_one():
+    """`limit` bounds the WORK, not just the answer: the walk stops as soon as
+    one part past the ceiling has been kept, so the rest are never decoded.
+    Ceiling PLUS ONE, so a caller can tell there were more without this
+    function deciding what to say about them."""
+    raw = _message(*[(_PDF, "application", "pdf", f"part-{i}.pdf")
+                     for i in range(200)])
+
+    assert len(intake.attachments_of(raw, limit=10)) == 11
+    assert len(intake.attachments_of(raw, limit=0)) == 1
+    assert len(intake.attachments_of(raw)) == 200  # unbounded by default
+
+
+def test_a_limit_larger_than_the_message_changes_nothing():
+    raw = _message((_PDF, "application", "pdf", "Trial Balance.pdf"))
+    assert intake.attachments_of(raw, limit=10) == [("Trial_Balance.pdf", _PDF)]
+
+
 def test_a_part_that_is_neither_format_is_dropped_whatever_it_is_called():
     raw = _message((b"MZ not a pdf at all", "application", "pdf", "evil.pdf"))
     assert intake.attachments_of(raw) == []

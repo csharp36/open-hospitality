@@ -219,6 +219,9 @@ def test_a_bad_signature_is_401_and_writes_nothing(db_session, client, tmp_path)
     r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}", secret="not-the-secret")
 
     assert r.status_code == 401, r.text
+    # No detail: which check failed is itself a signal to an unauthenticated
+    # caller, so a bad signature and a stale timestamp answer identically.
+    assert r.json() == {"detail": "unauthorized"}
     assert _events(db_session) == []
     assert db_session.scalar(select(func.count()).select_from(IngestBatch)) == 0
     _clean(tmp_path, raw, payload)
@@ -236,6 +239,7 @@ def test_a_stale_timestamp_is_401_and_writes_nothing(db_session, client, tmp_pat
               timestamp=str(int(stale.timestamp())))
 
     assert r.status_code == 401, r.text
+    assert r.json() == {"detail": "unauthorized"}
     assert _events(db_session) == []
     assert db_session.scalar(select(func.count()).select_from(IngestBatch)) == 0
     _clean(tmp_path, raw, payload)
@@ -260,20 +264,26 @@ def test_an_oversize_message_is_refused_before_anything_is_read(
 
 
 def test_the_rate_limiter_refuses_the_flood(db_session, db_engine, tmp_path):
-    """One worker posts here, so the limiter is keyed globally: it is a
-    ceiling on the route, not a per-client budget."""
+    """One worker posts here, so the limiter is keyed on a CONSTANT: it is a
+    ceiling on the route, not a per-client budget. Two callers at different
+    addresses spend the same twelve-a-minute budget, which is what stops a
+    flood buying itself more room by varying its source address — the
+    per-IP/global pair `/api/preview` needs does not apply to a route with
+    one legitimate caller.
+    """
     _seed(db_session, "opera")
     _address(db_session, HISJ_ADDRESS, "HISJ")
     app = _app(db_engine, tmp_path)
     assert isinstance(app.state.intake_rate_limiter, RateLimiter)
     app.state.intake_rate_limiter = RateLimiter(max_events=2, window_seconds=60.0)
-    client = TestClient(app)
+    one = TestClient(app, client=("10.0.0.1", 40000))
+    two = TestClient(app, client=("198.51.100.7", 40000))
     raw = _message()
     to = f"{HISJ_ADDRESS}@{_DOMAIN}"
 
-    codes = [_post(client, raw, to=to).status_code for _ in range(3)]
+    codes = [_post(c, raw, to=to).status_code for c in (one, two, one, two)]
 
-    assert codes == [200, 200, 429]
+    assert codes == [200, 200, 429, 429]
     _clean(tmp_path, raw)
 
 
@@ -635,15 +645,27 @@ def test_event_text_carries_no_card_numbers(db_session, client, tmp_path):
     _address(db_session, HISJ_ADDRESS, "HISJ")
     payload = b"%PDF-1.4 this is not a real pdf at all"
     raw = _message(subject="Report 4111 1111 1111 1111",
+                   message_id="<4111111111111111@pms.test>",
                    attachments=[("4111111111111111.pdf", payload)])
 
-    r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}")
+    r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}",
+              frm="4111111111111111@pms.test",
+              auth="dkim=pass header.d=pms.test (envelope 4111 1111 1111 1111)")
 
     assert r.status_code == 200, r.text
     event = _events(db_session)[0]
     assert event.subject is not None
     assert "4111" not in event.subject
     assert "•••• 1111" in event.subject
+    # Every string column, not just the subject: a receiver interpolates the
+    # envelope sender into its Authentication-Results comment, and a sender
+    # chooses its own local part and Message-ID.
+    for column, value in (
+        ("envelope_from", event.envelope_from),
+        ("auth_result", event.auth_result),
+        ("message_id", event.message_id),
+    ):
+        assert value is not None and "4111" not in value, (column, value)
 
     assert event.outcome == "failed"
     for entry in event.attachments:
@@ -755,6 +777,102 @@ def test_a_long_envelope_sender_and_auth_result_are_clipped(
     assert event.auth_result is not None
     assert len(event.auth_result) == columns.auth_result.type.length
     _clean(tmp_path, raw)
+
+
+def test_a_failed_attachment_can_be_resent(db_session, client, tmp_path):
+    """Dedupe matches `transformed` batches only (D-OH23.6). A report that
+    failed never landed, so a re-send is processed again and fails again —
+    a corrupt nightly report repeats in the log until somebody fixes it,
+    rather than going quiet as a `duplicate` of something that is not there.
+    """
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    payload = b"%PDF-1.4 this is not a real pdf at all"
+    raw = _message(attachments=[("broken.pdf", payload)])
+    to = f"{HISJ_ADDRESS}@{_DOMAIN}"
+
+    first = _post(client, raw, to=to)
+    second = _post(client, raw, to=to)
+
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert first.json()["outcome"] == "failed"
+    assert second.json()["outcome"] == "failed"
+    assert second.json()["attachments"][0]["outcome"] == "failed"
+    assert len(_batches(db_session, "failed")) == 2
+    assert [e.outcome for e in _events(db_session)] == ["failed", "failed"]
+    _clean(tmp_path, raw, payload)
+
+
+def test_a_failure_outranks_a_duplicate_when_nothing_ingested(
+    db_session, client, tmp_path
+):
+    """A message that re-sends last night's report beside one that will not
+    parse must not read `duplicate` in the event log's outcome column."""
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    good = FLASH.read_bytes()
+    bad = b"%PDF-1.4 this is not a real pdf at all"
+    to = f"{HISJ_ADDRESS}@{_DOMAIN}"
+    assert _post(client, _message(attachments=[("flash.pdf", good)]),
+                 to=to).json()["outcome"] == "ingested"
+    raw = _message(message_id="<two@pms.test>",
+                   attachments=[("flash.pdf", good), ("broken.pdf", bad)])
+
+    r = _post(client, raw, to=to)
+
+    assert r.status_code == 200, r.text
+    assert [a["outcome"] for a in r.json()["attachments"]] == ["duplicate", "failed"]
+    assert r.json()["outcome"] == "failed"
+    assert _events(db_session)[1].outcome == "failed"
+    _clean(tmp_path, raw, good, bad)
+
+
+def test_a_message_of_many_parts_is_bounded_by_the_ceiling(
+    db_session, client, tmp_path, monkeypatch
+):
+    """The ceiling bounds ENUMERATION, not only ingestion.
+
+    Before `attachments_of` took a `limit`, every part was decoded, hashed
+    and given an entry of its own however many there were, so a message built
+    of tens of thousands of six-byte parts bought seconds of blocked event
+    loop and megabytes of response and JSONB. Now the walk stops at the
+    ceiling plus one and the surplus is a single entry.
+    """
+    parts = [(f"part-{i}.pdf", b"%PDF-1." + str(i).encode()) for i in range(200)]
+    raw = _message(attachments=parts)
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    # The slice in `_attachment_entries` hides an unbounded walk from every
+    # assertion below — the entries come out the same either way — so the
+    # limit the route ASKS FOR is recorded here. What that limit then does is
+    # tests/test_intake.py::test_a_limit_stops_the_walk_at_the_ceiling_plus_one.
+    asked: list[int | None] = []
+    walk = intake_api.attachments_of
+
+    def _record_limit(raw_bytes: bytes, *, limit: int | None = None):
+        asked.append(limit)
+        return walk(raw_bytes, limit=limit)
+
+    monkeypatch.setattr(intake_api, "attachments_of", _record_limit)
+
+    started = time.monotonic()
+    r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}")
+    elapsed = time.monotonic() - started
+
+    assert r.status_code == 200, r.text
+    entries = r.json()["attachments"]
+    assert len(entries) == intake_api._MAX_ATTACHMENTS + 1
+    assert entries[-1] == {"name": "(more attachments)", "sha256": "", "bytes": 0,
+                           "outcome": "failed", "error": "too_many_attachments"}
+    # Exactly the ceiling was opened: one failed batch and one error record
+    # each, and nothing for the other 190 parts.
+    assert len(_batches(db_session, "failed")) == intake_api._MAX_ATTACHMENTS
+    assert len(_error_records(tmp_path)) == intake_api._MAX_ATTACHMENTS
+    assert _events(db_session)[0].attachments == entries
+    assert asked == [intake_api._MAX_ATTACHMENTS]
+    # A smoke bound, not the pin: measured at 0.14 s for this message.
+    assert elapsed < 2.0, f"{elapsed:.2f}s for a 200-part message"
+    _clean(tmp_path, raw, *[data for _name, data in parts[:12]])
 
 
 # --- tenancy ------------------------------------------------------------------

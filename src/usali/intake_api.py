@@ -15,6 +15,13 @@ address, a rejected sender, an attachment that failed to parse — is a 200
 carrying the outcome, because the message has been dealt with and re-mailing
 it to a human achieves nothing (D-OH23.9).
 
+There is one place that rule does not hold, and it is named rather than
+fixed: the event is committed LAST, so a failure inside `_record` — after the
+attachments have already been ingested and committed — answers 5xx for a
+message this service DID dispose of. The worker then holds it in the fallback
+mailbox, and a re-delivery finds the batches already there and records
+`duplicate`. The cost is one missing line in the event log, not a lost report.
+
 WHERE THE ORG COMES FROM. `property_intake_address` is not OrgScoped and
 carries no RLS policy, so the local-part lookup runs on the UNBOUND base
 factory — it must, since no org is known until the row is read. Every write
@@ -111,15 +118,37 @@ _VALIDATION_REFUSALS: tuple[str, ...] = ("wrong_property", "not_a_night_audit_re
 # Per-attachment size ceiling: the upload endpoint's own constant, imported
 # rather than restated so the two surfaces cannot drift apart. Pinned by
 # tests/test_intake_email.py::test_an_attachment_is_capped_at_the_upload_endpoints_limit.
+# With both caps at 25 MB it is unreachable in practice: MIME base64-encodes a
+# part at 4/3, so a 25 MB attachment needs a ~33 MB body and the body cap
+# refuses that first. It starts to bite only if USALI_EMAIL_INTAKE_MAX_BYTES is
+# raised, which is exactly when a per-attachment ceiling should still hold.
 _MAX_ATTACHMENT_BYTES = _MAX_UPLOAD_BYTES
 
 # How many attachments of one message are opened. A night's exports are four
 # files at the most any PMS here sends (usali.night_audit.REQUIRED_REPORTS is
 # where the per-source lists live); ten leaves room for a signature image or a
-# forwarded copy without letting one message queue unbounded parser work.
-# Attachments past this are recorded `failed` with `too_many_attachments` and
-# never opened.
+# forwarded copy.
+#
+# It bounds ENUMERATION and not only ingestion: it is passed to
+# `attachments_of` as its `limit`, so the walk stops at eleven kept parts and
+# the surplus is never decoded, hashed or given an entry of its own. Counting
+# them first would cost seconds of blocked event loop and megabytes of
+# response and JSONB for a message built to do exactly that. Everything past
+# the ceiling becomes the single `_SURPLUS_ENTRY` below.
 _MAX_ATTACHMENTS = 10
+
+# What stands in for every attachment past `_MAX_ATTACHMENTS`: one entry, not
+# one per part. It is built literally rather than through `_entry` because it
+# describes no part — there are no bytes to size, no content to hash, and the
+# name is this module's own constant rather than author-chosen text, so there
+# is nothing in it to mask.
+_SURPLUS_ENTRY: dict[str, object] = {
+    "name": "(more attachments)",
+    "sha256": "",
+    "bytes": 0,
+    "outcome": "failed",
+    "error": "too_many_attachments",
+}
 
 # Error text stored in the event's JSON and returned to the worker. The same
 # bound ingestion._safe_message puts on a batch message.
@@ -154,6 +183,19 @@ def _subject_and_message_id(raw: bytes) -> tuple[str, str]:
         return str(message.get("Subject", "")), str(message.get("Message-ID", ""))
     except Exception:
         return "", ""
+
+
+def _stored(column: str, value: str) -> str:
+    """The one rule for every free-text header `email_intake_event` keeps.
+
+    Clipped to the column's width first, so `mask_pans` runs over bounded
+    text; masked; then clipped again, so whatever masking returns still fits
+    the column. D-OH23.7 requires the masking and `models.EmailIntakeEvent`
+    the width — every one of the four string columns goes through here, not
+    just the subject: an envelope sender, an Authentication-Results comment
+    and a Message-ID are all attacker-chosen text that a card number fits in.
+    """
+    return _clip(column, mask_pans(_clip(column, value)))
 
 
 def _masked(text: str) -> str:
@@ -276,44 +318,52 @@ def _attachment_entries(
     processed_dir: Path,
     failed_dir: Path,
 ) -> list[dict[str, object]]:
-    """One entry per attachment, in the order the message carried them.
+    """One entry per attachment, in the order the message carried them, plus
+    at most one `_SURPLUS_ENTRY` standing for everything past the ceiling.
 
-    Attachments past `_MAX_ATTACHMENTS` are recorded and never opened, so one
-    message cannot queue unbounded parser work; pinned by
-    tests/test_intake_email.py::test_attachments_past_the_cap_are_recorded_and_not_processed.
+    `attachments_of` is asked for `_MAX_ATTACHMENTS + 1` and stops there, so
+    a message of many parts costs the ceiling rather than its part count, and
+    the surplus is one entry rather than one per part. Pinned by
+    tests/test_intake_email.py::test_attachments_past_the_cap_are_recorded_and_not_processed
+    and ::test_a_message_of_many_parts_is_bounded_by_the_ceiling.
     """
-    entries: list[dict[str, object]] = []
-    for index, (name, data) in enumerate(attachments_of(raw)):
-        if index >= _MAX_ATTACHMENTS:
-            entries.append(
-                _entry(name, data, hashlib.sha256(data).hexdigest(), "failed",
-                       error="too_many_attachments")
-            )
-            continue
+    found = attachments_of(raw, limit=_MAX_ATTACHMENTS)
+    entries: list[dict[str, object]] = [
         # The same `_safe_name` the entry stores, so the name that reaches
         # `IngestBatch.source_file` and the filed artifact's stem is the one
         # the event log shows — and carries no card number either.
-        entries.append(_ingest_attachment(
+        _ingest_attachment(
             session, data, _safe_name(name), property_id=property_id,
             pms_source=pms_source, processed_dir=processed_dir,
             failed_dir=failed_dir,
-        ))
+        )
+        for name, data in found[:_MAX_ATTACHMENTS]
+    ]
+    if len(found) > _MAX_ATTACHMENTS:
+        entries.append(dict(_SURPLUS_ENTRY))
     return entries
 
 
 def _aggregate(entries: Sequence[dict[str, object]]) -> IntakeOutcome:
     """The message's outcome, from its attachments'.
 
-    All ingested is `ingested`; some ingested and some not is `partial`;
-    nothing ingested reports the FIRST refusal, which is the one an operator
-    reading the event log needs to act on. An empty list cannot reach here —
-    `receive_email` answers `no_attachment` before calling it.
+    All ingested is `ingested`; some ingested and some not is `partial`. When
+    nothing ingested, a `failed` attachment outranks every other refusal, and
+    only then does the FIRST refusal stand. The ranking is there because a
+    message whose outcome read `duplicate` — a re-sent report beside one that
+    would not parse — buries the half an operator has to act on, and the
+    event log's outcome column is the first thing they read. An empty list
+    cannot reach here; `receive_email` answers `no_attachment` before calling
+    it. Pinned by tests/test_intake_email.py::
+    test_a_failure_outranks_a_duplicate_when_nothing_ingested.
     """
     outcomes = [str(entry["outcome"]) for entry in entries]
     if all(outcome == "ingested" for outcome in outcomes):
         return "ingested"
     if any(outcome == "ingested" for outcome in outcomes):
         return "partial"
+    if any(outcome == "failed" for outcome in outcomes):
+        return "failed"
     return cast(IntakeOutcome, outcomes[0])
 
 
@@ -340,14 +390,10 @@ def _record(
     session.add(EmailIntakeEvent(
         address_id=address_id,
         property_id=property_id,
-        envelope_from=_clip("envelope_from", envelope_from),
-        # Clipped BEFORE masking so the regex runs over bounded text, and
-        # clipped again after so whatever mask_pans returns still fits the
-        # column. D-OH23.7 requires the masking; models.EmailIntakeEvent
-        # requires the width.
-        subject=_clip("subject", mask_pans(_clip("subject", subject))) or None,
-        auth_result=_clip("auth_result", auth_result) or None,
-        message_id=_clip("message_id", message_id) or None,
+        envelope_from=_stored("envelope_from", envelope_from),
+        subject=_stored("subject", subject) or None,
+        auth_result=_stored("auth_result", auth_result) or None,
+        message_id=_stored("message_id", message_id) or None,
         outcome=outcome,
         attachments=list(entries),
     ))

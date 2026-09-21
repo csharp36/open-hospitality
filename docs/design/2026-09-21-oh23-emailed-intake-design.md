@@ -77,8 +77,25 @@ default refused in prod by `_refuse_dev_secrets_in_prod`, like the other
 secrets) signs `timestamp + "\n" + body`; the app verifies with
 `hmac.compare_digest` and refuses a timestamp more than 300 s from now.
 Failures are 401 with no detail. A `RateLimiter` (as `/api/preview`) caps
-the route. The body is capped by `email_intake_max_bytes` (default 25 MB,
-Cloudflare's message limit) and each attachment by `_MAX_UPLOAD_BYTES`.
+the route, keyed on a constant rather than the client address: one worker
+posts here, so the budget is the route's and cannot be widened by varying a
+source address.
+
+The window is a replay window, and that is accepted rather than closed
+(review decision, 2026-09-21): a captured request is a valid request for up to
+600 s — 300 either side of its timestamp — and posting it again processes it
+again. The attachments deduplicate by content hash, so nothing is staged
+twice; the EVENT rows do not, so three posts of one capture leave three event
+rows. The exposure is bounded by the limiter and by the fact that a replay can
+only re-deliver a report the property already sent to its own address. Closing
+it would mean storing every seen signature for the window's length, which is
+state this route otherwise does not keep.
+
+The body is capped by `email_intake_max_bytes` (default 25 MB, Cloudflare's
+message limit) and each attachment by `_MAX_UPLOAD_BYTES`. A third cap bounds
+the attachment COUNT at ten, and it stops the MIME walk rather than the
+ingest: a message of tens of thousands of tiny parts would otherwise be
+decoded, hashed and written to the event's JSON in full.
 
 **D-OH23.3 — Each property gets a random-token address held in an
 org-independent table, and the address resolves the org.**
