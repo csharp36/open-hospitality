@@ -18,6 +18,8 @@ import type {
   FaceTemplateEnrolled,
   FaceTemplateStatus,
   FetchResultsResponse,
+  IntakeAddress,
+  IntakeEvent,
   FiscalConfig,
   FiscalPeriod,
   ForecastDay,
@@ -781,6 +783,80 @@ export function getFiscalPeriods(
   return getJson(`/api/properties/${propertyId}/fiscal-periods`, {
     fiscal_year: String(fiscalYear),
   })
+}
+
+// --- Night-audit email intake (OH-23) ---------------------------------------
+// Five operator routes under the same /api/properties prefix as the config
+// writes above, implemented in src/usali/intake_address_api.py: reads gate on
+// readability, writes on require_config_writer, and each write adds an audit
+// row (`_audit` there).
+//
+// The statuses callers here have to branch on, and the backend tests that hold
+// each one, all in tests/test_intake_address_api.py:
+//   409 from create — the property already has an address, so refetch and show
+//     it: ::test_a_second_create_is_refused_and_leaves_one_active_address
+//   404 from rotate or the allowlist PUT — there is no ACTIVE address, and
+//     nothing about ownership: ::test_rotate_without_an_address_is_404,
+//     ::test_the_allowlist_needs_an_active_address
+//   403, not 404, for a property outside the caller's scope or org, so a 404
+//     must never be read as "not yours":
+//     ::test_every_verb_confines_a_gm_of_another_property,
+//     ::test_an_address_of_another_org_is_invisible_and_unrotatable
+
+export function getIntakeAddress(propertyId: string): Promise<IntakeAddress> {
+  return getJson(`/api/properties/${propertyId}/intake-address`)
+}
+
+export async function createIntakeAddress(propertyId: string): Promise<IntakeAddress> {
+  const res = await fetch(`/api/properties/${propertyId}/intake-address`, {
+    method: 'POST',
+    headers: await authHeaders(),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<IntakeAddress>
+}
+
+/** Revoke the live address and mint a new one. The new address starts with NO
+ * sender allowlist — the server does not carry the old policy across. */
+export async function rotateIntakeAddress(propertyId: string): Promise<IntakeAddress> {
+  const res = await fetch(`/api/properties/${propertyId}/intake-address/rotate`, {
+    method: 'POST',
+    headers: await authHeaders(),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<IntakeAddress>
+}
+
+/** Narrow the live address to these envelope-sender domains. An empty list is
+ * the spelling for "any authenticated sender": the server stores it as null,
+ * so the address that comes back carries `sender_domains: null`
+ * (tests/test_intake_address_api.py::test_an_empty_allowlist_stores_null).
+ * Entries are lowercased and deduplicated on the way in — see
+ * ::test_the_sender_allowlist_round_trips_lowercased_and_deduplicated — so
+ * callers may send what the operator typed. */
+export async function setIntakeSenderDomains(
+  propertyId: string,
+  senderDomains: string[],
+): Promise<IntakeAddress> {
+  const res = await fetch(`/api/properties/${propertyId}/intake-address`, {
+    method: 'PUT',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ sender_domains: senderDomains }),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<IntakeAddress>
+}
+
+/** The property's recent intake events, newest first. The server caps `limit`
+ * at 100 and answers a 422 above that. */
+export function getIntakeEvents(
+  propertyId: string,
+  limit: number = 20,
+): Promise<{ events: IntakeEvent[] }> {
+  return getJson(`/api/properties/${propertyId}/intake-events`, { limit: String(limit) })
 }
 
 // --- Core performance statistics (issue #9) ---------------------------------

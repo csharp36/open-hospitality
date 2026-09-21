@@ -978,6 +978,61 @@ export interface PropertyConfig {
   fiscal_calendar: FiscalConfig | null
 }
 
+// The night-audit email address and its event log (OH-23). Mirrors
+// IntakeAddressModel/IntakeEventModel in src/usali/intake_address_api.py.
+
+/**
+ * Every outcome a received message can be recorded with. The set is closed by
+ * the `email_intake_event` CHECK constraint in src/usali/models.py; spelling
+ * it as a union here is what makes an unhandled outcome a compile error in the
+ * page that renders it.
+ */
+export type IntakeOutcome =
+  | 'ingested'
+  | 'partial'
+  | 'duplicate'
+  | 'no_attachment'
+  | 'sender_rejected'
+  | 'wrong_property'
+  | 'not_a_night_audit_report'
+  | 'unreadable'
+  | 'failed'
+  | 'revoked_address'
+
+export interface IntakeAttachment {
+  name: string
+  sha256: string
+  bytes: number
+  outcome: IntakeOutcome
+  /** Present only when the attachment was ingested. */
+  batch_id?: number
+  /** Present only when the attachment failed. */
+  error?: string
+}
+
+export interface IntakeEvent {
+  event_id: number
+  received_at: string
+  envelope_from: string
+  subject: string | null
+  outcome: IntakeOutcome
+  message_id: string | null
+  attachments: IntakeAttachment[]
+}
+
+/**
+ * The property's live address. All four fields are null together, and only on
+ * GET, when the property has no active address — the create/rotate/PUT routes
+ * answer an address or an error. `sender_domains` is null ("any authenticated
+ * sender"), never an empty array.
+ */
+export interface IntakeAddress {
+  address: string | null
+  local_part: string | null
+  created_at: string | null
+  sender_domains: string[] | null
+}
+
 export interface NightAuditSlot {
   report_type: string
   label: string
