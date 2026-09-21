@@ -10,21 +10,26 @@ before any org is known, and only then opens an org-bound session on the
 row's `org_id`. A policy keyed on `app.org_id` would refuse that lookup.
 
 It differs from `invite` in one way worth naming: it DOES carry a NOT NULL
-`org_id`, because the address is what resolves the tenant. So it is the one
-table in the schema with an org key and no RLS wall, and the wall it does
-have is the composite `(org_id, property_id)` FK — which makes a row naming
-another org's property unrepresentable — plus explicit `org_id` filtering in
-the operator routes. `test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
-is where the NOT NULL org_id half is checked; it treats this table as
-tenant-owned, which is why the table is NOT in that test's
-`_L1_ORG_INDEPENDENT` set (that set means "no org_id column at all").
+`org_id`, because the address is what resolves the tenant. What stands in
+for the missing RLS wall is the composite `(org_id, property_id)` FK —
+which makes a row naming another org's property unrepresentable — plus
+explicit `org_id` filtering in the operator routes. Two tests record the
+shape: `test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
+checks the NOT NULL org_id half (it treats this table as tenant-owned,
+which is why the table is NOT in that test's `_L1_ORG_INDEPENDENT` set —
+that set means "no org_id column at all"), and this table's ABSENCE from
+the exact policy set in
+`test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced` is
+where the no-policy choice is written down.
 
 `email_intake_event` is OrgScoped and joins the L2 database wall on the
 same terms as every other org-scoped table: ENABLE + FORCE ROW LEVEL
-SECURITY and the `org_wall` policy built from `usali.tenancy.RLS_ORG_VAR`
-(the l5a0orgsettings / n1a0nightaudit template, so the predicate cannot
-drift from l2a0rlswall's). No GRANT here: usali_app's DML arrives through
-l2a0rlswall's ALTER DEFAULT PRIVILEGES for future tables.
+SECURITY and the `org_wall` policy. `_PREDICATE` below follows the
+l5a0orgsettings / n1a0nightaudit template, but only the session-variable
+NAME is shared with them — `usali.tenancy.RLS_ORG_VAR`, imported. The
+predicate text itself is retyped in each of those migrations. No GRANT
+here: usali_app's DML arrives through l2a0rlswall's ALTER DEFAULT
+PRIVILEGES for future tables.
 
 `outcome` carries a CHECK over the closed set D-OH23.7 names — the
 refuse-unknown posture at the schema, so no code path can land an outcome
