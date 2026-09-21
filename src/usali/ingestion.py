@@ -4,16 +4,24 @@ Handles both financial reports (trial balance, transaction summary) and statisti
 reports (manager flash, manager's report) through a uniform per-report handler table
 keyed by (pms_source, report_type).
 
-Any failure in the DB pipeline rolls back the in-flight transaction, records a `failed`
-IngestBatch (with the error message), quarantines the source file to `failed_dir`, and
-re-raises as ProcessingError. Success commits, then moves the source file to
-`processed_dir` as a separate phase — a filing failure after the commit leaves the file
-in place (retry is an idempotent no-op) and never fabricates a `failed` batch. Exactly
-one IngestBatch row is produced per `process_file` call, regardless of outcome.
+`process_bytes`, `process_pack_bytes` and `process_document_bytes` are the core: they
+take the uploaded bytes and a name, and never touch the caller's file. The path
+functions (`process_file`, `process_pack`, `process_document`) read the file and
+delegate; they do not move or delete it.
 
-`process_pack` splits a bundled night-audit pack and ingests each recognized section
-under a shared transaction, producing one IngestBatch per recognized section on success
-(still exactly one `failed` batch on failure, with the whole transaction rolled back).
+Any failure in the DB pipeline rolls back the in-flight transaction, records a `failed`
+IngestBatch (with the error message), files an error record with no content to
+`failed_dir` (`retention.write_error_record`), and re-raises as ProcessingError. Success
+commits, then files ONE redacted words artifact to `processed_dir`
+(`retention.build_artifact` + `write_artifact`) as a separate phase — a filing failure
+after the commit never fabricates a `failed` batch, because the data is committed.
+Exactly one IngestBatch row is produced per `process_bytes` call, regardless of outcome.
+
+`process_pack_bytes` splits a bundled night-audit pack and ingests each recognized
+section under a shared transaction, producing one IngestBatch per recognized section on
+success (still exactly one `failed` batch on failure, with the whole transaction rolled
+back) and one artifact holding the recognized sections, with the skipped section titles
+named in `sections_dropped`.
 """
 
 import dataclasses
@@ -40,13 +48,19 @@ from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
-from usali.adaptors.pdf import Word, extract_pages
-from usali.adaptors.reader import is_pdf, read_words, read_words_from_bytes
+from usali.adaptors.pdf import Word, extract_pages_from_bytes
+from usali.adaptors.reader import is_pdf, read_words_from_bytes
 from usali.detect import Detection, detect, load_registry
 from usali import gl_posting
 from usali.ledger_promote import promote_ledgers
 from usali.ledger_stage import stage_ledgers
 from usali.models import IngestBatch, IngestionCoverage
+from usali.retention import (
+    RetainedSection,
+    build_artifact,
+    write_artifact,
+    write_error_record,
+)
 from usali.segment_promote import promote_segments
 from usali.segment_stage import stage_segments
 from usali.stage import stage_records
@@ -69,7 +83,7 @@ class ProcessResult:
     mapped: int
     unmapped: int
     skipped: int
-    destination: Path
+    destination: Path  # the filed artifact path
 
 
 @dataclass(frozen=True)
@@ -325,17 +339,89 @@ def record_coverage(
                                       report_type=report_type))
 
 
-def _file_hash(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _hash(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
-def _move(path: Path, target_dir: Path) -> Path:
-    target_dir.mkdir(parents=True, exist_ok=True)
-    dest = target_dir / path.name
-    if dest.exists():  # same name already filed: disambiguate with the content hash
-        dest = target_dir / f"{path.stem}.{_file_hash(path)[:8]}{path.suffix}"
-    path.rename(dest)
-    return dest
+def process_bytes(
+    session: Session,
+    data: bytes,
+    name: str,
+    *,
+    processed_dir: Path,
+    failed_dir: Path,
+    edition: int = 12,
+) -> ProcessResult:
+    """Detect, parse, stage, transform, and file one PDF or XLSX held in memory.
+
+    The property detection registry is read from the DB (`load_registry`), not from
+    `mapping/properties.yaml` — properties must be seeded via `seed_properties` before
+    files can be processed. On success the IngestBatch is marked "transformed", the
+    transaction commits, and ONE redacted words artifact is filed to `processed_dir`
+    (`retention.build_artifact` + `write_artifact`). On a pipeline failure the
+    transaction is rolled back, a `failed` IngestBatch is recorded with the error
+    message, an error record carrying no content is filed to `failed_dir`, and a
+    ProcessingError is raised (chained). A filing failure AFTER the commit raises
+    ProcessingError but leaves the committed data untouched.
+    """
+    try:
+        words = read_words_from_bytes(data)
+        det = detect(words, load_registry(session))
+        result = _process_section(session, words, det, Path(name), _hash(data), edition)
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        _record_failure(session, name, data, exc)
+        write_error_record(failed_dir, source_file=name, data=data, error=str(exc))
+        raise ProcessingError(f"{name}: {exc}") from exc
+
+    section = RetainedSection(
+        title=name,
+        pms_source=det.pms_source,
+        report_type=det.report_type,
+        property_id=det.property_id,
+        business_date=result.business_date,
+        words=words,
+    )
+    return dataclasses.replace(
+        result,
+        destination=_file_artifact(
+            processed_dir, name, data, kind="single", sections=[section], sections_dropped=[]
+        ),
+    )
+
+
+def _file_artifact(
+    processed_dir: Path,
+    name: str,
+    data: bytes,
+    *,
+    kind: str,
+    sections: list[RetainedSection],
+    sections_dropped: list[str],
+) -> Path:
+    """Build and write the redacted artifact, post-commit.
+
+    Filing is a separate phase from the transaction: the data is already committed, so
+    a failure here must NOT fabricate a `failed` batch or roll anything back. Every
+    failure — retention's own (a policy whose kept columns are absent) as well as the
+    filesystem's — becomes a ProcessingError naming that the data is committed, so
+    nothing but ProcessingError escapes a post-commit filing. Pinned by
+    tests/test_ingestion.py::test_filing_failure_after_commit_does_not_fabricate_failed_batch.
+    """
+    try:
+        artifact = build_artifact(
+            source_file=name,
+            data=data,
+            kind=kind,
+            sections=sections,
+            sections_dropped=sections_dropped,
+        )
+        return write_artifact(processed_dir, artifact)
+    except Exception as exc:
+        raise ProcessingError(
+            f"{name}: data committed, but filing to {processed_dir} failed: {exc}"
+        ) from exc
 
 
 def process_file(
@@ -346,48 +432,26 @@ def process_file(
     failed_dir: Path,
     edition: int = 12,
 ) -> ProcessResult:
-    """Detect, parse, stage, transform, and file one PDF or XLSX.
+    """Read one PDF or XLSX and run it through `process_bytes`.
 
-    The property detection registry is read from the DB (`load_registry`), not from
-    `mapping/properties.yaml` — properties must be seeded via `seed_properties` before
-    files can be processed. On success the IngestBatch is marked "transformed", the
-    transaction commits, and the file moves to `processed_dir`. On a pipeline failure the
-    transaction is rolled back, a `failed` IngestBatch is recorded with the error message,
-    the file is quarantined to `failed_dir`, and a ProcessingError is raised (chained). A
-    filing failure AFTER the commit raises ProcessingError but leaves the file and the
-    committed data untouched.
+    The file at `path` is never moved or deleted; the caller owns it. What is filed is
+    the redacted artifact (success) or the error record (failure) — see `process_bytes`.
     """
-    path = Path(pdf_path)
-    try:
-        words = read_words(path)
-        det = detect(words, load_registry(session))
-        result = _process_section(session, words, det, path, _file_hash(path), edition)
-        session.commit()
-    except Exception as exc:
-        session.rollback()
-        _record_failure(session, path, exc)
-        _move(path, failed_dir)
-        raise ProcessingError(f"{path.name}: {exc}") from exc
-
-    # Post-commit filing is a separate phase: the data is already committed, so a move
-    # failure must NOT fabricate a `failed` batch or quarantine the file. Leaving the
-    # file in place is safe — a retry is an idempotent no-op that re-attempts the move.
-    try:
-        dest = _move(path, processed_dir)
-    except OSError as exc:
-        raise ProcessingError(
-            f"{path.name}: data committed, but filing to {processed_dir} failed: {exc}"
-        ) from exc
-    return dataclasses.replace(result, destination=dest)
+    p = Path(pdf_path)
+    return process_bytes(
+        session, p.read_bytes(), p.name,
+        processed_dir=processed_dir, failed_dir=failed_dir, edition=edition,
+    )
 
 
 def _process_section(
     session: Session, words: list[Word], det: Detection, path: Path, file_hash: str, edition: int
 ) -> ProcessResult:
     """Run one detected report through its handler + coverage, marking the batch
-    transformed. Shared by `process_file` (single report) and `process_pack` (each
-    section). Neither commits nor moves — the caller owns the transaction and filing.
-    The returned `destination` is the pre-move source path; the caller fixes it up."""
+    transformed. Shared by `process_bytes` (single report) and `process_pack_bytes`
+    (each section). Neither commits nor files — the caller owns the transaction and
+    the artifact. `path` carries the source file NAME for the handlers' `source_file`.
+    The returned `destination` is a placeholder; the caller fixes it up."""
     handler = _PIPELINES[(det.pms_source, det.report_type)]
     batch, business_date, counts = handler(session, words, det, path, file_hash, edition)
     # Record which report type landed for this property-day. A file that spans
@@ -416,8 +480,78 @@ def _process_section(
         mapped=counts.mapped,
         unmapped=counts.unmapped,
         skipped=counts.skipped,
-        destination=path,  # pre-move source; caller replaces with the filed destination
+        destination=path,  # placeholder; caller replaces with the filed artifact
     )
+
+
+def process_pack_bytes(
+    session: Session,
+    data: bytes,
+    name: str,
+    *,
+    processed_dir: Path,
+    failed_dir: Path,
+    edition: int = 12,
+) -> list[ProcessResult]:
+    """Split a bundled night-audit pack held in memory into its constituent reports
+    and ingest each recognised section under a shared transaction.
+
+    Unknown sections (housekeeping/filler like A/R Aging, or a report with no registered
+    handler) are skipped: their words are discarded at the boundary and only their titles
+    are kept, in the artifact's `sections_dropped`. All recognised sections stage +
+    transform in one transaction: any failure rolls the whole pack back, records a
+    `failed` IngestBatch, files an error record to `failed_dir`, and re-raises as
+    ProcessingError. A pack with no recognised sections is itself a failure. On success
+    the transaction commits and ONE artifact holding the recognised sections is filed to
+    `processed_dir`; every result's `destination` is that artifact.
+    """
+    file_hash = _hash(data)
+    results: list[ProcessResult] = []
+    retained: list[RetainedSection] = []
+    dropped: list[str] = []
+    try:
+        sections = split_pack(extract_pages_from_bytes(data))
+        registry = load_registry(session)
+        for section in sections:
+            try:
+                # Pass the section TITLE: it, not the 120-word header window,
+                # decides the report signature. Several SkyTouch reports print a
+                # `Rate Plan` COLUMN, which the window matched against the
+                # AutoClerk `rate_plan` signature (issue #78).
+                det = detect(section.words, registry, section.title)
+            except ValueError:
+                dropped.append(section.title or "(untitled)")
+                continue  # unknown report or unresolved property (housekeeping/filler)
+            if (det.pms_source, det.report_type) not in _PIPELINES:
+                dropped.append(section.title or "(untitled)")
+                continue
+            result = _process_section(
+                session, section.words, det, Path(name), file_hash, edition
+            )
+            results.append(result)
+            retained.append(
+                RetainedSection(
+                    title=section.title,
+                    pms_source=det.pms_source,
+                    report_type=det.report_type,
+                    property_id=det.property_id,
+                    business_date=result.business_date,
+                    words=section.words,
+                )
+            )
+        if not results:
+            raise ValueError("no recognized report sections in pack")
+        session.commit()
+    except Exception as exc:
+        session.rollback()
+        _record_failure(session, name, data, exc)
+        write_error_record(failed_dir, source_file=name, data=data, error=str(exc))
+        raise ProcessingError(f"{name}: {exc}") from exc
+
+    dest = _file_artifact(
+        processed_dir, name, data, kind="pack", sections=retained, sections_dropped=dropped
+    )
+    return [dataclasses.replace(r, destination=dest) for r in results]
 
 
 def process_pack(
@@ -428,52 +562,22 @@ def process_pack(
     failed_dir: Path,
     edition: int = 12,
 ) -> list[ProcessResult]:
-    """Split a bundled night-audit pack into its constituent reports and ingest each
-    recognised section under a shared transaction.
+    """Read one bundled night-audit pack and run it through `process_pack_bytes`.
 
-    Unknown sections (housekeeping/filler like A/R Aging, or a report with no registered
-    handler) are silently skipped. All recognised sections stage + transform in one
-    transaction: any failure rolls the whole pack back, records a `failed` IngestBatch,
-    quarantines the file to `failed_dir`, and re-raises as ProcessingError. A pack with no
-    recognised sections is itself a failure (quarantined). On success the transaction
-    commits and the single source file moves to `processed_dir`.
+    The file at `path` is never moved or deleted; the caller owns it. What is filed is
+    the redacted artifact (success) or the error record (failure).
     """
-    path = Path(pdf_path)
-    file_hash = _file_hash(path)
-    try:
-        sections = split_pack(extract_pages(path))
-        registry = load_registry(session)
-        results: list[ProcessResult] = []
-        for section in sections:
-            try:
-                # Pass the section TITLE: it, not the 120-word header window,
-                # decides the report signature. Several SkyTouch reports print a
-                # `Rate Plan` COLUMN, which the window matched against the
-                # AutoClerk `rate_plan` signature (issue #78).
-                det = detect(section.words, registry, section.title)
-            except ValueError:
-                continue  # unknown report or unresolved property (housekeeping/filler)
-            if (det.pms_source, det.report_type) not in _PIPELINES:
-                continue
-            results.append(
-                _process_section(session, section.words, det, path, file_hash, edition)
-            )
-        if not results:
-            raise ValueError("no recognized report sections in pack")
-        session.commit()
-    except Exception as exc:
-        session.rollback()
-        _record_failure(session, path, exc)
-        _move(path, failed_dir)
-        raise ProcessingError(f"{path.name}: {exc}") from exc
-
-    dest = _move(path, processed_dir)
-    return [dataclasses.replace(r, destination=dest) for r in results]
+    p = Path(pdf_path)
+    return process_pack_bytes(
+        session, p.read_bytes(), p.name,
+        processed_dir=processed_dir, failed_dir=failed_dir, edition=edition,
+    )
 
 
-def process_document(
+def process_document_bytes(
     session: Session,
-    path: str | Path,
+    data: bytes,
+    name: str,
     *,
     processed_dir: Path,
     failed_dir: Path,
@@ -491,49 +595,67 @@ def process_document(
     earlier signature than its title takes the pack path. Both shapes and the
     reasoning are in docs/design/2026-09-20-seed-pack-routing-design.md, D1.
 
-    `process_pack` is not called for `Autoclerk - Manager Report 07.07.2026.pdf`,
+    The pack path is not taken for `Autoclerk - Manager Report 07.07.2026.pdf`,
     the multi-page single report that `split_pack` carves into four sections;
     pinned in tests/test_process_document.py::test_single_report_never_takes_the_pack_path,
     with the split itself pinned in
     tests/adaptors/test_pack.py::test_manager_report_splits_into_four_sections_one_resolvable.
 
     Reading the bytes is not a routing signal: if it raises, the file takes
-    the single-report path, and `process_file` records the failed batch and
-    quarantines (tests/test_process_document.py::
+    the single-report path, and `process_bytes` records the failed batch and
+    files the error record (tests/test_process_document.py::
     test_a_corrupt_pdf_is_quarantined_by_the_single_report_path).
     When the pack path fails too, the raised ProcessingError names both
-    reasons; the failed batch and the quarantine were already recorded by
-    `process_pack`.
+    reasons; the failed batch and the error record were already recorded by
+    `process_pack_bytes`.
     """
-    path = Path(path)
-    data = path.read_bytes()
     if is_pdf(data):
         try:
             words = read_words_from_bytes(data)
         except Exception:
-            words = None  # not a routing signal; process_file owns the failure
+            words = None  # not a routing signal; process_bytes owns the failure
         if words is not None:
             try:
                 detect(words, load_registry(session))
             except ValueError as single_exc:
                 try:
-                    return process_pack(session, path, processed_dir=processed_dir,
-                                        failed_dir=failed_dir, edition=edition)
+                    return process_pack_bytes(session, data, name, processed_dir=processed_dir,
+                                              failed_dir=failed_dir, edition=edition)
                 except ProcessingError as pack_exc:
                     raise ProcessingError(
-                        f"{path.name}: as a single report: {single_exc}; "
+                        f"{name}: as a single report: {single_exc}; "
                         f"as a pack: {pack_exc}"
                     ) from pack_exc
-    return [process_file(session, path, processed_dir=processed_dir,
-                         failed_dir=failed_dir, edition=edition)]
+    return [process_bytes(session, data, name, processed_dir=processed_dir,
+                          failed_dir=failed_dir, edition=edition)]
 
 
-def _record_failure(session: Session, path: Path, exc: Exception) -> None:
+def process_document(
+    session: Session,
+    path: str | Path,
+    *,
+    processed_dir: Path,
+    failed_dir: Path,
+    edition: int = 12,
+) -> list[ProcessResult]:
+    """Read one file of unknown shape and run it through `process_document_bytes`.
+
+    The file at `path` is never moved or deleted; the caller owns it. What is filed is
+    the redacted artifact (success) or the error record (failure).
+    """
+    p = Path(path)
+    return process_document_bytes(
+        session, p.read_bytes(), p.name,
+        processed_dir=processed_dir, failed_dir=failed_dir, edition=edition,
+    )
+
+
+def _record_failure(session: Session, name: str, data: bytes, exc: Exception) -> None:
     batch = IngestBatch(
         pms_source="UNKNOWN",
         report_type="unknown",
-        source_file=path.name,
-        file_hash=_file_hash(path) if path.exists() else "",
+        source_file=name,
+        file_hash=_hash(data),
         status="failed",
         message=str(exc)[:500],
     )

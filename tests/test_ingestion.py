@@ -37,8 +37,8 @@ def test_process_file_full_pipeline(db_session, tmp_path):
     assert result.property_id == "HISJ"
     assert result.staged == 14
     assert result.mapped == 14 and result.unmapped == 0
-    assert not pdf.exists()
-    assert (processed / pdf.name).exists()
+    assert pdf.exists()  # the caller's file is left where it is
+    assert len(list(processed.glob("*.redacted.json"))) == 1
 
     total = db_session.scalar(select(func.sum(UsaliFinancialFact.amount)))
     assert total is not None
@@ -75,8 +75,8 @@ def test_process_file_failure_quarantines(db_session, tmp_path):
     with pytest.raises(ProcessingError):
         process_file(db_session, bad, processed_dir=processed, failed_dir=failed)
 
-    assert not bad.exists()
-    assert (failed / bad.name).exists()
+    assert bad.exists()  # the caller's file is left where it is
+    assert len(list(failed.glob("*.error.json"))) == 1
     batch = db_session.execute(select(IngestBatch)).scalars().one()
     assert batch.status == "failed"
     assert batch.message
@@ -85,8 +85,8 @@ def test_process_file_failure_quarantines(db_session, tmp_path):
 def test_filing_failure_after_commit_does_not_fabricate_failed_batch(
     db_session, tmp_path, monkeypatch
 ):
-    # A move failure AFTER the success commit must not roll anything back, must not
-    # record a second (failed) batch, and must leave the file in place for retry.
+    # An artifact-filing failure AFTER the success commit must not roll anything back,
+    # must not record a second (failed) batch, and must leave the file in place for retry.
     import usali.ingestion as ingestion
 
     _seed(db_session)
@@ -95,30 +95,30 @@ def test_filing_failure_after_commit_does_not_fabricate_failed_batch(
     pdf = inbox / OPERA_PDF.name
     shutil.copy(OPERA_PDF, pdf)
 
-    real_move = ingestion._move
+    real_write = ingestion.write_artifact
 
-    def move_fails_on_processed(path, target_dir):
+    def write_fails_on_processed(target_dir, artifact):
         if target_dir == processed:
             raise OSError("simulated permission error")
-        return real_move(path, target_dir)
+        return real_write(target_dir, artifact)
 
-    monkeypatch.setattr(ingestion, "_move", move_fails_on_processed)
+    monkeypatch.setattr(ingestion, "write_artifact", write_fails_on_processed)
 
     with pytest.raises(ProcessingError, match="data committed"):
         process_file(db_session, pdf, processed_dir=processed, failed_dir=failed)
 
-    assert pdf.exists()  # file stays in the inbox for retry
-    assert not (failed / pdf.name).exists()
+    assert pdf.exists()  # the caller's file is untouched, so a retry re-reads it
+    assert not list(failed.glob("*.error.json"))
     batch = db_session.execute(select(IngestBatch)).scalars().one()  # exactly ONE batch
     assert batch.status == "transformed"
     count = db_session.scalar(select(func.count()).select_from(UsaliFinancialFact))
     assert count == 14  # committed data untouched
 
-    # Retry with the move restored: idempotent no-op that completes the filing.
-    monkeypatch.setattr(ingestion, "_move", real_move)
+    # Retry with the write restored: idempotent no-op that completes the filing.
+    monkeypatch.setattr(ingestion, "write_artifact", real_write)
     result = process_file(db_session, pdf, processed_dir=processed, failed_dir=failed)
     assert result.skipped == 14
-    assert (processed / pdf.name).exists()
+    assert len(list(processed.glob("*.redacted.json"))) == 1
 
 
 def test_process_file_statistics_report(db_session, tmp_path):
@@ -134,7 +134,7 @@ def test_process_file_statistics_report(db_session, tmp_path):
     assert result.report_type == "manager_flash"
     assert result.staged > 0
     assert result.mapped > 0  # promoted canonical metrics
-    assert (processed / pdf.name).exists()
+    assert len(list(processed.glob("*.redacted.json"))) == 1
 
     from sqlalchemy import select as sa_select
 

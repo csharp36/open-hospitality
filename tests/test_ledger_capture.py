@@ -285,7 +285,8 @@ def test_reexport_of_same_date_fails_loud_not_double_counted(db_session, tmp_pat
             processed_dir=tmp_path / "processed", failed_dir=tmp_path / "failed",
         )
 
-    assert (tmp_path / "failed" / SAMPLE).exists()  # quarantined, not filed as processed
+    # An error record was filed, and nothing was filed as processed.
+    assert len(list((tmp_path / "failed").glob("*.error.json"))) == 1
     assert db_session.scalar(
         select(func.count()).select_from(UsaliLedgerBalanceFact)
     ) == fact_before == 7  # rolled back — no double counting

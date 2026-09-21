@@ -47,9 +47,11 @@ def _failed_batches(db_session) -> int:
 
 
 def _no_pack_path(monkeypatch) -> None:
+    # process_document routes through process_document_bytes, which calls
+    # process_pack_bytes — patching the path wrapper would catch nothing.
     def boom(*_args, **_kwargs):
-        raise AssertionError("process_pack must not be called for a single report")
-    monkeypatch.setattr(ingestion, "process_pack", boom)
+        raise AssertionError("the pack path must not be taken for a single report")
+    monkeypatch.setattr(ingestion, "process_pack_bytes", boom)
 
 
 def test_pack_sample_routes_to_the_pack_path(db_session, tmp_path):
@@ -63,8 +65,9 @@ def test_pack_sample_routes_to_the_pack_path(db_session, tmp_path):
         ("SKYTOUCH", "hotel_journal"), ("SKYTOUCH", "hotel_statistics"),
     }
     assert all(r.property_id == "STDEMO" for r in results)
-    assert all(r.destination == tmp_path / "done" / PACK.name for r in results)
-    assert (tmp_path / "done" / PACK.name).exists()
+    artifacts = list((tmp_path / "done").glob("*.redacted.json"))
+    assert len(artifacts) == 1  # one artifact for the pack
+    assert {r.destination for r in results} == {artifacts[0]}
     assert _failed_batches(db_session) == 0
 
 
@@ -82,7 +85,7 @@ def test_single_report_never_takes_the_pack_path(db_session, tmp_path, monkeypat
         ("AUTOCLERK", "manager_report", "SSSJ")
     ]
     assert results[0].staged > 0
-    assert (tmp_path / "done" / MANAGER_REPORT.name).exists()
+    assert len(list((tmp_path / "done").glob("*.redacted.json"))) == 1
 
 
 def test_xlsx_never_takes_the_pack_path(db_session, tmp_path, founding_org, monkeypatch):
@@ -99,7 +102,7 @@ def test_xlsx_never_takes_the_pack_path(db_session, tmp_path, founding_org, monk
             processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
         )
     assert "as a pack:" not in str(excinfo.value)
-    assert (tmp_path / "fail" / HOTELKEY_XLSX.name).exists()
+    assert len(list((tmp_path / "fail").glob("*.error.json"))) == 1
     assert _failed_batches(db_session) == 1
 
 
@@ -117,7 +120,7 @@ def test_a_corrupt_pdf_is_quarantined_by_the_single_report_path(
         process_document(
             db_session, bad, processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
         )
-    assert (tmp_path / "fail" / "corrupt.pdf").exists()
+    assert len(list((tmp_path / "fail").glob("*.error.json"))) == 1
     assert _failed_batches(db_session) == 1
 
 
@@ -150,6 +153,6 @@ def test_a_pdf_that_fails_both_ways_reports_both_reasons(db_session, tmp_path, f
         )
     msg = str(excinfo.value)
     assert "as a single report:" in msg and "as a pack:" in msg
-    assert (tmp_path / "fail" / PACK.name).exists()
-    assert not (tmp_path / "done" / PACK.name).exists()
+    assert len(list((tmp_path / "fail").glob("*.error.json"))) == 1
+    assert not (tmp_path / "done").exists()
     assert _failed_batches(db_session) == 1

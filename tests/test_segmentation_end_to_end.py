@@ -34,4 +34,4 @@ def test_all_six_reports_through_the_drop_folder(db_session, tmp_path, seed_six_
 
     statuses = set(db_session.execute(select(IngestBatch.status)).scalars())
     assert statuses == {"transformed"}
-    assert len(list((tmp_path / "processed").glob("*.pdf"))) == 6
+    assert len(list((tmp_path / "processed").glob("*.redacted.json"))) == 6

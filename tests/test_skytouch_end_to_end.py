@@ -43,10 +43,12 @@ def test_skytouch_pack_end_to_end(db_session, tmp_path):
     # Cancellation List prints a `Rate Plan` COLUMN and must not be attributed to the
     # AutoClerk rate_plan report (issue #78).
     assert ("AUTOCLERK", "rate_plan") not in kinds
-    # The source file was filed to processed_dir, and every result's destination was
-    # fixed up to point at the filed location (the dataclasses.replace after the move).
-    assert (tmp_path / "done" / SAMPLE.name).exists()
-    assert all(r.destination == tmp_path / "done" / SAMPLE.name for r in results)
+    # One redacted artifact was filed to processed_dir for the whole pack, and every
+    # result's destination was fixed up to point at it (the dataclasses.replace after
+    # the filing). The pack PDF itself is never filed.
+    artifacts = list((tmp_path / "done").glob("*.redacted.json"))
+    assert len(artifacts) == 1
+    assert {r.destination for r in results} == {artifacts[0]}
 
 
 def test_all_skipped_pack_raises_and_quarantines(db_session, tmp_path, founding_org):
@@ -67,9 +69,9 @@ def test_all_skipped_pack_raises_and_quarantines(db_session, tmp_path, founding_
             db_session, drop, processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail"
         )
 
-    # Quarantined to failed_dir, never filed to processed_dir.
-    assert (tmp_path / "fail" / SAMPLE.name).exists()
-    assert not (tmp_path / "done" / SAMPLE.name).exists()
+    # An error record went to failed_dir; nothing was filed to processed_dir.
+    assert len(list((tmp_path / "fail").glob("*.error.json"))) == 1
+    assert not (tmp_path / "done").exists()
     # Exactly one failed batch recorded.
     failed = db_session.scalar(
         select(func.count()).select_from(IngestBatch).where(IngestBatch.status == "failed")
@@ -115,8 +117,8 @@ def test_pack_section_failure_rolls_back_and_quarantines(
         select(func.count()).select_from(IngestBatch).where(IngestBatch.status == "failed")
     )
     assert failed == 1
-    assert (tmp_path / "fail" / SAMPLE.name).exists()
-    assert not (tmp_path / "done" / SAMPLE.name).exists()
+    assert len(list((tmp_path / "fail").glob("*.error.json"))) == 1
+    assert not (tmp_path / "done").exists()
 
 
 def test_pack_section_title_decides_the_signature_not_a_body_column():

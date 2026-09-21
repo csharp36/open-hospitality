@@ -40,8 +40,8 @@ def test_both_sources_through_the_drop_folder(db_session, tmp_path):
     assert by_source["AUTOCLERK"].mapped == 32
     assert all(r.unmapped == 0 for r in results)
 
-    assert not list(inbox.glob("*.pdf"))
-    assert len(list((tmp_path / "processed").glob("*.pdf"))) == 2
+    assert len(list(inbox.glob("*.pdf"))) == 2  # the caller's files are left in place
+    assert len(list((tmp_path / "processed").glob("*.redacted.json"))) == 2
 
     fact_count = db_session.scalar(select(func.count()).select_from(UsaliFinancialFact))
     assert fact_count == 46
