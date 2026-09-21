@@ -51,7 +51,6 @@ HOTELKEY_FIXTURES = Path("tests/fixtures/hotelkey")
 
 _SETTINGS = get_settings()
 _DOMAIN = _SETTINGS.email_intake_domain
-_SECRET = _SETTINGS.email_intake_secret
 
 # One keypair for the whole module: create_app wants a token verifier, and
 # nothing here carries an operator token — the webhook is not an OIDC surface.

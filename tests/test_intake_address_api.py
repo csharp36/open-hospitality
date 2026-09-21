@@ -33,9 +33,11 @@ from usali.config import get_settings
 from usali.db import make_session_factory
 from usali.intake_address_api import _active_address
 from usali.keycloak_admin import InMemoryKeycloakAdmin
+from usali import intake
 from usali.models import (
     AuditEvent,
     EmailIntakeEvent,
+    IngestBatch,
     Organization,
     Property,
     PropertyIntakeAddress,
@@ -198,8 +200,12 @@ def test_rotate_revokes_the_old_row_and_mints_a_new_one(world, db_session):
 
     assert client.get("/api/properties/HISJ/intake-address",
                       headers=headers).json()["address"] == new["address"]
-    audits = _audits(db_session, "intake_address_rotated")
-    assert [a.resource_id for a in audits] == [new["local_part"]]
+    # Both halves of the rotation are in the trail: which capability was
+    # retired, and which one replaced it.
+    assert [a.resource_id for a in _audits(db_session, "intake_address_revoked")] == [
+        old["local_part"]]
+    assert [a.resource_id for a in _audits(db_session, "intake_address_rotated")] == [
+        new["local_part"]]
 
 
 def test_rotate_carries_the_allowlist_nowhere_and_starts_open(world, db_session):
@@ -246,6 +252,32 @@ def test_mail_to_a_rotated_address_is_recorded_as_revoked_address(world, db_sess
 
 
 # --- PUT: the sender allowlist (D-OH23.4) ---------------------------------------
+
+
+def test_the_allowlist_refuses_mail_from_an_excluded_domain(world, db_session):
+    """The allowlist is only worth setting if it reaches the webhook. Both
+    messages carry an ALIGNED dkim pass for their own domain, so the only
+    thing separating them is `sender_domains` (D-OH23.4)."""
+    client, headers = world
+    address = client.post("/api/properties/HISJ/intake-address",
+                          headers=headers).json()["address"]
+    client.put("/api/properties/HISJ/intake-address",
+               json={"sender_domains": ["pms.test"]}, headers=headers)
+
+    outsider = _post(client, _message(), to=address, frm="nightaudit@other.test")
+    assert outsider.status_code == 200, outsider.text
+    assert outsider.json()["outcome"] == "sender_rejected"
+
+    listed = client.get("/api/properties/HISJ/intake-events", headers=headers).json()
+    assert [e["outcome"] for e in listed["events"]] == ["sender_rejected"]
+    assert [e["envelope_from"] for e in listed["events"]] == ["nightaudit@other.test"]
+    # Refused at the door: nothing of the message was opened or staged.
+    assert db_session.scalars(select(IngestBatch)).all() == []
+
+    listed_sender = _post(client, _message(), to=address, frm="nightaudit@pms.test")
+    assert listed_sender.json()["outcome"] != "sender_rejected"
+
+
 
 
 def test_the_sender_allowlist_round_trips_lowercased_and_deduplicated(world, db_session):
@@ -358,11 +390,43 @@ def test_an_event_carries_its_attachments_and_not_the_auth_result(world, db_sess
                                      "bytes": 12, "outcome": "ingested", "batch_id": 7}]
 
 
+def test_two_events_at_the_same_instant_list_by_event_id(world, db_session):
+    """`received_at` alone does not order two messages recorded in the same
+    transaction — the `event_id` tiebreak does, and this is the only case
+    that can tell whether it is still there."""
+    client, headers = world
+    same = datetime(2026, 7, 7, 4, 0, tzinfo=UTC)
+    first = _event(db_session, received_at=same, outcome="ingested")
+    second = _event(db_session, received_at=same, outcome="duplicate")
+    assert second.event_id > first.event_id
+
+    listed = client.get("/api/properties/HISJ/intake-events", headers=headers).json()
+    assert [e["event_id"] for e in listed["events"]] == [second.event_id, first.event_id]
+
+
 @pytest.mark.parametrize("limit", ["0", "101", "-1"])
 def test_an_out_of_range_limit_is_refused(world, limit):
     client, headers = world
     r = client.get(f"/api/properties/HISJ/intake-events?limit={limit}", headers=headers)
     assert r.status_code == 422, r.text
+
+
+def test_a_local_part_always_fits_the_audit_resource_id(world, db_session):
+    """What `intake_address_api._audit` rests on when it records the local
+    part alone: a minted local part is never wider than the column. Asserted
+    against the column's own declared width, so widening or narrowing
+    `audit_event.resource_id` moves this test rather than silently changing
+    what the trail can hold."""
+    width = AuditEvent.__table__.c.resource_id.type.length
+    assert width is not None
+    for _ in range(20):
+        assert len(intake.new_local_part()) <= width
+
+    # And the row the endpoint actually writes carries it whole.
+    client, headers = world
+    made = client.post("/api/properties/HISJ/intake-address", headers=headers).json()
+    assert _audits(db_session, "intake_address_created")[0].resource_id == \
+        made["local_part"]
 
 
 # --- the gates ------------------------------------------------------------------

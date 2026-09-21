@@ -113,15 +113,16 @@ def _audit(session: Session, principal: Principal, action: str, local_part: str)
     """One audit row per operator write, naming the address that was minted,
     rotated or re-scoped.
 
-    `resource_id` is the LOCAL PART and not `property_id:local_part`:
-    `audit_event.resource_id` is String(64), a local part is 29 characters
-    (`intake.new_local_part`), and a signup-generated property id runs to 45
-    (`mapping.property_registry._slugify` caps the slug at 40, plus a dash and
-    four hex digits) — the pair does not fit, and Postgres answers an overflow
-    with an error, not a truncation. The local part alone is unique
-    (`uq_property_intake_address_local_part`) and its row names the property.
-    The local part is displayable by D-OH23.3, not a secret hash, so writing
-    it here discloses nothing the property page does not already show.
+    `resource_id` is the LOCAL PART and not `property_id:local_part`: the
+    column is too narrow for the pair once a property id is a generated one
+    (`usali.mapping.property_registry.create_first_property` builds them from
+    a slug), while a local part alone always fits —
+    `tests/test_intake_address_api.py::
+    test_a_local_part_always_fits_the_audit_resource_id` is where that is
+    held, against the column's own declared width. The local part is unique
+    (`uq_property_intake_address_local_part`) and its row names the property;
+    it is displayable by D-OH23.3, not a secret hash, so writing it here
+    discloses nothing the property page does not already show.
     """
     session.add(AuditEvent(
         actor_subject=principal.subject, action=action,
@@ -175,9 +176,12 @@ def _clean_sender_domains(entries: list[str]) -> list[str] | None:
     """The allowlist as it is stored: lowercase hostnames, deduplicated in the
     order given, or None for an empty list.
 
-    None is "any authenticated sender" (D-OH23.4); an empty JSON array would
-    be a second spelling of a policy that means something else entirely
-    ("nobody"), and `intake.sender_allowed` reads only the NULL distinction.
+    None is "any authenticated sender" (D-OH23.4). An empty list is
+    normalized to None rather than stored, so one policy has one spelling in
+    the column: the two already behave identically downstream, which
+    `tests/test_intake.py::test_an_empty_allowlist_behaves_like_no_allowlist`
+    pins — storing both would leave a difference an operator could see in the
+    database and nowhere else.
     """
     if len(entries) > _MAX_SENDER_DOMAINS:
         raise HTTPException(
@@ -278,6 +282,11 @@ def rotate_intake_address(
         session.add(new)
         session.flush()
         model = _model(new)
+        # Two rows, one transaction: the rotation retires one capability and
+        # mints another, and an audit trail that names only the new local part
+        # cannot answer "when did THIS address stop working" — which is the
+        # question a `revoked_address` event in the log raises.
+        _audit(session, principal, "intake_address_revoked", old.local_part)
         _audit(session, principal, "intake_address_rotated", new.local_part)
         session.commit()
         return model
