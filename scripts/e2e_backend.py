@@ -73,11 +73,11 @@ def _remove_stale_container() -> None:
 
 
 def _seed(db_url: str, work_dir: Path, opener: "SoftwareOpener") -> None:
-    """Migrate, seed schedules + mappings, and process the six sample PDFs."""
+    """Migrate, seed schedules + mappings, and process every PDF in docs/reference/samples."""
     from datetime import UTC, date, datetime, time, timedelta
 
     from usali.db import make_engine, make_session_factory
-    from usali.ingestion import process_file
+    from usali.ingestion import process_document
     from usali.kiosk import mint_device_token
     from usali.mapping.loader import load_mappings
     from usali.mapping.property_registry import seed_properties
@@ -118,6 +118,8 @@ def _seed(db_url: str, work_dir: Path, opener: "SoftwareOpener") -> None:
         seed_schedules(session, str(REPO_ROOT / "mapping" / "usali_schedules.yaml"))
         load_mappings(session, str(REPO_ROOT / "mapping" / "opera.yaml"))
         load_mappings(session, str(REPO_ROOT / "mapping" / "autoclerk.yaml"))
+        load_mappings(session, str(REPO_ROOT / "mapping" / "skytouch.yaml"))
+        load_mappings(session, str(REPO_ROOT / "mapping" / "hotelkey.yaml"))
         seed_properties(session, str(REPO_ROOT / "mapping" / "properties.yaml"))
         # L4 (Pillar L decision 4): org authority is the org-scoped
         # role_assignment grants, not realm token roles — plant the
@@ -258,7 +260,7 @@ def _seed(db_url: str, work_dir: Path, opener: "SoftwareOpener") -> None:
         for sample in sorted(SAMPLES_DIR.glob("*.pdf")):
             shutil.copy(sample, inbox / sample.name)
         for pdf in sorted(inbox.glob("*.pdf")):
-            process_file(
+            process_document(
                 session,
                 pdf,
                 processed_dir=work_dir / "processed",

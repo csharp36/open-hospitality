@@ -72,7 +72,7 @@ from sqlalchemy.orm import Session  # noqa: E402
 from usali.config import get_settings  # noqa: E402
 from usali.db import make_engine, make_session_factory  # noqa: E402
 from usali.deposit_accounts import account_slot, routing_slot  # noqa: E402
-from usali.ingestion import process_file, record_coverage  # noqa: E402
+from usali.ingestion import process_document, record_coverage  # noqa: E402
 from usali.keycloak_admin import KeycloakAdminClient, KeycloakAdminError  # noqa: E402
 from usali.kiosk import mint_device_token  # noqa: E402
 from usali.labor import promote_timecard  # noqa: E402
@@ -284,6 +284,8 @@ def _seed_base(session: Session) -> None:
     seed_schedules(session, str(REPO_ROOT / "mapping" / "usali_schedules.yaml"))
     load_mappings(session, str(REPO_ROOT / "mapping" / "opera.yaml"))
     load_mappings(session, str(REPO_ROOT / "mapping" / "autoclerk.yaml"))
+    load_mappings(session, str(REPO_ROOT / "mapping" / "skytouch.yaml"))
+    load_mappings(session, str(REPO_ROOT / "mapping" / "hotelkey.yaml"))
     seed_properties(session, str(REPO_ROOT / "mapping" / "properties.yaml"))
     session.commit()
 
@@ -1060,7 +1062,8 @@ def _seed_faces(session: Session, workers: list[DemoWorker],
 
 
 def _seed_documents(session: Session) -> None:
-    """Ingest the sample PDFs (revenue facts for 2026-07-07, both properties).
+    """Ingest the sample PDFs: single reports and the choiceADVANTAGE (SKYTOUCH)
+    pack, every property.
 
     Skips PER FILE by content hash: a pre-existing dev database may hold a
     PARTIAL ingestion (it did — Opera only), and a batch-level guard would
@@ -1086,11 +1089,12 @@ def _seed_documents(session: Session) -> None:
                 continue
             target = inbox / sample.name
             shutil.copy(sample, target)
-            process_file(session, target, processed_dir=work / "processed",
-                         failed_dir=work / "failed")
+            process_document(session, target, processed_dir=work / "processed",
+                             failed_dir=work / "failed")
             ingested += 1
     print(f"  ingested {ingested} sample PDFs, {skipped} already present "
-          "(revenue facts 2026-07-07)")
+          "(Opera/AutoClerk 2026-07-07, choiceADVANTAGE (SKYTOUCH) pack 2026-06-21, "
+          "HotelKey statistics 2026-08-13)")
 
 
 def _seed_synthetic_year(session: Session) -> None:

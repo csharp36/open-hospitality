@@ -41,7 +41,7 @@ from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
 from usali.adaptors.pdf import Word, extract_pages
-from usali.adaptors.reader import read_words
+from usali.adaptors.reader import is_pdf, read_words, read_words_from_bytes
 from usali.detect import Detection, detect, load_registry
 from usali import gl_posting
 from usali.ledger_promote import promote_ledgers
@@ -469,6 +469,63 @@ def process_pack(
 
     dest = _move(path, processed_dir)
     return [dataclasses.replace(r, destination=dest) for r in results]
+
+
+def process_document(
+    session: Session,
+    path: str | Path,
+    *,
+    processed_dir: Path,
+    failed_dir: Path,
+    edition: int = 12,
+) -> list[ProcessResult]:
+    """Ingest one file whose shape is not known in advance: a single report
+    (PDF or XLSX) or a bundled night-audit pack (PDF only).
+
+    Single-report detection is tried first; only a ValueError from `detect`
+    (nothing matched, no property resolved, or the first matching signature
+    disagrees with the property's registered source) selects the pack path.
+    The rule is calibrated on the committed samples, not proved: a pack bound
+    with a cleanly detectable report first passes the probe and is processed
+    as a single report, and a single report whose header window matches an
+    earlier signature than its title takes the pack path. Both shapes and the
+    reasoning are in docs/design/2026-09-20-seed-pack-routing-design.md, D1.
+
+    `process_pack` is not called for `Autoclerk - Manager Report 07.07.2026.pdf`,
+    the multi-page single report that `split_pack` carves into four sections;
+    pinned in tests/test_process_document.py::test_single_report_never_takes_the_pack_path,
+    with the split itself pinned in
+    tests/adaptors/test_pack.py::test_manager_report_splits_into_four_sections_one_resolvable.
+
+    Reading the bytes is not a routing signal: if it raises, the file takes
+    the single-report path, and `process_file` records the failed batch and
+    quarantines (tests/test_process_document.py::
+    test_a_corrupt_pdf_is_quarantined_by_the_single_report_path).
+    When the pack path fails too, the raised ProcessingError names both
+    reasons; the failed batch and the quarantine were already recorded by
+    `process_pack`.
+    """
+    path = Path(path)
+    data = path.read_bytes()
+    if is_pdf(data):
+        try:
+            words = read_words_from_bytes(data)
+        except Exception:
+            words = None  # not a routing signal; process_file owns the failure
+        if words is not None:
+            try:
+                detect(words, load_registry(session))
+            except ValueError as single_exc:
+                try:
+                    return process_pack(session, path, processed_dir=processed_dir,
+                                        failed_dir=failed_dir, edition=edition)
+                except ProcessingError as pack_exc:
+                    raise ProcessingError(
+                        f"{path.name}: as a single report: {single_exc}; "
+                        f"as a pack: {pack_exc}"
+                    ) from pack_exc
+    return [process_file(session, path, processed_dir=processed_dir,
+                         failed_dir=failed_dir, edition=edition)]
 
 
 def _record_failure(session: Session, path: Path, exc: Exception) -> None:
