@@ -44,6 +44,7 @@ from usali.payroll_run_api import router as payroll_run_router
 from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
 from usali.preview import PreviewPayload, build_financial_preview
+from usali.intake_address_api import router as intake_address_router
 from usali.intake_api import router as intake_router
 from usali.ratelimit import RateLimiter
 from usali.recognition import display_name, recognize_vendor
@@ -452,6 +453,9 @@ def create_app(
     app.include_router(portal_router, dependencies=operator_gates)
     app.include_router(workforce_router, dependencies=operator_gates)
     app.include_router(property_config_router, dependencies=operator_gates)
+    # The night-audit email address and its event log (D-OH23.8): the same
+    # prefix and the same gates as the property-config routes above.
+    app.include_router(intake_address_router, dependencies=operator_gates)
     app.include_router(night_audit_router, dependencies=operator_gates)
     app.include_router(checklist_router, dependencies=operator_gates)
     # The per-tenant connect surface (OH-17). EVERY route inside narrows to

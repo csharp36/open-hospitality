@@ -20,8 +20,8 @@ table is NOT in that test's `_L1_ORG_INDEPENDENT` set — that set means "no
 org_id column at all"). What stands in for the missing wall is the
 composite `(org_id, property_id)` FK, which makes a row naming another
 org's property unrepresentable, plus per-org filtering in the operator
-routes, which D-OH23.3 requires; Task 4 owes
-`test_an_address_of_another_org_is_invisible_and_unrotatable`.
+routes, which D-OH23.3 requires; `tests/test_intake_address_api.py::
+test_an_address_of_another_org_is_invisible_and_unrotatable` is the pin.
 
 Two constraints beyond the FK. `uq_property_intake_address_active` is a
 partial unique on `(org_id, property_id) WHERE revoked_at IS NULL`: one

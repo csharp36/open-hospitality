@@ -2345,8 +2345,8 @@ class PropertyIntakeAddress(Base):
     requires the webhook resolve a local part before any org is known, so
     that lookup must run on the unbound base session, and a policy keyed on
     app.org_id would refuse it. Operator routes are required to filter by
-    the caller's org; Task 4 owes
-    `test_an_address_of_another_org_is_invisible_and_unrotatable`.
+    the caller's org; `tests/test_intake_address_api.py::
+    test_an_address_of_another_org_is_invisible_and_unrotatable` is the pin.
 
     It therefore carries org_id WITHOUT the mixin's RLS wall. Two tests fix
     that shape:
