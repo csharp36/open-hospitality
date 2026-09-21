@@ -234,7 +234,7 @@ PMS ──SMTP──> Cloudflare Email Routing (intake.<domain>, catch-all)
 - Property endpoints: create, rotate (old revoked, new active, old mail →
   `revoked_address`), allowlist, events list; a GM confined to another
   property is refused.
-- Validator parity: `intake.validate_for_property` is called by both the
+- Validator parity: `night_audit_validation.validate_for_property` is called by both the
   upload endpoint and the webhook; the existing night-audit refusal tests
   keep passing unchanged.
 - Worker: `node --test` on the signing function against a vector the

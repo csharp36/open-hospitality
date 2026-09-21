@@ -1410,3 +1410,68 @@ def test_the_adjustment_log_is_append_only_by_grant(app_role_engine):
                 text("SELECT has_table_privilege('night_audit_adjustment', :p)"),
                 {"p": priv},
             ).scalar_one(), f"{priv} on night_audit_adjustment was re-granted"
+
+
+# --- the validator's two checks, AT THE ENDPOINT ------------------------------
+# Added 2026-09-21 after review: deleting either check from
+# night_audit_validation.validate_single left every other test in this file
+# green, so "test_night_audit.py stays green" was not on its own a parity pin
+# for the property and report-type refusals. These two are.
+
+
+def test_upload_refuses_a_report_for_another_property(db_session, db_engine, tmp_path):
+    from pathlib import Path
+    from sqlalchemy import func, select
+    from usali.models import PmsDailyStatisticStage
+
+    _seed_world(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    # HISJ's Manager Flash, uploaded to the AutoClerk property SSSJ.
+    sample = Path("docs/reference/samples/Manager Flash 07.07.2026 - Opera.pdf")
+    r = client.post(
+        "/api/properties/SSSJ/night-audit/upload", headers=headers,
+        files={"file": (sample.name, sample.read_bytes(), "application/pdf")},
+    )
+    assert r.status_code == 422, r.text
+    assert "report is for property" in r.json()["detail"]
+    assert "HISJ" in r.json()["detail"]
+    staged = db_session.execute(
+        select(func.count()).select_from(PmsDailyStatisticStage)
+    ).scalar_one()
+    assert staged == 0
+
+
+def test_upload_refuses_a_report_outside_the_nights_required_set(
+    db_session, db_engine, tmp_path
+):
+    """The AutoClerk rate plan resolves to SSSJ, so the property check passes.
+    `rate_plan` is not one of OPERA's three required reports, so the
+    report-type check is what has to refuse it."""
+    from pathlib import Path
+    from sqlalchemy import func, select
+    from usali.models import PmsDailyFinancialStage
+
+    _seed_world(db_session)
+    # SSSJ's own report, but the property row says OPERA for this upload.
+    db_session.query(Property).filter(Property.property_id == "SSSJ").update(
+        {"pms_source": "OPERA"}
+    )
+    db_session.commit()
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    sample = Path("docs/reference/samples/Autoclerk - Revenue by Rate Plan 07.07.2026.pdf")
+    r = client.post(
+        "/api/properties/SSSJ/night-audit/upload", headers=headers,
+        files={"file": (sample.name, sample.read_bytes(), "application/pdf")},
+    )
+    assert r.status_code == 422, r.text
+    assert "is not part of this property's night audit" in r.json()["detail"]
+    staged = db_session.execute(
+        select(func.count()).select_from(PmsDailyFinancialStage)
+    ).scalar_one()
+    assert staged == 0

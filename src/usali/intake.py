@@ -1,18 +1,13 @@
-"""Emailed night-audit intake (OH-23): the pieces shared by the webhook, the
-mail worker's contract, and the night-audit upload endpoint.
+"""Emailed night-audit intake (OH-23): the message-level primitives.
 
-Nothing here touches the database except `validate_for_property` and its two
-halves, which read the property detection registry. Nothing here writes a file
-or stages a row: this module decides *whether* a message and its attachments
-may proceed, and the callers own what happens next.
+Webhook signature verification, intake address local parts, the sender policy,
+and pulling the report attachments out of a MIME message. Everything here is a
+pure function of its arguments: no database, no filesystem, and no PDF or XLSX
+adaptor, which is what lets the unauthenticated webhook import this module and
+decide whether to go any further before it opens anything.
 
-The validator (`validate_single`, `validate_sections`, `validate_pack`,
-`validate_for_property`) is the code `night_audit_api.upload_night_audit_report`
-and `night_audit_api._ingest_pack` call for their property and report-type
-checks, so a second caller can run the same two checks over the same bytes.
-The BUSINESS-DATE check is deliberately not here: the upload endpoint keeps it
-(D-OH23.5 says an emailed backfill is the point), and it is the reason the
-endpoint asks for `sections` back rather than only an outcome.
+The night-audit checks a message's attachments must then pass live in
+`usali.night_audit_validation`, which does read the database.
 """
 
 import base64
@@ -24,15 +19,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from email import message_from_bytes, policy
-from typing import Literal, get_args
 
-from sqlalchemy.orm import Session
-
-from usali.adaptors.pack import ReportSection, split_pack
-from usali.adaptors.pdf import Word, extract_pages_from_bytes
-from usali.adaptors.reader import is_pdf, is_xlsx, read_words_from_bytes
-from usali.detect import Detection, detect, load_registry
-from usali.night_audit import REQUIRED_REPORTS
+from usali.adaptors.reader import is_pdf, is_xlsx
 
 # D-OH23.7's closed outcome set, duplicated from the CHECK on
 # email_intake_event. The two copies are held together by
@@ -50,15 +38,6 @@ INTAKE_OUTCOMES: frozenset[str] = frozenset({
     "revoked_address",
 })
 
-# The subset the validator can answer with, closed IN THE TYPE: mypy --strict
-# refuses a fourth string at every `Validation(...)` site, so the set cannot
-# drift by someone inventing an outcome the event table has no room for. The
-# frozenset is derived from the Literal rather than written twice, and its
-# containment in INTAKE_OUTCOMES is asserted by tests/test_intake.py::
-# test_every_validator_outcome_is_one_the_event_table_accepts.
-ValidationOutcome = Literal["wrong_property", "not_a_night_audit_report", "unreadable"]
-VALIDATION_OUTCOMES: frozenset[str] = frozenset(get_args(ValidationOutcome))
-
 # An intake address's local part: `na-` plus base32 of 16 random bytes,
 # lowercased and unpadded (26 characters, 128 bits). The DB spells the same
 # lowercase rule as ck_property_intake_address_local_part_lower.
@@ -68,9 +47,23 @@ _LOCAL_PART_RANDOM_BYTES = 16
 _SIGNATURE_PREFIX = "sha256="
 _SIGNATURE_HEX_LEN = 64
 
+# An attachment name is spliced into the `source_file` an ingest records and
+# into the filed artifact's name, so it is bounded as well as scrubbed. 120 is
+# comfortably under every filesystem's per-component limit with room for the
+# `night-audit-<property_id>-` prefix night_audit_api adds.
+_ATTACHMENT_NAME_MAX = 120
+# What a scrubbed stem may not be, mirroring the upload endpoint's own refusal
+# of `.` and `..` as a filename (night_audit_api.upload_night_audit_report,
+# pinned by tests/test_night_audit.py::test_upload_refuses_unsafe_filenames).
+_UNUSABLE_STEMS = frozenset({"", ".", ".."})
+
 # Authentication-Results comments and quoted strings, removed before the header
 # is tokenized so that `dkim=pass` written inside one is not read as a result.
+# The comment pattern matches only INNERMOST parentheses, so nesting is undone
+# by repeating it; `_AUTH_COMMENT_ROUNDS` bounds that repetition and any
+# parenthesis still standing afterwards makes the whole header unparseable.
 _AUTH_COMMENT = re.compile(r"\([^()]*\)")
+_AUTH_COMMENT_ROUNDS = 8
 _AUTH_QUOTED = re.compile(r'"[^"]*"')
 
 # Method names that START a result inside an Authentication-Results clause.
@@ -82,8 +75,8 @@ _AUTH_METHODS = frozenset({
 })
 
 
-def _safe_component(value: str) -> str:
-    """Reduce request-controlled text to something safe to splice into a path."""
+def safe_component(value: str) -> str:
+    """Reduce text to the `[A-Za-z0-9._-]` alphabet, one character for one."""
     return re.sub(r"[^A-Za-z0-9._-]", "_", value)
 
 
@@ -168,15 +161,31 @@ def _auth_results(auth_result: str) -> list[_AuthResult]:
     """Parse Authentication-Results into (method, verdict, properties) triples.
 
     Quoted strings and parenthesised comments are removed first, so a
-    `dkim=pass` written inside one is not read as a result. One comment pass is
-    enough for the flat comments a real header carries; a nested comment leaves
-    its outer text behind, which can only cost a pass, never grant one, because
-    what survives is compared for EQUALITY against a method name.
+    `dkim=pass` written inside one is not read as a result. Comments are
+    stripped to a FIXPOINT: `_AUTH_COMMENT` matches innermost parentheses
+    only, so one pass over `((x) dkim=pass)` leaves `( dkim=pass)` — and the
+    surviving text tokenizes into a live pass. Repeating the substitution
+    until it changes nothing removes nesting; if a parenthesis is still
+    standing after `_AUTH_COMMENT_ROUNDS` rounds the header is unbalanced,
+    which no honest receiver writes, and this returns NO results rather than
+    guess where the comment ended. That matters because receivers interpolate
+    the MAIL FROM into the SPF comment, so the local part of a crafted sender
+    address lands inside these parentheses.
 
     Results are cut at `;` (RFC 8601 puts one result per resinfo), so a
     property never attaches across a boundary to the wrong method.
+
+    Both behaviors are pinned by tests/test_intake.py::
+    test_a_nested_comment_grants_no_pass and
+    ::test_an_unbalanced_comment_yields_no_results.
     """
-    text = _AUTH_COMMENT.sub(" ", _AUTH_QUOTED.sub(" ", auth_result))
+    text = _AUTH_QUOTED.sub(" ", auth_result)
+    for _round in range(_AUTH_COMMENT_ROUNDS):
+        text, replaced = _AUTH_COMMENT.subn(" ", text)
+        if not replaced:
+            break
+    if "(" in text or ")" in text:
+        return []
     results: list[_AuthResult] = []
     for clause in text.split(";"):
         current: _AuthResult | None = None
@@ -195,11 +204,22 @@ def _auth_results(auth_result: str) -> list[_AuthResult]:
 
 def _domain_of(address: str) -> str:
     """The domain of an envelope address, lowercased. Empty when there is none
-    — a bare local part or a null return-path aligns with nothing."""
-    local, at, domain = address.strip().rpartition("@")
+    — a bare local part or a null return-path (`<>`) aligns with nothing.
+
+    Angle brackets and surrounding space are trimmed, because a worker that
+    forwards `message.from` verbatim can hand over `<gm@hotel.test>`, and
+    leaving the `>` on the domain would refuse every such sender.
+    """
+    local, at, domain = address.strip().strip("<>").strip().rpartition("@")
     if not at or not local:
         return ""
     return domain.strip().lower()
+
+
+def _property_domain(value: str) -> str:
+    """The domain out of an Authentication-Results property value, which a
+    receiver may write as a bare domain, a whole address, or `@domain`."""
+    return value.strip().rpartition("@")[2].strip().lower()
 
 
 def _aligned(signing_domain: str, envelope_domain: str) -> bool:
@@ -231,7 +251,9 @@ def _authenticated_for(auth_result: str, envelope_domain: str) -> bool:
       enough, which is what a forwarder adding its own signature produces.
     * `spf=pass` counts when its `smtp.mailfrom` domain EQUALS the envelope
       domain. SPF authenticates the MAIL FROM itself, so there is no parent to
-      relax to, and `smtp.helo` is not the MAIL FROM and does not count.
+      relax to, and `smtp.helo` is not the MAIL FROM and does not count. The
+      value may be written as a bare domain, a whole address, or `@domain`;
+      `_property_domain` reduces all three.
     * A pass carrying no usable property proves nothing and is a fail.
     """
     for result in _auth_results(auth_result):
@@ -241,9 +263,8 @@ def _authenticated_for(auth_result: str, envelope_domain: str) -> bool:
             if _aligned(result.properties.get("header.d", ""), envelope_domain):
                 return True
         elif result.method == "spf":
-            mailfrom = result.properties.get("smtp.mailfrom", "")
-            # Some receivers print the whole MAIL FROM address here.
-            if _domain_of(mailfrom) == envelope_domain or mailfrom == envelope_domain:
+            mailfrom = _property_domain(result.properties.get("smtp.mailfrom", ""))
+            if mailfrom and mailfrom == envelope_domain:
                 return True
     return False
 
@@ -278,19 +299,40 @@ def sender_allowed(
 # --- attachments -------------------------------------------------------------
 
 
+def _attachment_name(filename: str | None, extension: str, ordinal: int) -> str:
+    """The name one attachment is given: a scrubbed, bounded stem plus the
+    extension its MAGIC BYTES imply.
+
+    The declared suffix is discarded, not trusted — `lies.pdf` carrying XLSX
+    bytes comes back `lies.xlsx`, because the extension is what a later reader
+    and a human both read as the format claim. A stem that scrubs away to
+    nothing, `.`, or `..` falls back to `attachment-N`.
+    """
+    scrubbed = safe_component(filename or "")
+    head, dot, _tail = scrubbed.rpartition(".")
+    stem = head if dot and head else scrubbed
+    stem = stem[: _ATTACHMENT_NAME_MAX - len(extension)]
+    if stem in _UNUSABLE_STEMS:
+        return f"attachment-{ordinal}{extension}"
+    return f"{stem}{extension}"
+
+
 def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
-    """The PDF and XLSX parts of a MIME message, as (scrubbed name, bytes).
+    """The PDF and XLSX parts of a MIME message, as (name, bytes).
 
     Parts are kept by MAGIC BYTES, never by declared content type or file
     suffix — the same is_pdf/is_xlsx pair the reader dispatches on and the
     upload endpoint gates on. A part that is neither is dropped however it is
     labelled, so a text body, a signature image and a `.pdf` that is really an
-    executable all fall out here.
+    executable all fall out here. `walk` descends into `message/rfc822` parts,
+    so a report inside a FORWARDED message is found (tests/test_intake.py::
+    test_a_forwarded_report_is_found).
 
-    Names are reduced by `_safe_component`; a part with no filename is named
-    `attachment-N` with the extension its magic bytes imply. Unparseable bytes
-    yield an empty list rather than an exception: the caller records an
-    outcome for a message it could not open, and has nothing to re-raise into.
+    Each name is reduced to the `[A-Za-z0-9._-]` alphabet, is never `.` or
+    `..`, is at most 120 characters, and ends in the extension the part's
+    magic bytes imply (`_attachment_name`). Unparseable bytes yield an empty
+    list rather than an exception: the caller records an outcome for a message
+    it could not open, and has nothing to re-raise into.
     """
     try:
         message = message_from_bytes(raw, policy=policy.default)
@@ -312,186 +354,8 @@ def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
             extension = ".xlsx"
         else:
             continue
-        filename = part.get_filename()
-        name = filename if filename else f"attachment-{len(found) + 1}{extension}"
-        found.append((_safe_component(name), payload))
+        found.append((
+            _attachment_name(part.get_filename(), extension, len(found) + 1),
+            payload,
+        ))
     return found
-
-
-# --- the shared night-audit validator (D-OH23.5) -----------------------------
-
-
-@dataclass(frozen=True)
-class ValidatedSection:
-    """One recognized report. `title` is the pack section's title row, or None
-    for a single report, which has no section title to speak of."""
-
-    title: str | None
-    words: list[Word]
-    detection: Detection
-
-
-@dataclass(frozen=True)
-class Validation:
-    """`outcome` is None when the document passed. `detail` is the refusal text
-    the upload endpoint raises as its 422; it is empty on a pass.
-
-    `sections` and `skipped_titles` are empty on a refusal — a caller that gets
-    an outcome has nothing further to do with the document."""
-
-    outcome: ValidationOutcome | None
-    detail: str
-    sections: tuple[ValidatedSection, ...] = ()
-    skipped_titles: tuple[str, ...] = ()
-    # The exception behind an `unreadable`, so a caller raising an HTTP error
-    # can chain it (`raise ... from checked.cause`) instead of losing the
-    # traceback the old inline `except` block kept. None for every outcome
-    # that is a judgement rather than a failure.
-    cause: BaseException | None = None
-
-
-def _required_reports(pms_source: str) -> set[str]:
-    return {report_type for report_type, _label in
-            REQUIRED_REPORTS.get(pms_source.upper(), ())}
-
-
-def validate_single(
-    session: Session, data: bytes, property_id: str, pms_source: str
-) -> Validation:
-    """The single-report checks: readable, this property, a required report.
-
-    The two failures the old inline block treated alike are separated: bytes
-    the READER cannot turn into words are `unreadable`, while words that no
-    report signature claims, or whose property is not registered, are a
-    detection failure and answer `not_a_night_audit_report`. The 422 text is
-    the same either way, which is what keeps the upload endpoint's wording
-    unchanged.
-    """
-    try:
-        words = read_words_from_bytes(data)
-    except Exception as exc:
-        return Validation("unreadable", f"could not read report: {exc}", cause=exc)
-    try:
-        det = detect(words, load_registry(session))
-    except ValueError as exc:
-        return Validation(
-            "not_a_night_audit_report", f"could not read report: {exc}", cause=exc
-        )
-    except Exception as exc:
-        return Validation("unreadable", f"could not read report: {exc}", cause=exc)
-    if det.property_id != property_id:
-        return Validation(
-            "wrong_property",
-            f"report is for property {det.property_id}, not {property_id}",
-        )
-    required = _required_reports(pms_source)
-    if det.report_type not in required:
-        return Validation(
-            "not_a_night_audit_report",
-            f"{det.report_type} is not part of this property's night audit "
-            f"({pms_source} requires: {', '.join(sorted(required))})",
-        )
-    return Validation(None, "", (ValidatedSection(None, words, det),))
-
-
-def validate_sections(
-    session: Session, sections: Sequence[ReportSection], property_id: str, pms_source: str
-) -> Validation:
-    """The same two checks, per RECOGNIZED section of an already-split pack.
-
-    A section is recognized by its TITLE, which is the call
-    `ingestion.process_pack_bytes` makes over these same sections. A section
-    this function cannot detect — no signature matches its title, or no
-    registered property resolves — is dropped here, and only its title is
-    kept. The first failing section refuses the whole pack, so nothing from a
-    pack carrying one wrong-property section reaches the ingest path.
-
-    Takes sections rather than bytes so a caller that has already split the
-    pack — `night_audit_api._ingest_pack`, which owns its own 422 for a pack it
-    cannot read — runs these checks without splitting twice.
-    """
-    registry = load_registry(session)
-    required = _required_reports(pms_source)
-    recognized: list[ValidatedSection] = []
-    skipped_titles: list[str] = []
-    for section in sections:
-        try:
-            # The section TITLE decides the report signature — the same call
-            # ingestion.process_pack_bytes makes over these same sections. A
-            # `Rate Plan` COLUMN heading inside the 120-word header window
-            # matches an earlier signature (issue #78), which skipped the
-            # section here while ingestion recognized it. Pinned by
-            # tests/test_night_audit.py::
-            # test_pack_validation_recognizes_a_section_by_its_title.
-            det = detect(section.words, registry, section.title)
-        except ValueError:
-            skipped_titles.append(section.title or "(untitled)")
-            continue
-        recognized.append(ValidatedSection(section.title, section.words, det))
-        if det.property_id != property_id:
-            return Validation(
-                "wrong_property",
-                f"pack section {section.title!r} is for property "
-                f"{det.property_id}, not {property_id}",
-            )
-        if det.report_type not in required:
-            return Validation(
-                "not_a_night_audit_report",
-                f"pack section {section.title!r}: {det.report_type} is not part of "
-                f"this property's night audit ({pms_source} requires: "
-                f"{', '.join(sorted(required))})",
-            )
-    if not recognized:
-        return Validation(
-            "not_a_night_audit_report", "no recognized report sections in this pack"
-        )
-    return Validation(None, "", tuple(recognized), tuple(skipped_titles))
-
-
-def validate_pack(
-    session: Session, data: bytes, property_id: str, pms_source: str
-) -> Validation:
-    """Split a pack held in memory, then run `validate_sections` over it."""
-    try:
-        sections = split_pack(extract_pages_from_bytes(data))
-    except Exception as exc:
-        return Validation("unreadable", f"could not read the pack: {exc}", cause=exc)
-    return validate_sections(session, sections, property_id, pms_source)
-
-
-def validate_document(
-    session: Session, data: bytes, property_id: str, pms_source: str
-) -> Validation:
-    """Validate a document whose shape is not known in advance.
-
-    Single-report detection is probed first, and only a ValueError from
-    `detect` selects the pack path. Routing by section count instead would
-    split a single multi-page report into sections and drop pages (issue
-    #138). Reading the bytes is not a routing signal either: a PDF that will
-    not parse takes the single-report path and comes back `unreadable`.
-
-    This rule is written to match the one `ingestion.process_document_bytes`
-    routes on, so the validator and the ingest that follows it do not disagree
-    about a document's shape. That agreement is pinned by
-    tests/test_intake.py::test_routing_agrees_with_the_ingest_path, over the
-    two committed samples that go opposite ways.
-    """
-    if is_pdf(data):
-        try:
-            words = read_words_from_bytes(data)
-        except Exception:
-            words = None
-        if words is not None:
-            try:
-                detect(words, load_registry(session))
-            except ValueError:
-                return validate_pack(session, data, property_id, pms_source)
-    return validate_single(session, data, property_id, pms_source)
-
-
-def validate_for_property(
-    session: Session, data: bytes, property_id: str, pms_source: str
-) -> ValidationOutcome | None:
-    """None when the document is a night-audit report for this property, else
-    one of VALIDATION_OUTCOMES."""
-    return validate_document(session, data, property_id, pms_source).outcome

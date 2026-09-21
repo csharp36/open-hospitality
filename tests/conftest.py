@@ -18,6 +18,7 @@ from sqlalchemy import Engine, text  # noqa: E402
 from sqlalchemy.orm import Session  # noqa: E402
 from testcontainers.postgres import PostgresContainer  # noqa: E402
 
+from usali.config import _DEV_DEFAULT_SECRETS, Settings  # noqa: E402
 from usali.db import make_engine, make_session_factory  # noqa: E402
 from usali.ingestion import process_file  # noqa: E402
 from usali.mapping.loader import load_mappings  # noqa: E402
@@ -188,3 +189,27 @@ def seed_six_pdfs(db_session: Session, tmp_path: Path) -> None:
             db_session, pdf,
             processed_dir=tmp_path / "processed", failed_dir=tmp_path / "failed",
         )
+
+
+# A production-env Settings refuses to construct while ANY committed dev-default
+# secret is still in effect, so every test that wants one must override all of
+# them. Overriding them by hand made each new secret a change to unrelated test
+# files; this helper derives the overrides from the table itself.
+# `test_prod_settings_overrides_every_dev_default_secret` is what keeps it
+# honest as that table grows.
+_NON_DEFAULT_SECRETS = {
+    # Not a real key, but valid base64 of 32 bytes, so a caller that goes on to
+    # build a cipher from it gets a working one.
+    "field_encryption_key": "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ==",
+}
+
+
+def prod_settings(env: str = "prod", **overrides: object) -> Settings:
+    """`Settings` in a production environment, with every dev-default secret
+    replaced. `overrides` wins over the replacements."""
+    values: dict[str, object] = {
+        name: _NON_DEFAULT_SECRETS.get(name, f"not-the-committed-{name}")
+        for name in _DEV_DEFAULT_SECRETS
+    }
+    values.update(overrides)
+    return Settings(env=env, **values)

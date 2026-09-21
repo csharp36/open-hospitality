@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from tests.employees import make_employee
 from tests.grants import grant_role
+from tests.conftest import prod_settings
 from usali.config import Settings
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
@@ -70,16 +71,10 @@ def test_public_key_endpoint_rejects_unauthenticated(db_engine, tmp_path):
 # (Task 1) and we can exercise the opener-specific fail-fast in isolation.
 _REAL_FIELD_KEY = "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ=="
 
-# A prod-env Settings must override EVERY dev-default secret in
-# config._DEV_DEFAULT_SECRETS, not just the field key, or construction
-# refuses on the first one still at its committed default.
-_REAL_INTAKE = "not-the-committed-intake-secret"
-
 
 def test_prod_without_an_injected_opener_refuses_the_in_process_key():
     # env=prod must NOT silently build a SoftwareOpener from the in-process key.
-    settings = Settings(env="prod", field_encryption_key=_REAL_FIELD_KEY,
-                        email_intake_secret=_REAL_INTAKE)
+    settings = prod_settings(field_encryption_key=_REAL_FIELD_KEY)
     with pytest.raises(RuntimeError, match="HSM-backed Opener"):
         _opener_from_settings(settings)
 
@@ -92,9 +87,7 @@ def test_dev_builds_a_software_opener_from_settings():
 @pytest.mark.parametrize("env", ["production", "PROD", "prod\n", "staging"])
 def test_any_non_dev_env_refuses_the_in_process_opener(env):
     # Fail closed: the opener guard must NOT key off the exact string "prod".
-    settings = Settings(
-        env=env, field_encryption_key=_REAL_FIELD_KEY, email_intake_secret=_REAL_INTAKE,
-    )
+    settings = prod_settings(env=env, field_encryption_key=_REAL_FIELD_KEY)
     with pytest.raises(RuntimeError, match="HSM-backed Opener"):
         _opener_from_settings(settings)
 
