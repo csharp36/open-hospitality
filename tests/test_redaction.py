@@ -1,7 +1,11 @@
 # tests/test_redaction.py
 from datetime import date
+from pathlib import Path
+
+import pytest
 
 from usali.adaptors.pdf import Word
+from usali.adaptors.reader import read_words
 from usali.preview import PnlLine, PreviewPayload
 from usali.redaction import mask_names, mask_pans, redact, redact_words
 
@@ -95,4 +99,43 @@ def test_redact_words_does_not_mask_a_luhn_valid_run_that_spans_a_non_digit_cell
     # "4111 1111" + "x" + "1111 1111": the digits never sit in one run.
     out, stats = redact_words(_row("4111", "1111", "x", "1111", "1111"))
     assert [w.text for w in out] == ["4111", "1111", "x", "1111", "1111"]
+    assert stats.pans_masked == 0
+
+
+_CLEAN_SAMPLES = sorted(Path("docs/reference/samples").glob("*")) + sorted(
+    Path("tests/fixtures/hotelkey").glob("*.xlsx"))
+
+
+@pytest.mark.parametrize("sample", _CLEAN_SAMPLES, ids=lambda p: p.name)
+def test_redact_words_masks_nothing_in_a_report_with_no_card_numbers(sample):
+    # Every committed sample is card-free by construction; a masker that fires
+    # on statistics, folio numbers or dates is destroying data, not protecting it.
+    _, stats = redact_words(read_words(sample))
+    assert stats.pans_masked == 0, sample.name
+
+
+def test_redact_words_leaves_a_statistics_row_alone():
+    out, stats = redact_words(
+        _row("Rooms", "Occupied", "62", "383", "12444", "65", "303", "12218"))
+    assert [w.text for w in out][2:] == ["62", "383", "12444", "65", "303", "12218"]
+    assert stats.pans_masked == 0
+
+
+def test_redact_words_leaves_an_iso_date_beside_numbers_alone():
+    out, stats = redact_words(_row("2026-08-01", "1000", "2000", "3000", "4000"))
+    assert stats.pans_masked == 0 and out[0].text == "2026-08-01"
+
+
+def test_redact_words_masks_an_amex_shape():
+    # 4-6-5: 3782 822463 10005 is the standard Amex test number.
+    out, stats = redact_words(_row("Amex", "3782", "822463", "10005"))
+    assert [w.text for w in out] == ["Amex", "••••", "••••", "•••• 0005"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_leaves_a_twelve_digit_luhn_valid_run_alone():
+    # Below the 13-digit floor is never a card, however it checksums: this
+    # number passes _luhn_ok and opens with an issuer digit.
+    out, stats = redact_words(_row("Ref", "456789012345"))
+    assert [w.text for w in out] == ["Ref", "456789012345"]
     assert stats.pans_masked == 0

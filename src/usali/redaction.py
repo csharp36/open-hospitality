@@ -6,7 +6,13 @@ from usali.preview import PreviewPayload
 
 _PAN_RUN = re.compile(r"\b\d[\d -]{11,21}\d\b")
 _NAME_PAIR = re.compile(r"\b[A-Z][a-z]+ [A-Z][a-z]+\b")
-_DIGIT_CELL = re.compile(r"[\d -]+")
+_DIGIT_CELL = re.compile(r"\d+")
+# Visa, Mastercard, Amex, Discover/JCB/UnionPay — the issuer identifiers a card
+# printed on a hotel report can open with. A figure column opening with 1, 2, 7,
+# 8, 9 or 0 is therefore never a candidate.
+_ISSUER_DIGITS = "3456"
+# A card broken across cells prints as four groups of four, or as Amex's 4-6-5.
+_CARD_CELL_SHAPES: tuple[tuple[int, ...], ...] = ((4, 4, 4, 4), (4, 6, 5))
 
 
 def _luhn_ok(digits: str) -> bool:
@@ -47,28 +53,38 @@ class RedactionStats:
     header_cells_dropped: int = 0
 
 
-def redact_words(words: list[Word]) -> tuple[list[Word], RedactionStats]:
-    """Mask Luhn-valid 13-19 digit runs in the retained words, row by row.
+def _card_span(lengths: list[int], k: int) -> int | None:
+    """How many consecutive digit cells from ``k`` a card SHAPE covers, or None."""
+    if 13 <= lengths[k] <= 19:
+        return 1
+    for shape in _CARD_CELL_SHAPES:
+        if tuple(lengths[k : k + len(shape)]) == shape:
+            return len(shape)
+    return None
 
-    A card can be printed as several tokens (``4111 1111 1111 1111``), so the
-    scan runs over each clustered row's text, not over single words; a run
-    that would only form across two rows is not a card
-    (tests/test_redaction.py::test_redact_words_scans_rows_not_the_whole_page).
-    The scan is further scoped to consecutive digit-only cells within a row
-    (see ``_DIGIT_CELL``): joining the whole row would let a naive
-    digit-and-space match run on into a neighboring non-PAN cell, such as an
-    amount column's leading digits before its decimal point, which corrupts
-    the Luhn check and masks nothing
-    (tests/test_redaction.py::test_redact_words_masks_a_pan_split_across_four_words).
-    Within such a run, a card is not assumed to be the whole run: a folio,
-    transaction, or room number sitting in an adjacent cell would otherwise
-    be swept into the digit string and fail the Luhn check as a whole, so
-    every window of consecutive cells is tried and only a window that itself
-    is 13-19 digits and Luhn-valid is masked, preferring the longest such
-    window starting at each cell
-    (tests/test_redaction.py::test_redact_words_masks_a_pan_followed_by_a_digit_cell).
-    Every covered word becomes ``••••``; the last keeps the final four
-    digits. Output order and positions equal the input's.
+
+def redact_words(words: list[Word]) -> tuple[list[Word], RedactionStats]:
+    """Mask card-shaped runs of digit cells in the retained words, row by row.
+
+    A digit cell is a word that is digits and nothing else, so ``2026-08-01``
+    and ``12.50`` are not digit cells. Within a run of consecutive digit cells
+    the scan runs left to right and masks exactly three shapes: one cell of
+    13-19 digits, four consecutive 4-digit cells, and the 4-6-5 of an Amex
+    (``_CARD_CELL_SHAPES``). Each also has to pass the Luhn check and open with
+    an issuer digit (``_ISSUER_DIGITS``). Every other run of figures is left as
+    it is, which is what
+    tests/test_redaction.py::test_redact_words_masks_nothing_in_a_report_with_no_card_numbers
+    holds for every committed sample: a statistics row, a folio number and an
+    ISO date beside amounts all come through unchanged. A card printed beside
+    another digit cell is still found, because the shapes are matched at each
+    starting cell rather than over the whole run
+    (test_redact_words_masks_a_pan_followed_by_a_digit_cell). Rows come from
+    ``cluster_rows``, so digits that would only form a shape across two rows
+    never meet (test_redact_words_scans_rows_not_the_whole_page).
+
+    Every cell a match covers becomes ``••••``; the last keeps the final four
+    digits, and each match counts one in ``pans_masked``. Output order and
+    positions equal the input's.
     """
     masked: dict[int, str] = {}
     index_of = {id(w): i for i, w in enumerate(words)}
@@ -84,29 +100,20 @@ def redact_words(words: list[Word]) -> tuple[list[Word], RedactionStats]:
             while j < len(cells) and _DIGIT_CELL.fullmatch(cells[j].text):
                 j += 1
             group = cells[i:j]
-            digits_of = [re.sub(r"\D", "", w.text) for w in group]
+            lengths = [len(w.text) for w in group]
 
             k = 0
             while k < len(group):
-                best_end: int | None = None
-                best_digits = ""
-                acc = ""
-                for e in range(k, len(group)):
-                    acc += digits_of[e]
-                    if len(acc) > 19:
-                        break
-                    if len(acc) >= 13 and _luhn_ok(acc):
-                        best_end = e
-                        best_digits = acc
-                if best_end is None:
+                span = _card_span(lengths, k)
+                digits = "".join(w.text for w in group[k : k + span]) if span else ""
+                if span is None or digits[0] not in _ISSUER_DIGITS or not _luhn_ok(digits):
                     k += 1
                     continue
-                covered = [index_of[id(w)] for w in group[k : best_end + 1]]
                 pans += 1
-                for idx in covered:
-                    masked[idx] = "••••"
-                masked[covered[-1]] = f"•••• {best_digits[-4:]}"
-                k = best_end + 1
+                for w in group[k : k + span]:
+                    masked[index_of[id(w)]] = "••••"
+                masked[index_of[id(group[k + span - 1])]] = f"•••• {digits[-4:]}"
+                k += span
             i = j
     out = [replace(w, text=masked[i]) if i in masked else w for i, w in enumerate(words)]
     return out, RedactionStats(pans_masked=pans)
