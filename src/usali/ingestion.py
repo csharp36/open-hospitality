@@ -55,6 +55,7 @@ from usali import gl_posting
 from usali.ledger_promote import promote_ledgers
 from usali.ledger_stage import stage_ledgers
 from usali.models import IngestBatch, IngestionCoverage
+from usali.redaction import mask_pans
 from usali.retention import (
     RetainedSection,
     build_artifact,
@@ -343,6 +344,20 @@ def _hash(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _safe_message(exc: Exception) -> str:
+    """The one place an exception's text becomes a stored or returned message.
+
+    An adapter refusal names the row and column it refused rather than echoing
+    cells (adaptors/hotelkey_xlsx._refusal, adaptors/autoclerk_rate_plan), which
+    is where report content is kept out of these messages. This is the second
+    line, for an exception from anywhere: the text reaches IngestBatch.message,
+    the filed error record and the upload's HTTP body, so a card number in it is
+    masked first (tests/test_ingestion_boundary.py::
+    test_a_card_number_in_an_exception_never_reaches_the_batch_or_the_record).
+    """
+    return mask_pans(str(exc))[:500]
+
+
 def process_bytes(
     session: Session,
     data: bytes,
@@ -372,8 +387,8 @@ def process_bytes(
     except Exception as exc:
         session.rollback()
         _record_failure(session, name, data, exc)
-        write_error_record(failed_dir, source_file=name, data=data, error=str(exc))
-        raise ProcessingError(f"{name}: {exc}") from exc
+        write_error_record(failed_dir, source_file=name, data=data, error=_safe_message(exc))
+        raise ProcessingError(f"{name}: {_safe_message(exc)}") from exc
 
     section = RetainedSection(
         title=name,
@@ -545,8 +560,8 @@ def process_pack_bytes(
     except Exception as exc:
         session.rollback()
         _record_failure(session, name, data, exc)
-        write_error_record(failed_dir, source_file=name, data=data, error=str(exc))
-        raise ProcessingError(f"{name}: {exc}") from exc
+        write_error_record(failed_dir, source_file=name, data=data, error=_safe_message(exc))
+        raise ProcessingError(f"{name}: {_safe_message(exc)}") from exc
 
     dest = _file_artifact(
         processed_dir, name, data, kind="pack", sections=retained, sections_dropped=dropped
@@ -657,7 +672,7 @@ def _record_failure(session: Session, name: str, data: bytes, exc: Exception) ->
         source_file=name,
         file_hash=_hash(data),
         status="failed",
-        message=str(exc)[:500],
+        message=_safe_message(exc),
     )
     session.add(batch)
     session.commit()
