@@ -201,7 +201,7 @@ def test_a_blank_amount_cell_is_refused():
 def test_a_non_numeric_amount_is_refused(text: str):
     # N13 is the first Details row's Amount in the settlement export.
     bad = _mutated(_words("Settlement By Payment Type.xlsx"), "N13", text)
-    with pytest.raises(ValueError, match="'Details' row 'Reservation': column 'Amount' is not an amount"):
+    with pytest.raises(ValueError, match="'Details' row 1: column 'Amount' is not an amount"):
         parse_settlement(bad, property_id="HKDEMO", business_date=BD)
 
 
@@ -275,5 +275,17 @@ def test_a_label_directly_before_end_of_report_is_refused():
 def test_a_blank_count_cell_is_refused():
     # D25 is the Summary MASTER count.
     bad = _without(_words("Settlement By Payment Type.xlsx"), "D25")
-    with pytest.raises(ValueError, match="'Summary' row 'MASTER': column 'Count' is not a count: ''"):
+    with pytest.raises(ValueError, match="'Summary' row 1: column 'Count' is not a count: ''"):
         parse_settlement(bad, property_id="HKDEMO", business_date=BD)
+
+
+def test_a_refusal_names_the_row_ordinal_not_the_first_column_value():
+    # D29 is TEST CORP TRAVEL's Current cell in the AR aging Company Name
+    # section: the first column there is an account name, which a refusal that
+    # echoed it would carry into IngestBatch.message and the HTTP response.
+    bad = _mutated(_words("AR Invoice Aging.xlsx"), "D29", "NaN")
+    with pytest.raises(ValueError) as excinfo:
+        parse_ar_aging(bad, property_id="HKDEMO", business_date=BD)
+    message = str(excinfo.value)
+    assert "row 1: column 'Current' is not an amount" in message
+    assert "TEST CORP TRAVEL" not in message

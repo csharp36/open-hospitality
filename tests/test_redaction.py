@@ -1,8 +1,13 @@
 # tests/test_redaction.py
 from datetime import date
+from pathlib import Path
 
+import pytest
+
+from usali.adaptors.pdf import Word
+from usali.adaptors.reader import read_words
 from usali.preview import PnlLine, PreviewPayload
-from usali.redaction import mask_names, mask_pans, redact
+from usali.redaction import mask_names, mask_pans, redact, redact_words
 
 
 def test_mask_pans_masks_luhn_valid_card_only():
@@ -29,3 +34,108 @@ def test_redact_scrubs_pans_but_preserves_mapping_labels():
         pnl_lines=[PnlLine("Operated Departments", "Rooms", "Room Revenue", "0")],  # type: ignore[arg-type]
     )
     assert redact(payload2).pnl_lines[0].line_item == "Room Revenue"
+
+
+def _row(*texts: str, top: float = 10.0) -> list[Word]:
+    return [Word(text=t, x0=20.0 * i, top=top) for i, t in enumerate(texts)]
+
+
+def test_redact_words_masks_a_pan_split_across_four_words():
+    words = _row("Card", "4111", "1111", "1111", "1111", "12.50")
+    out, stats = redact_words(words)
+    assert [w.text for w in out] == ["Card", "••••", "••••", "••••", "•••• 1111", "12.50"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_masks_a_single_token_pan_and_keeps_last4():
+    out, stats = redact_words(_row("Visa", "4111111111111111"))
+    assert [w.text for w in out] == ["Visa", "•••• 1111"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_leaves_non_luhn_digit_runs_alone():
+    # A 16-digit confirmation number that fails Luhn is not a card.
+    out, stats = redact_words(_row("Conf", "1234567890123456"))
+    assert [w.text for w in out] == ["Conf", "1234567890123456"]
+    assert stats.pans_masked == 0
+
+
+def test_redact_words_scans_rows_not_the_whole_page():
+    # Two rows whose digits would form a Luhn-valid run only if joined
+    # across the row boundary must not be masked.
+    words = _row("A", "4111 1111", top=10.0) + _row("1111 1111", "B", top=40.0)
+    out, stats = redact_words(words)
+    assert [w.text for w in out] == ["A", "4111 1111", "1111 1111", "B"]
+    assert stats.pans_masked == 0
+
+
+def test_redact_words_preserves_positions_and_order():
+    words = _row("Total", "Occupied", "Rooms", "62")
+    out, _ = redact_words(words)
+    assert [(w.x0, w.top) for w in out] == [(w.x0, w.top) for w in words]
+    assert [w.text for w in out] == ["Total", "Occupied", "Rooms", "62"]
+
+
+def test_redact_words_masks_a_pan_followed_by_a_digit_cell():
+    # Room number after the card: the card must still be found and the room kept.
+    out, stats = redact_words(_row("Folio", "4111", "1111", "1111", "1111", "205"))
+    assert [w.text for w in out] == ["Folio", "••••", "••••", "••••", "•••• 1111", "205"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_masks_a_pan_preceded_by_a_digit_cell():
+    out, stats = redact_words(_row("88213", "4111111111111111", "Room", "12"))
+    assert [w.text for w in out] == ["88213", "•••• 1111", "Room", "12"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_masks_two_pans_in_one_row():
+    out, stats = redact_words(_row("4111111111111111", "and", "5500000000000004"))
+    assert [w.text for w in out] == ["•••• 1111", "and", "•••• 0004"]
+    assert stats.pans_masked == 2
+
+
+def test_redact_words_does_not_mask_a_luhn_valid_run_that_spans_a_non_digit_cell():
+    # "4111 1111" + "x" + "1111 1111": the digits never sit in one run.
+    out, stats = redact_words(_row("4111", "1111", "x", "1111", "1111"))
+    assert [w.text for w in out] == ["4111", "1111", "x", "1111", "1111"]
+    assert stats.pans_masked == 0
+
+
+_CLEAN_SAMPLES = sorted(Path("docs/reference/samples").glob("*")) + sorted(
+    Path("tests/fixtures/hotelkey").glob("*.xlsx"))
+
+
+@pytest.mark.parametrize("sample", _CLEAN_SAMPLES, ids=lambda p: p.name)
+def test_redact_words_masks_nothing_in_a_report_with_no_card_numbers(sample):
+    # Every committed sample is card-free by construction; a masker that fires
+    # on statistics, folio numbers or dates is destroying data, not protecting it.
+    _, stats = redact_words(read_words(sample))
+    assert stats.pans_masked == 0, sample.name
+
+
+def test_redact_words_leaves_a_statistics_row_alone():
+    out, stats = redact_words(
+        _row("Rooms", "Occupied", "62", "383", "12444", "65", "303", "12218"))
+    assert [w.text for w in out][2:] == ["62", "383", "12444", "65", "303", "12218"]
+    assert stats.pans_masked == 0
+
+
+def test_redact_words_leaves_an_iso_date_beside_numbers_alone():
+    out, stats = redact_words(_row("2026-08-01", "1000", "2000", "3000", "4000"))
+    assert stats.pans_masked == 0 and out[0].text == "2026-08-01"
+
+
+def test_redact_words_masks_an_amex_shape():
+    # 4-6-5: 3782 822463 10005 is the standard Amex test number.
+    out, stats = redact_words(_row("Amex", "3782", "822463", "10005"))
+    assert [w.text for w in out] == ["Amex", "••••", "••••", "•••• 0005"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_leaves_a_twelve_digit_luhn_valid_run_alone():
+    # Below the 13-digit floor is never a card, however it checksums: this
+    # number passes _luhn_ok and opens with an issuer digit.
+    out, stats = redact_words(_row("Ref", "456789012345"))
+    assert [w.text for w in out] == ["Ref", "456789012345"]
+    assert stats.pans_masked == 0

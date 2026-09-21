@@ -193,7 +193,7 @@ def test_an_unknown_format_is_quarantined_loudly(seeded, tmp_path):
     bogus.write_bytes(b"hello, not a workbook")
     with pytest.raises(ProcessingError, match="PDF or XLSX"):
         process_file(seeded, bogus, processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail")
-    assert (tmp_path / "fail" / "report.xlsx").exists()
+    assert len(list((tmp_path / "fail").glob("*.error.json"))) == 1
 
 
 def test_reingest_is_idempotent(seeded, tmp_path):

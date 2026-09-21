@@ -56,4 +56,4 @@ def test_all_four_reports_through_the_drop_folder(db_session, tmp_path):
 
     statuses = set(db_session.execute(select(IngestBatch.status)).scalars())
     assert statuses == {"transformed"}
-    assert len(list((tmp_path / "processed").glob("*.pdf"))) == 4
+    assert len(list((tmp_path / "processed").glob("*.redacted.json"))) == 4

@@ -13,7 +13,7 @@ a live surface.
 
 At a glance:
 
-- **Ingestion** — detect → parse → map (USALI dictionary) → Core facts; transactional, fail-loud, quarantine-on-error.
+- **Ingestion** — detect → parse → map (USALI dictionary) → Core facts; transactional, fail-loud. Uploads are processed in memory; the only file kept is a redacted words extract of the recognized reports (`retention.py`), or an error record on failure — never the upload.
 - **Identity** — Keycloak (OIDC), one realm + Organizations; per-request authority comes from DB grants, not token roles.
 - **Tenancy** — shared-schema `org_id` behind a two-wall RLS design; composite `(org_id, x_id)` FKs on the money/PII spine.
 - **PII** — HPKE client-side sealing for store-and-forward secrets; symmetric field encryption for compute-on data; per-org photo keys.

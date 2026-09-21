@@ -28,10 +28,13 @@ def extract_business_date(words: list[Word]) -> date:
     raise ValueError("no Autoclerk business date (M/D/YYYY) found in report")
 
 
-def _row_values(cells: list[Word]) -> list[Decimal]:
+def _row_values(cells: list[Word], where: str) -> list[Decimal]:
     # Walk a row's cells left-to-right, merging a lone "$" token with the numeric token
     # that follows it, parsing an already-merged "$1,234.56" token directly, and dropping
     # "%"-suffixed tokens entirely (percents are derivable from the kept values).
+    # A refusal names the row by its position and counts its tokens; the tokens
+    # themselves stay out of the message, which reaches IngestBatch.message, the
+    # filed error record and the upload's HTTP response (ingestion._safe_message).
     values: list[Decimal] = []
     i = 0
     n = len(cells)
@@ -39,8 +42,10 @@ def _row_values(cells: list[Word]) -> list[Decimal]:
         text = cells[i].text
         if text == "$":
             if i + 1 >= n:
-                texts = [c.text for c in cells]
-                raise ValueError(f"dangling '$' token with no following amount in row {texts}")
+                raise ValueError(
+                    f"{where}: a '$' token is the last of its {n} tokens, "
+                    f"with no amount after it"
+                )
             values.append(parse_amount(text + cells[i + 1].text))
             i += 2
             continue
@@ -65,7 +70,8 @@ def parse_rate_plan(
     records: list[SegmentRecord] = []
     totals_values: list[Decimal] | None = None
 
-    for row in cluster_rows(words, y_tol):
+    for row_number, row in enumerate(cluster_rows(words, y_tol), start=1):
+        where = f"Autoclerk rate plan row {row_number}"
         cells = sorted(row, key=lambda w: w.x0)
         if not cells:
             continue
@@ -74,10 +80,12 @@ def parse_rate_plan(
 
         if is_totals:
             value_cells = [w for w in cells if w.text != "TOTALS:"]
-            values = _row_values(value_cells)
+            values = _row_values(value_cells, where)
             if len(values) != 5:
-                texts = [w.text for w in cells]
-                raise ValueError(f"TOTALS row expected 5 values, got {len(values)}: {texts}")
+                raise ValueError(
+                    f"{where}: TOTALS row expected 5 values, found {len(values)} "
+                    f"in {len(cells)} tokens"
+                )
             totals_values = values
             for measure, value in zip(_DATA_MEASURES, values, strict=True):
                 records.append(
@@ -99,7 +107,7 @@ def parse_rate_plan(
             continue
 
         code = first.text
-        values = _row_values(cells[1:])
+        values = _row_values(cells[1:], where)
         if len(values) != 5:
             # An incomplete data row (e.g. a page break mid-row) is not itself proof of
             # corruption -- the reconciliation against the TOTALS row below is what makes

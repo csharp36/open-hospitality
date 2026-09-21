@@ -593,6 +593,57 @@ def test_pack_upload_rejects_wrong_business_date(db_session, db_engine, tmp_path
     assert staged == 0
 
 
+def test_pack_validation_recognizes_a_section_by_its_title(
+    db_session, db_engine, tmp_path, monkeypatch
+):
+    """The issue #78 shape at the VALIDATOR: a Hotel Statistics section that
+    prints a `Rate Plan` column heading inside its 120-word header window. The
+    window alone matches the AutoClerk rate_plan signature, which no longer
+    resolves this SkyTouch property, so the validator used to skip the section.
+    Its TITLE is what says what it is, exactly as ingestion.process_pack_bytes
+    already decides."""
+    from pathlib import Path
+
+    import usali.night_audit_api as api
+    from usali.adaptors.pack import split_pack as real_split_pack
+    from usali.adaptors.pdf import Word
+
+    _seed_world(db_session)
+    db_session.add(NightAuditState(property_id="STDEMO",
+                                   current_business_date=date(2026, 6, 21)))
+    db_session.commit()
+
+    def _split_with_a_rate_plan_column(pages):
+        sections = real_split_pack(pages)
+        for section in sections:
+            if "Statistics" not in section.title:
+                continue
+            # Its own row in the header band: a column heading, not a title.
+            # Index 13 is past `Property Name: Redstone Test Inn`, so the
+            # registry alias stays contiguous and the section still resolves
+            # to STDEMO.
+            top = min(w.top for w in section.words) + 0.4
+            section.words[13:13] = [Word(text="Rate", x0=400.0, top=top),
+                                    Word(text="Plan", x0=430.0, top=top)]
+        return sections
+
+    monkeypatch.setattr(api, "split_pack", _split_with_a_rate_plan_column)
+
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+    pack = Path("docs/reference/samples/SkyTouch - Standard Audit Pack (mock).pdf")
+
+    r = client.post(
+        "/api/properties/STDEMO/night-audit/upload", headers=headers,
+        files={"file": (pack.name, pack.read_bytes(), "application/pdf")},
+    )
+
+    assert r.status_code == 201, r.text
+    stats = [s for s in r.json()["sections"] if s["report_type"] == "hotel_statistics"]
+    assert stats and stats[0]["skipped"] is False, r.json()["sections"]
+
+
 # ---- HotelKey: four per-report uploads, three of them spreadsheets ---------
 
 
@@ -1336,7 +1387,9 @@ def test_pack_refuses_recognized_section_without_date_extractor(
     assert "SKYTOUCH/hotel_statistics" in r.json()["detail"]
     assert "pack section" in r.json()["detail"]
     inbox = tmp_path / "inbox"
-    assert not any(inbox.iterdir())  # the refused pack was unlinked
+    # The endpoint never writes the upload anywhere, so a refusal has nothing
+    # to clean up: the inbox is not even created.
+    assert not inbox.exists()
     staged = db_session.execute(
         select(func.count()).select_from(PmsDailyFinancialStage)
     ).scalar_one()

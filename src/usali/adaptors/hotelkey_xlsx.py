@@ -36,9 +36,11 @@ A refusal that describes a row echoes only its populated column letters and
 its column-A text (an ordinal or END OF REPORT), never the other cells: on the
 settlement export those hold guest names, card descriptors and usernames
 (test_a_row_whose_column_a_is_not_an_ordinal_is_refused pins the exclusion).
-``amount`` and ``count`` echo the offending cell and the row's first header
-column only; in the four HotelKey exports read 2026-09-20 that column is a
-category, a payment type or an organization, not a person.
+``amount`` and ``count`` name the row by its column-A ordinal and echo the
+offending cell in the column they were asked for; no other cell reaches the
+message. Naming the row by the value of its first header column instead would
+print an AR aging account name
+(test_a_refusal_names_the_row_ordinal_not_the_first_column_value).
 """
 
 from dataclasses import dataclass, field
@@ -56,6 +58,7 @@ class HkSection:
     header: list[str] = field(default_factory=list)
     header_cols: list[int] = field(default_factory=list)
     rows: list[dict[str, str]] = field(default_factory=list)
+    row_ordinals: list[str] = field(default_factory=list)  # column A, per entry in `rows`
     subtotals: list[list[str]] = field(default_factory=list)
     total: dict[str, str] | None = None
 
@@ -136,6 +139,7 @@ def split_report(words: list[Word]) -> HkReport:
         if _is_ordinal(cells.get(1)):
             if 2 in cells:
                 current.rows.append(named)
+                current.row_ordinals.append(cells[1])
             else:
                 current.subtotals.append([cells[c] for c in sorted(cells) if c != 1])
         elif 1 not in cells and 2 not in cells:
@@ -180,9 +184,19 @@ def require_columns(section: HkSection, names: tuple[str, ...]) -> None:
         raise ValueError(f"HotelKey {section.label!r} header lacks {missing}; found {section.header}")
 
 
+def _row_name(section: HkSection, row: dict[str, str]) -> str:
+    """How a refusal names a row: its column-A ordinal, which `split_report`
+    records beside the row, or "total" for the section's total row (which has
+    no ordinal). Never a cell value -- `_refusal` is the only caller."""
+    for i, candidate in enumerate(section.rows):
+        if candidate is row:
+            return section.row_ordinals[i]
+    return "total" if row is section.total else "unnumbered"
+
+
 def _refusal(section: HkSection, row: dict[str, str], column: str, what: str) -> ValueError:
     return ValueError(
-        f"HotelKey {section.label!r} row {row.get(section.header[0], '?')!r}: "
+        f"HotelKey {section.label!r} row {_row_name(section, row)}: "
         f"column {column!r} is not {what}: {row.get(column, '')!r}"
     )
 
