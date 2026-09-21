@@ -284,7 +284,7 @@ roadmap:
       Each property gets its own inbound email address; the PMS's scheduled
       night-audit reports are received, redacted, recognized, and processed
       automatically, with no daily upload.
-    status: shipped  # PR #TBD, 2026-09-21; docs/design/2026-09-21-oh23-emailed-intake-design.md (D-OH23.1–9)
+    status: shipped  # PR #145, 2026-09-21; docs/design/2026-09-21-oh23-emailed-intake-design.md (D-OH23.1–9)
     tags: [ingestion, onboarding]
 
   - id: OH-24
