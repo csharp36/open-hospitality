@@ -16,9 +16,14 @@ vi.mock('../api/client', async (importOriginal) => ({
   getFiscalPeriods: vi.fn(),
   getProperties: vi.fn(),
   getMe: vi.fn(),
+  // The page mounts IntakeSection, which reads both of these on render. Its
+  // own behavior is covered in IntakeSection.test.tsx; here they only need to
+  // resolve so the rest of the page is exercised against a quiet section.
+  getIntakeAddress: vi.fn(),
+  getIntakeEvents: vi.fn(),
 }))
 import {
-  getFiscalPeriods, getMe, getProperties, getPropertyConfig,
+  getFiscalPeriods, getIntakeAddress, getIntakeEvents, getMe, getProperties, getPropertyConfig,
 } from '../api/client'
 
 function renderPage() {
@@ -42,6 +47,10 @@ beforeEach(() => {
     property_id: 'HISJ', inventory: [], out_of_order: [], fiscal_calendar: null,
   })
   vi.mocked(getFiscalPeriods).mockResolvedValue({ periods: [] })
+  vi.mocked(getIntakeAddress).mockResolvedValue({
+    address: null, local_part: null, created_at: null, sender_domains: null,
+  })
+  vi.mocked(getIntakeEvents).mockResolvedValue({ events: [] })
 })
 
 describe('PropertyConfigPage', () => {
@@ -93,5 +102,12 @@ describe('PropertyConfigPage', () => {
     renderPage()
     await screen.findByText(/no count in force yet/i)
     expect(screen.queryByText(/current count/i)).toBeNull()
+  })
+
+  it('mounts the night-audit email section', async () => {
+    // The wiring only — what the section then does is IntakeSection.test.tsx's.
+    renderPage()
+    expect(await screen.findByRole('region', { name: 'night-audit email' }))
+      .toBeInTheDocument()
   })
 })

@@ -17,7 +17,9 @@ migration module itself so there is no transcription drift.
 """
 
 import importlib.util
+from pathlib import Path
 import os
+import re
 
 import pytest
 from alembic import command
@@ -80,6 +82,40 @@ _m2 = _load_migration(
     "m2a0perffoundations", "migrations/versions/m2a0perffoundations_performance_foundations.py"
 )
 _g1 = _load_migration("g1a0glcore", "migrations/versions/g1a0glcore_gl_posting_core.py")
+_b2 = _load_migration(
+    "b2a0checklist", "migrations/versions/b2a0checklist_org_checklist_override.py"
+)
+_b3 = _load_migration(
+    "b3a0integcred", "migrations/versions/b3a0integcred_org_integration_credential.py"
+)
+_l5 = _load_migration("l5a0orgsettings", "migrations/versions/l5a0orgsettings_org_settings.py")
+_n1 = _load_migration("n1a0nightaudit", "migrations/versions/n1a0nightaudit_night_audit_state.py")
+_n2 = _load_migration(
+    "n2a0nightadjust", "migrations/versions/n2a0nightadjust_night_audit_adjustment.py"
+)
+_o1 = _load_migration("o1a0intake", "migrations/versions/o1a0intake_email_intake_tables.py")
+
+_VERSIONS_DIR = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+_ORG_WALL_DECL = re.compile(
+    r"""^_POLICY\s*(?::\s*str\s*)?=\s*["']org_wall["']"""
+    r"""|CREATE\s+POLICY\s+org_wall\b""",
+    re.MULTILINE,
+)
+
+# Every migration that declares an `org_wall` policy with its own _PREDICATE
+# literal, keyed by revision id. test_the_stacked_migrations_share_the_l2_rls_predicate
+# pins each copy to l2's AND checks this dict against the files on disk.
+_STACKED_ORG_WALL = {
+    "b2a0checklist": _b2,
+    "b3a0integcred": _b3,
+    "l5a0orgsettings": _l5,
+    "m1a0propcfg": _m1,
+    "m2a0perffoundations": _m2,
+    "g1a0glcore": _g1,
+    "n1a0nightaudit": _n1,
+    "n2a0nightadjust": _n2,
+    "o1a0intake": _o1,
+}
 
 
 # ---------------------------------------------------------------- fixtures
@@ -458,6 +494,7 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
         "gl_account", "journal_entry", "journal_line",
         "gl_posting_ledger", "gl_period_event",
         "night_audit_state", "night_audit_adjustment",
+        "email_intake_event",
     }
     with db_engine.connect() as conn:
         policied = {
@@ -488,8 +525,15 @@ def test_the_rls_inventory_is_complete_and_forced(db_engine):
     assert tuple(role) == (False, False, False, False)
     assert policied == expected
     assert forced == expected
-    # The enumerated exclusions stay unpolicied — org-free reference data.
-    for excluded in ("usali_schedule", "usali_mapping_dictionary", "alembic_version"):
+    # The enumerated exclusions stay unpolicied: org-free reference data, plus
+    # property_intake_address, which carries org_id but must be looked up
+    # before any org is bound (D-OH23.3; o1a0intake's docstring has the
+    # argument). Naming it here makes the no-policy choice a checked claim
+    # rather than an absence from `expected`.
+    for excluded in (
+        "usali_schedule", "usali_mapping_dictionary", "alembic_version",
+        "property_intake_address",
+    ):
         assert excluded not in policied
     # Every policy reads THE session variable, both directions (USING +
     # WITH CHECK).
@@ -528,13 +572,44 @@ def test_the_migration_refuses_without_the_app_role():
 
 
 def test_the_stacked_migrations_share_the_l2_rls_predicate():
-    """Every migration that creates an org_wall policy — l2a0rlswall and the
-    ones that stack on it (m1a0propcfg, m2a0perffoundations, g1a0glcore) —
-    must use the SAME predicate string. Each holds its own literal copy; a
-    copy that drifted (a stray NULLIF removed, a different GUC name) would
-    leave one set of tables fail-open or comparing against the wrong variable
-    while the wall tests on the OTHER tables still passed. Mirrors the
-    predicate cross-pin #8's review added when m1a0propcfg first stacked."""
-    assert _m2._PREDICATE == _l2._PREDICATE
-    assert _m1._PREDICATE == _l2._PREDICATE
-    assert _g1._PREDICATE == _l2._PREDICATE
+    """Every migration that declares an `org_wall` policy — l2a0rlswall and
+    the nine in _STACKED_ORG_WALL that stack on it — must use the SAME
+    predicate string. Each holds its own literal copy; a copy that drifted
+    (a stray NULLIF removed, a different GUC name, a fail-open
+    `current_setting(...) IS NOT NULL`) would leave one set of tables open
+    while the wall tests on the OTHER tables still passed.
+    test_the_rls_inventory_is_complete_and_forced only checks that
+    RLS_ORG_VAR and current_setting APPEAR in each policy's text, so this
+    byte-equality pin is the drift guard. Mirrors the cross-pin #8's review
+    added when m1a0propcfg first stacked.
+
+    The pinned dict is checked against disk: a migration that declares
+    `_POLICY = "org_wall"` and is not in _STACKED_ORG_WALL fails here. It
+    did fall behind once — six stacked migrations were unpinned when OH-23's
+    review swapped o1a0intake's predicate for a fail-open one and 66 tests
+    passed."""
+    # A mis-keyed entry (module loaded under the wrong name) would pin the
+    # wrong file's predicate under this key and hide the real one.
+    for rev, mod in _STACKED_ORG_WALL.items():
+        assert mod.revision == rev, f"{rev!r} is keyed to migration {mod.revision!r}"
+
+    drifted = {
+        rev: mod._PREDICATE
+        for rev, mod in _STACKED_ORG_WALL.items()
+        if mod._PREDICATE != _l2._PREDICATE
+    }
+    assert not drifted, f"predicate drifted from l2a0rlswall's: {drifted}"
+
+    # The disk scan matches the constant however it is spelled (spacing,
+    # quote style, an optional `: str` annotation) AND a bare
+    # `CREATE POLICY org_wall` with no constant at all. A substring match on
+    # one spelling let a respelled `_POLICY="org_wall"` drop out of the scan.
+    on_disk = {
+        path.name.split("_", 1)[0]
+        for path in _VERSIONS_DIR.glob("*.py")
+        if _ORG_WALL_DECL.search(path.read_text())
+    }
+    assert on_disk == set(_STACKED_ORG_WALL) | {"l2a0rlswall"}, (
+        f"org_wall migrations on disk {sorted(on_disk)} != pinned "
+        f"{sorted(set(_STACKED_ORG_WALL) | {'l2a0rlswall'})}"
+    )

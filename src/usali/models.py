@@ -21,6 +21,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 from usali.crypto import EncryptedBytes, EncryptedString
@@ -2337,3 +2338,132 @@ class OccupancyForecast(OrgScoped, Base):
     occupied_rooms: Mapped[int] = mapped_column(Integer)
     entered_by: Mapped[str] = mapped_column(String(64))
     entered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PropertyIntakeAddress(Base):
+    """Per-property inbound address (D-OH23.3). NOT OrgScoped: D-OH23.3
+    requires the webhook resolve a local part before any org is known, so
+    that lookup must run on the unbound base session, and a policy keyed on
+    app.org_id would refuse it. Operator routes are required to filter by
+    the caller's org; `tests/test_intake_address_api.py::
+    test_an_address_of_another_org_is_invisible_and_unrotatable` is the pin.
+
+    It therefore carries org_id WITHOUT the mixin's RLS wall. Two tests fix
+    that shape:
+    `test_migration_on_populated_data.py::test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
+    (org_id NOT NULL) and the exclusion loop in
+    `test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`
+    (this table named as unpolicied). The composite (org_id, property_id)
+    FK below makes a row naming another org's property unrepresentable;
+    `uq_property_intake_address_active` makes a second live address for one
+    property unrepresentable.
+    """
+
+    __tablename__ = "property_intake_address"
+    __table_args__ = (
+        UniqueConstraint("local_part", name="uq_property_intake_address_local_part"),
+        # One live address per property, at the database: a partial unique
+        # over the un-revoked rows. Two concurrent creates cannot both land,
+        # so a rotate never has two live capabilities to revoke. The
+        # obligation it puts on Task 4's rotate: set revoked_at on the old
+        # row BEFORE inserting the new one, in one transaction, or the
+        # insert is refused. tests/test_intake_schema.py pins the WHERE
+        # clause and both behaviors.
+        Index(
+            "uq_property_intake_address_active", "org_id", "property_id",
+            unique=True, postgresql_where=text("revoked_at IS NULL"),
+        ),
+        # Stored lowercase or refused, so the unique on local_part is
+        # case-insensitive in effect. Duplicated as o1a0intake's CHECK of the
+        # same name; compare_metadata does not compare CHECKs.
+        CheckConstraint(
+            "local_part = lower(local_part)",
+            name="ck_property_intake_address_local_part_lower",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_property_intake_address_property_org",
+        ),
+    )
+
+    address_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    # Stored in clear, unlike an invite's token_hash: D-OH23.3 requires the
+    # address be displayable. Knowing it is the capability to submit a report
+    # for this property, so it is revocable — `revoked_at` below.
+    local_part: Mapped[str] = mapped_column(String(64))
+    org_id: Mapped[int] = mapped_column(
+        ForeignKey("organization.org_id", name="fk_property_intake_address_org"),
+    )
+    property_id: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # D-OH23.4 defines the column: NULL is "any authenticated sender", a list
+    # narrows it to those envelope-sender domains.
+    sender_domains: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+
+
+class EmailIntakeEvent(OrgScoped, Base):
+    """One row per message received for a property's address (D-OH23.7).
+    This table has no body column. D-OH23.7 requires subject and error text
+    pass mask_pans before the write, and the two halves are pinned in
+    different places:
+
+    * the SUBJECT (and, with it, every attachment `name`) is masked in
+      `intake_api._record` / `intake_api._safe_name`, pinned by
+      `tests/test_intake_email.py::test_event_text_carries_no_card_numbers`;
+    * an ERROR string is masked by `ingestion._safe_message` before it is
+      ever an exception's text here — that is the enforcement point, pinned
+      by `tests/test_ingestion_boundary.py::
+      test_a_card_number_in_an_exception_never_reaches_the_batch_or_the_record`.
+      `intake_api._masked` is a second coat over the same text, not the
+      guarantee."""
+
+    __tablename__ = "email_intake_event"
+    __table_args__ = (
+        # CHECK over D-OH23.7's closed outcome set, duplicated as o1a0intake's
+        # _OUTCOMES and as intake.INTAKE_OUTCOMES. compare_metadata does not
+        # compare CHECKs, so nothing in this file holds the copies together;
+        # tests/test_intake_schema.py is where they are pinned --
+        # test_each_check_matches_the_models_declaration against the migrated
+        # catalog and test_intake_outcomes_match_the_check_constraint against
+        # the frozenset.
+        CheckConstraint(
+            "outcome IN ('ingested', 'partial', 'duplicate', 'no_attachment', "
+            "'sender_rejected', 'wrong_property', 'not_a_night_audit_report', "
+            "'unreadable', 'failed', 'revoked_address')",
+            name="ck_email_intake_event_outcome",
+        ),
+        ForeignKeyConstraint(
+            ["org_id", "property_id"], ["property.org_id", "property.property_id"],
+            name="fk_email_intake_event_property_org",
+        ),
+    )
+
+    event_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # Plain Integer, not an FK. A single-column FK to property_intake_address
+    # would let a row cite another org's address, and there is no
+    # (org_id, address_id) unique on that table to hang a composite FK from.
+    # This row's tenancy rides the composite property FK declared above.
+    address_id: Mapped[int] = mapped_column(Integer)
+    property_id: Mapped[str] = mapped_column(String(50))
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # The four String widths below are hard limits: Postgres raises
+    # StringDataRightTruncation on overflow (trailing whitespace is the one
+    # exception: trimmed silently), so the writer must clip envelope_from,
+    # subject, auth_result and message_id to width before the INSERT — an
+    # obligation on Task 3 that this schema creates.
+    envelope_from: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    auth_result: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    outcome: Mapped[str] = mapped_column(String(32))
+    # Shape (D-OH23.7): [{name, sha256, bytes, outcome, batch_id?, error?}].
+    attachments: Mapped[list[dict[str, object]]] = mapped_column(
+        JSONB, default=list, server_default=text("'[]'::jsonb")
+    )

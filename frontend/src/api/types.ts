@@ -978,6 +978,78 @@ export interface PropertyConfig {
   fiscal_calendar: FiscalConfig | null
 }
 
+// The night-audit email address and its event log (OH-23). Mirrors
+// IntakeAddressModel/IntakeEventModel in src/usali/intake_address_api.py.
+
+/**
+ * Every outcome a received message can be recorded with, as of this build. The
+ * set is closed on the server by the `email_intake_event` CHECK constraint in
+ * src/usali/models.py.
+ *
+ * It is NOT closed at runtime here: nothing validates a response against this
+ * union, so a release that adds an outcome delivers a value no build before it
+ * had heard of. What the union buys is a compile-time obligation on code that
+ * enumerates it — `OUTCOME_LABELS` in pages/IntakeSection.tsx is typed
+ * `Record<IntakeOutcome, string>`, so a member added here without a label
+ * fails `npx tsc -b`. Code that RENDERS an outcome still has to cope with a
+ * value outside the union.
+ *
+ * Neither toolchain compares this union with the server's set, so a Python
+ * test does it: tests/test_intake_schema.py::
+ * test_the_frontend_outcome_union_matches_intake_outcomes reads this file and
+ * asserts set equality with `intake.INTAKE_OUTCOMES`. Editing the members
+ * below without editing that set fails there.
+ */
+export type IntakeOutcome =
+  | 'ingested'
+  | 'partial'
+  | 'duplicate'
+  | 'no_attachment'
+  | 'sender_rejected'
+  | 'wrong_property'
+  | 'not_a_night_audit_report'
+  | 'unreadable'
+  | 'failed'
+  | 'revoked_address'
+
+export interface IntakeAttachment {
+  name: string
+  sha256: string
+  bytes: number
+  outcome: IntakeOutcome
+  /** The batch the attachment staged into. Absent, or explicitly null,
+   * when it did not stage one: intake_api writes the key with a null
+   * value rather than omitting it. */
+  batch_id?: number | null
+  /** Present only when the attachment failed. */
+  error?: string
+}
+
+export interface IntakeEvent {
+  event_id: number
+  received_at: string
+  envelope_from: string
+  subject: string | null
+  outcome: IntakeOutcome
+  message_id: string | null
+  attachments: IntakeAttachment[]
+}
+
+/**
+ * The property's live address. All four fields are null together, and only on
+ * GET, when the property has no active address — the create/rotate/PUT routes
+ * answer an address or an error. `sender_domains` is null ("any authenticated
+ * sender"), never an empty array: an empty list sent to the PUT is stored as
+ * null (tests/test_intake_address_api.py::test_an_empty_allowlist_stores_null),
+ * so callers need not tell `[]` and null apart on the way back.
+ */
+export interface IntakeAddress {
+  address: string | null
+  local_part: string | null
+  created_at: string | null
+  sender_domains: string[] | null
+}
+
 export interface NightAuditSlot {
   report_type: string
   label: string

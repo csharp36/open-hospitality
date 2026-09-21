@@ -9,20 +9,18 @@ rather than choosing a reader itself.
 
 from pathlib import Path
 
+from usali.adaptors.magic import ACCEPTED_FORMATS, is_pdf, is_xlsx
 from usali.adaptors.pdf import Word, extract_words_from_bytes
 from usali.adaptors.xlsx import extract_words_from_xlsx_bytes
 
-_PDF_MAGIC = b"%PDF-"
-_ZIP_MAGIC = b"PK\x03\x04"
-ACCEPTED_FORMATS = "PDF or XLSX"
-
-
-def is_pdf(data: bytes) -> bool:
-    return data.startswith(_PDF_MAGIC)
-
-
-def is_xlsx(data: bytes) -> bool:
-    return data.startswith(_ZIP_MAGIC)
+# Re-exported from the leaf module `usali.adaptors.magic`, which imports
+# nothing, so every existing `from usali.adaptors.reader import is_pdf` keeps
+# working while a caller that must not pull in the parsers can import the
+# predicates alone.
+__all__ = [
+    "ACCEPTED_FORMATS", "Word", "is_pdf", "is_xlsx",
+    "read_words", "read_words_from_bytes",
+]
 
 
 def read_words_from_bytes(data: bytes) -> list[Word]:

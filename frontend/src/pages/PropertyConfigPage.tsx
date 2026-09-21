@@ -8,6 +8,7 @@ import {
 import { OOO_REASONS, type FiscalConfig } from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
+import { IntakeSection } from './IntakeSection'
 
 /**
  * Property configuration: the authoritative, effective-dated record of a
@@ -33,7 +34,7 @@ export default function PropertyConfigPage() {
     <div className="flex flex-col gap-5">
       <PageHeader
         title="Property configuration"
-        subtitle="Sellable-room inventory, out-of-order blocks, and the fiscal calendar this property runs on."
+        subtitle="Sellable-room inventory, out-of-order blocks, the fiscal calendar this property runs on, and the address its night audit can be emailed to."
       />
 
       {property === undefined && (
@@ -74,6 +75,8 @@ export default function PropertyConfigPage() {
           />
         </>
       )}
+
+      {property !== undefined && <IntakeSection propertyId={property} />}
     </div>
   )
 }
@@ -520,3 +523,4 @@ function FiscalCalendarSection({
     </Card>
   )
 }
+

@@ -25,6 +25,15 @@ AUTH_HOST="${AUTH_HOST:-auth.example.com}"
 # invite job needs this explicitly. Placeholder here; the deploy workflow
 # supplies the real host (DEMO_APP_HOST=demo.mandati.ai).
 APP_HOST="${APP_HOST:-app.example.com}"
+# The subdomain every property's intake address is minted under (OH-23). Unlike
+# AUTH_HOST and APP_HOST this defaults to the REAL host rather than an
+# *.example.com placeholder, so `_refuse_placeholder_host` below would never
+# fire on it and is deliberately not called: the value is not a credential and
+# not a host anyone logs in to, and the Cloudflare side of it
+# (docs/runbooks/email-intake.md) is committed to this same subdomain. Override
+# it when the Email Routing subdomain is not this one — it must match what
+# Email Routing is enabled on, or every message resolves to no address.
+INTAKE_HOST="${INTAKE_HOST:-intake.mandati.ai}"
 
 # The *.example.com defaults are what an open-core repo can commit -- they are
 # NOT something that can be deployed. Refuse rather than default into them.
@@ -136,6 +145,12 @@ COMMON_ENV+=",USALI_PHOTO_STORE_GCS_BUCKET=${BUCKET}"
 COMMON_ENV+=",USALI_BIOMETRIC_MATCHING_ENABLED=true"
 COMMON_ENV+=",USALI_CRM_PROVIDER=delphi"
 COMMON_ENV+=",USALI_KC_ADMIN_BASE_URL=${AUTH_URL}"
+# OH-23: the domain every property's intake address is minted under. It is a
+# ROUTING value, not a secret — `intake_api._resolve_address` compares the
+# envelope recipient's domain against it, so an address at any other domain
+# resolves nothing. The Cloudflare Email Routing side of it is
+# docs/runbooks/email-intake.md; the two must name the same subdomain.
+COMMON_ENV+=",USALI_EMAIL_INTAKE_DOMAIN=${INTAKE_HOST}"
 # Both the serving revision (signup request + OTP) and the invite job send mail,
 # so the notifier config is shared. `notifier_from_settings` REFUSES to build an
 # smtp notifier without a host and a From, which is why this is all-or-nothing:
@@ -175,6 +190,34 @@ APP_SECRETS="USALI_DB_PASSWORD=usali-app-db-password:latest,${SHARED_SECRETS}${S
 # for signup /complete, so it alone mounts the provisioner password — a
 # strong secret in place of config.py's dev default.
 APP_SECRETS+=",USALI_PROVISIONER_DB_PASSWORD=usali-provisioner-db-password:latest"
+# OH-23 (D-OH23.2): the HMAC the Cloudflare Email Worker signs every emailed
+# night audit with. The SERVING revision alone — the migrate job runs no HTTP
+# surface, so it has no webhook to authenticate.
+#
+# ONE VALUE IN TWO PLACES. The same string is the GitHub secret
+# EMAIL_INTAKE_SECRET, which .github/workflows/deploy-email-intake.yml puts
+# into the worker as INTAKE_SECRET. Rotate one without the other and every
+# message 401s and piles up in the ops fallback mailbox, unredacted. The
+# rotation order is in docs/runbooks/email-intake.md.
+#
+# A TRAILING NEWLINE ONLY BITES ON THIS SIDE. `wrangler secret put` trims
+# trailing whitespace off stdin, and Secret Manager does not trim anything —
+# so `echo` into `gcloud secrets versions add` stores a value the worker will
+# never send, and every message 401s with nothing in any log to say why.
+# Create versions with `printf '%s'`; the runbook spells the command out.
+#
+# CREATE THE SECRET BEFORE USALI_ENV=prod IS EVER TURNED ON.
+# `config._DEV_DEFAULT_SECRETS` lists `email_intake_secret`, and
+# `config._refuse_dev_secrets_in_prod` is where the committed dev default is
+# refused — but that guard runs only when USALI_ENV=prod, which this script
+# deliberately does not set (see the note at the top of COMMON_ENV above).
+# So on this deployment nothing in the APP shouts about a missing secret: the
+# only thing standing between an absent `usali-email-intake-secret` and an app
+# happily signing against a public default is this --set-secrets line failing
+# at `gcloud run deploy`. The day a real environment sets USALI_ENV=prod, that
+# guard turns the same absence into a refusal to start — which is a much worse
+# day to discover the secret was never created.
+APP_SECRETS+=",USALI_EMAIL_INTAKE_SECRET=usali-email-intake-secret:latest"
 
 echo "== [2/5] migrate-seed job (migrate BEFORE deploy)"
 gcloud run jobs deploy usali-migrate-seed \

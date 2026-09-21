@@ -193,6 +193,12 @@ def test_l1_round_trips_on_an_empty_database():
                 "ix_journal_line_org_id",
                 "ix_gl_posting_ledger_org_id",
                 "ix_gl_period_event_org_id",
+                # o1a0intake (OH-23): email_intake_event is the org-scoped
+                # half of the emailed-intake pair, so it carries its own
+                # org_id index. Its sibling property_intake_address does NOT
+                # appear here — it carries org_id without the OrgScoped
+                # mixin, so no ix_ index is declared for it.
+                "ix_email_intake_event_org_id",
             }
             assert set(_l1._ORG_TABLES) | {"property"} <= org_id_tables()
 

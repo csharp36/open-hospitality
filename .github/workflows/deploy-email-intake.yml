@@ -1,0 +1,128 @@
+name: Deploy email intake worker
+
+# Publishes cloudflare/email-intake/ as the Cloudflare Email Worker that
+# fronts POST /api/intake/email (OH-23, D-OH23.1). Separate from
+# deploy-marketing.yml because the two need DIFFERENT credentials, not because
+# they do different things — see the token note below.
+#
+# Trigger: workflow_dispatch only, matching deploy-marketing.yml and
+# deploy-demo.yml. Fork pull requests cannot run workflow_dispatch, so no
+# outside contributor can reach the Cloudflare credential or the intake secret.
+#
+# THE TOKEN IS NOT THE MARKETING ONE. deploy-marketing.yml's
+# CLOUDFLARE_API_TOKEN is scoped to Account -> Cloudflare Pages -> Edit, and
+# that scope cannot upload a Worker or touch Email Routing. This workflow
+# needs a SECOND token, kept as the repo secret CLOUDFLARE_WORKERS_API_TOKEN,
+# with:
+#
+#   * Account -> Workers Scripts -> Edit       (wrangler deploy, secret put)
+#   * Zone    -> Email Routing Rules -> Edit   (the catch-all rule -> worker)
+#
+# Two tokens rather than one widened token: the Pages deploy runs far more
+# often, and nothing it does should be able to replace the code that handles
+# every property's mail. Both live only as repo secrets.
+#
+# Setup, the routing rules, and the ops fallback mailbox:
+# docs/runbooks/email-intake.md.
+
+on:
+  workflow_dispatch:
+
+# A newer deploy waits rather than racing an in-flight upload onto the same
+# worker.
+concurrency:
+  group: deploy-email-intake
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: email-intake
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/email-intake
+    env:
+      # wrangler reads the credential from CLOUDFLARE_API_TOKEN whatever the
+      # secret is called; the Workers-scoped secret is mapped onto that name
+      # here, and the Pages-scoped CLOUDFLARE_API_TOKEN secret is never
+      # referenced in this file.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: cloudflare/email-intake/package-lock.json
+
+      - run: npm ci
+
+      # The same tests CI runs. A deploy is dispatched by hand months apart,
+      # so it re-runs them rather than trusting that the last CI run on this
+      # commit was green.
+      - run: npm test
+
+      # An unset repo secret is the empty string, and GitHub gives no warning
+      # for one. Both failure modes are quiet and expensive:
+      #
+      #   INTAKE_SECRET   empty -> every message 401s and lands in the
+      #                   fallback mailbox, unredacted.
+      #   FALLBACK_ADDRESS empty -> `message.forward("")` REJECTS, and that
+      #                   rejection escapes the worker's email() handler. The
+      #                   sender then sees an error — a bounce or a retry to
+      #                   a PMS's automated address, which is exactly what
+      #                   D-OH23.1 refuses to produce. Worse than the first.
+      #
+      # So the job stops here rather than deploying a worker that cannot work.
+      - name: Refuse to deploy without both secrets
+        env:
+          INTAKE_SECRET: ${{ secrets.EMAIL_INTAKE_SECRET }}
+          FALLBACK: ${{ secrets.EMAIL_INTAKE_FALLBACK }}
+        run: |
+          set -euo pipefail
+          [ -n "$INTAKE_SECRET" ] || {
+            echo "::error::EMAIL_INTAKE_SECRET is unset — see docs/runbooks/email-intake.md step 4"
+            exit 1
+          }
+          [ -n "$FALLBACK" ] || {
+            echo "::error::EMAIL_INTAKE_FALLBACK is unset — see docs/runbooks/email-intake.md step 2"
+            exit 1
+          }
+
+      # Secrets BEFORE deploy, so the first version of the worker that exists
+      # already has both. A worker that started without INTAKE_SECRET would
+      # sign with `undefined` and every message would 401 into the fallback
+      # mailbox. On a FIRST run there is no worker yet, and that is fine:
+      # `secret put` catches isWorkerNotFoundError and calls createDraftWorker
+      # before retrying (wrangler 4.136.1, wrangler-dist/cli.js ~299209), so
+      # the draft exists to hold the secrets and `deploy` below fills it in.
+      #
+      # `printf '%s'` rather than `echo`, though NOT because wrangler would
+      # keep the newline — it trims trailing whitespace off stdin
+      # (`trimTrailingWhitespace(readFromStdin())`, cli.js ~299168). The
+      # asymmetry is what matters: GCP Secret Manager stores exactly the bytes
+      # it is given. A newline added on both sides cancels out; one added only
+      # on the GCP side is a permanent 401 that nothing prints. Spelling both
+      # sides the same way is what keeps that from being a question.
+      #
+      # The values go through `env:` rather than being interpolated into the
+      # script, so nothing secret is ever part of a command line.
+      - name: Put INTAKE_SECRET
+        env:
+          VALUE: ${{ secrets.EMAIL_INTAKE_SECRET }}
+        run: printf '%s' "$VALUE" | npx wrangler secret put INTAKE_SECRET
+
+      - name: Put FALLBACK_ADDRESS
+        env:
+          VALUE: ${{ secrets.EMAIL_INTAKE_FALLBACK }}
+        run: printf '%s' "$VALUE" | npx wrangler secret put FALLBACK_ADDRESS
+
+      - name: Deploy the worker
+        run: npx wrangler deploy

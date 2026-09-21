@@ -60,7 +60,11 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
       - name: Types
-        run: npx tsc --noEmit
+        # frontend/tsconfig.json is solution-style (`files: []` + references),
+        # so `--noEmit` type-checks zero files and passes on anything; `-b` is
+        # the real gate. Found 2026-09-21: an invalid `IntakeOutcome` literal
+        # passed `--noEmit` and failed `-b`.
+        run: npx tsc -b --force
       - name: Lint
         run: npx oxlint
       - name: Tests
@@ -84,6 +88,26 @@ jobs:
       # .github/roadmap.yml has shipped or vanished), and tests/build.test.ts
       # asserts against dist/, which npm test alone would not have built.
       - run: npm run build
+      - run: npm test
+
+  email-intake:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/email-intake
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: cloudflare/email-intake/package-lock.json
+      - run: npm ci
+      # `node --test`, with no wrangler and no network. That the worker's
+      # runtime surface is available on plain Node 22 is not asserted in a
+      # comment here — this step passing IS the assertion, and it is the step
+      # that fails if the worker ever reaches for something only the Workers
+      # runtime has. The wrangler devDependency is the deploy workflow's.
       - run: npm test
 
   image:
