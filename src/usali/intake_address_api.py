@@ -32,6 +32,14 @@ rows, so `create` does not read-then-write (two concurrent creates would both
 pass such a check): it inserts and turns that constraint's IntegrityError into
 the 409. The same index is why `rotate` flushes the revocation BEFORE adding
 the new row — see the comment there.
+
+Rotate can still be refused by that index, and the case is a race rather than
+an operator error: two rotations of the same address overlap, the first
+commits, and the second's insert meets the winner's live row. That is a 409
+too (`_flush_or_conflict`), and the caller's own read of the address is simply
+stale — the property is left with exactly one live address, the winner's,
+which is what `tests/test_intake_address_api.py::
+test_a_rotation_that_loses_the_race_is_refused_with_409` holds.
 """
 
 import re
@@ -39,7 +47,7 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -63,8 +71,10 @@ _ACTIVE_ADDRESS_CONSTRAINT = "uq_property_intake_address_active"
 # A sender allowlist entry: a lowercase hostname of at least two labels
 # (D-OH23.4 compares it with the envelope sender's domain, which always has
 # one). Deliberately narrower than `intake._DOMAIN`, which parses what a
-# receiver wrote; this is what an operator may type.
-_SENDER_LABEL = r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?"
+# receiver wrote; this is what an operator may type. Each label is capped at
+# RFC 1035's 63 characters, as the whole name is at 253 below — a longer label
+# cannot be a real sending domain, so it is a typo worth refusing at the form.
+_SENDER_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 _SENDER_DOMAIN = re.compile(rf"{_SENDER_LABEL}(?:\.{_SENDER_LABEL})+\Z")
 _SENDER_DOMAIN_MAX_LEN = 253      # RFC 1035's limit on a fully qualified name
 _MAX_SENDER_DOMAINS = 20
@@ -100,13 +110,35 @@ def _violates(exc: IntegrityError, constraint: str) -> bool:
     driver that does not is read as "some other constraint", so the error
     keeps travelling as a 500 rather than being answered with a conflict this
     route has not actually identified — which is also how that assumption is
-    held: `tests/test_intake_address_api.py::
+    held, from both sides: `tests/test_intake_address_api.py::
     test_a_second_create_is_refused_and_leaves_one_active_address` goes red
-    with a 500 the moment the diagnostics stop naming the constraint.
+    with a 500 the moment the diagnostics stop naming the constraint, and
+    `test_a_local_part_collision_is_not_reported_as_a_conflict` goes red the
+    moment this answers True for a constraint it did not identify.
     """
     diag = getattr(exc.orig, "diag", None)
     name: object = getattr(diag, "constraint_name", None)
     return name == constraint
+
+
+def _flush_or_conflict(session: Session, detail: str) -> None:
+    """Flush, answering `uq_property_intake_address_active` with a 409.
+
+    The index is the only thing that makes "one live address per property"
+    true under concurrency, so it is also what answers here — neither caller
+    reads first to decide. Any OTHER integrity error keeps travelling: a
+    local-part collision is not a conflict this route understands, and
+    `tests/test_intake_address_api.py::
+    test_a_local_part_collision_is_not_reported_as_a_conflict` holds that
+    direction while `_violates`'s own docstring names the other.
+    """
+    try:
+        session.flush()
+    except IntegrityError as exc:
+        session.rollback()
+        if not _violates(exc, _ACTIVE_ADDRESS_CONSTRAINT):
+            raise
+        raise HTTPException(status_code=409, detail=detail) from exc
 
 
 def _audit(session: Session, principal: Principal, action: str, local_part: str) -> None:
@@ -135,7 +167,14 @@ def _audit(session: Session, principal: Principal, action: str, local_part: str)
 class IntakeAddressModel(BaseModel):
     """The live address, or four nulls when the property has none. `address`
     is assembled here because the domain is a SETTING: the SPA must never
-    hard-code it (D-OH23.8)."""
+    hard-code it (D-OH23.8).
+
+    Frozen: `_NO_ADDRESS` below is one shared instance handed to every caller
+    that asks about a property with no address, and a response model nobody
+    can write to is what makes sharing it safe.
+    """
+
+    model_config = ConfigDict(frozen=True)
 
     address: str | None
     local_part: str | None
@@ -234,19 +273,11 @@ def create_intake_address(
             property_id=property_id,
         )
         session.add(row)
-        try:
-            session.flush()
-        except IntegrityError as exc:
-            session.rollback()
-            if not _violates(exc, _ACTIVE_ADDRESS_CONSTRAINT):
-                raise
-            # Not read-then-write: the partial unique is what makes "one live
-            # address" true under concurrency, so it is also what answers here.
-            raise HTTPException(
-                status_code=409,
-                detail="this property already has an active intake address; "
-                       "rotate it instead of creating a second one",
-            ) from exc
+        _flush_or_conflict(
+            session,
+            "this property already has an active intake address; "
+            "rotate it instead of creating a second one",
+        )
         model = _model(row)
         _audit(session, principal, "intake_address_created", row.local_part)
         session.commit()
@@ -280,7 +311,12 @@ def rotate_intake_address(
             property_id=property_id,
         )
         session.add(new)
-        session.flush()
+        # Refused only when another rotation of the same address committed
+        # between this transaction's read and this insert — see the module
+        # docstring. The read, not the write, is what was stale.
+        _flush_or_conflict(
+            session, "this address was rotated concurrently; reload and try again"
+        )
         model = _model(new)
         # Two rows, one transaction: the rotation retires one capability and
         # mints another, and an audit trail that names only the new local part
@@ -299,9 +335,12 @@ def set_sender_domains(
 ) -> IntakeAddressModel:
     """Narrow the live address to these envelope-sender domains, or (with an
     empty list) back to any authenticated sender — D-OH23.4."""
-    domains = _clean_sender_domains(body.sender_domains)
     with _session(request) as session:
+        # Confinement precedes validation, as it precedes existence: a caller
+        # who may not write this property is refused before the body is
+        # judged, so a 422 is never the first thing an outsider learns.
         _require_onboardable_property(session, principal, property_id)
+        domains = _clean_sender_domains(body.sender_domains)
         row = _require_active(session, property_id)
         row.sender_domains = domains
         session.flush()

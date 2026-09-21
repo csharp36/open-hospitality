@@ -33,7 +33,7 @@ from usali.config import get_settings
 from usali.db import make_session_factory
 from usali.intake_address_api import _active_address
 from usali.keycloak_admin import InMemoryKeycloakAdmin
-from usali import intake
+from usali import intake, intake_address_api
 from usali.models import (
     AuditEvent,
     EmailIntakeEvent,
@@ -227,8 +227,11 @@ def test_rotate_without_an_address_is_404(world, db_session):
     client, headers = world
     r = client.post("/api/properties/HISJ/intake-address/rotate", headers=headers)
     # 404 and not an implicit create: with no address the page offers
-    # "Create address", so a rotate here is a stale client (D-OH23.8).
+    # "Create address", so a rotate here is a stale client (D-OH23.8). The
+    # detail is asserted because a missing ROUTE is also a 404: without it
+    # this case passes with the router unmounted.
     assert r.status_code == 404, r.text
+    assert r.json()["detail"] == "this property has no active intake address"
     assert _addresses(db_session) == []
 
 
@@ -316,6 +319,7 @@ def test_an_empty_allowlist_stores_null(world, db_session):
 @pytest.mark.parametrize("entry", [
     "not a domain", "pms", "-pms.test", "pms.test-", "pms..test",
     "pms.test/path", "*.pms.test", "nightaudit@pms.test", "pms .test",
+    "a" * 64 + ".test",   # RFC 1035 caps a LABEL at 63, not just the name
 ])
 def test_an_invalid_sender_domain_is_refused_naming_the_entry(world, db_session, entry):
     client, headers = world
@@ -352,6 +356,8 @@ def test_the_allowlist_needs_an_active_address(world):
     r = client.put("/api/properties/HISJ/intake-address",
                    json={"sender_domains": ["pms.test"]}, headers=headers)
     assert r.status_code == 404, r.text
+    # The route's own words, not the 404 an unmounted router would give.
+    assert r.json()["detail"] == "this property has no active intake address"
 
 
 # --- GET: the event log ---------------------------------------------------------
@@ -429,7 +435,110 @@ def test_a_local_part_always_fits_the_audit_resource_id(world, db_session):
         made["local_part"]
 
 
+def test_a_rotation_that_loses_the_race_is_refused_with_409(
+    world, db_engine, db_session, monkeypatch
+):
+    """Two rotations of the same address overlap: the other one commits
+    between this request's read and its insert, and the partial unique
+    refuses the insert. That is a 409 — a stale read — and never a 500.
+
+    The race is made deterministic by completing the WINNER's rotation inside
+    `_require_active`, in its own committed transaction: that is the exact
+    window the request is exposed to, and the winner commits before this
+    request's UPDATE, so neither transaction waits on the other.
+    """
+    client, headers = world
+    client.post("/api/properties/HISJ/intake-address", headers=headers)
+    real = intake_address_api._require_active
+
+    def racing(session, property_id):
+        row = real(session, property_id)
+        monkeypatch.setattr(intake_address_api, "_require_active", real)  # once
+        with make_session_factory(db_engine)() as winner:
+            bind_org_context(winner, 1)
+            live = winner.scalars(
+                select(PropertyIntakeAddress).where(
+                    PropertyIntakeAddress.property_id == property_id,
+                    PropertyIntakeAddress.revoked_at.is_(None),
+                )
+            ).one()
+            live.revoked_at = datetime.now(UTC)
+            winner.flush()
+            winner.add(PropertyIntakeAddress(
+                local_part="na-thewinner", org_id=1, property_id=property_id))
+            winner.commit()
+        return row
+
+    monkeypatch.setattr(intake_address_api, "_require_active", racing)
+    r = client.post("/api/properties/HISJ/intake-address/rotate", headers=headers)
+    assert r.status_code == 409, r.text
+    assert "concurrently" in r.json()["detail"]
+
+    db_session.expire_all()
+    live = [row for row in _addresses(db_session) if row.revoked_at is None]
+    assert [row.local_part for row in live] == ["na-thewinner"]
+    # The loser wrote nothing at all, the audit trail included.
+    assert _audits(db_session, "intake_address_rotated") == []
+    assert _audits(db_session, "intake_address_revoked") == []
+
+
+def test_a_local_part_collision_is_not_reported_as_a_conflict(
+    db_engine, db_session, tmp_path, monkeypatch
+):
+    """`_violates` must discriminate, not just detect. A local part that
+    collides with ANOTHER property's address breaks
+    `uq_property_intake_address_local_part`, which this route has no answer
+    for — 500 is the honest one, and answering 409 would tell the operator to
+    rotate an address that is not the problem."""
+    _org_and_property(db_session)
+    _org_and_property(db_session, "SSSJ")
+    verifier, mint = make_authkit()
+    app = create_app(
+        inbox_dir=tmp_path / "inbox", processed_dir=tmp_path / "processed",
+        failed_dir=tmp_path / "failed",
+        session_factory=make_session_factory(db_engine),
+        token_verifier=verifier, keycloak_admin=InMemoryKeycloakAdmin(),
+    )
+    client = TestClient(app, raise_server_exceptions=False)
+    headers = _admin_headers(mint, db_session)
+    taken = client.post("/api/properties/SSSJ/intake-address",
+                        headers=headers).json()["local_part"]
+
+    monkeypatch.setattr(intake_address_api, "new_local_part", lambda: taken)
+    r = client.post("/api/properties/HISJ/intake-address", headers=headers)
+    assert r.status_code != 409, r.text
+    assert r.status_code == 500
+    assert _addresses(db_session, "HISJ") == []
+
+
 # --- the gates ------------------------------------------------------------------
+
+
+def test_a_department_manager_of_the_property_may_read_but_not_write(
+    db_engine, db_session, tmp_path
+):
+    """The read gate and the write gate are different doors, and only the
+    reads are open to every operator. A department manager AT THIS PROPERTY
+    passes `_require_readable_property` and is still refused every write:
+    minting or rotating an inbound capability is `require_config_writer`'s
+    (ORG_ADMIN, PROPERTY_GM), exactly as `set_fiscal_calendar`'s is."""
+    _org_and_property(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    grant_role(db_session, "department_manager", sub="dm-hisj", property_id="HISJ")
+    tok = mint(roles=["department_manager"], sub="dm-hisj",
+               scopes=[{"property_id": "HISJ", "department_id": None}])
+    h = {"Authorization": f"Bearer {tok}"}
+
+    assert client.post("/api/properties/HISJ/intake-address", headers=h).status_code == 403
+    assert client.post("/api/properties/HISJ/intake-address/rotate",
+                       headers=h).status_code == 403
+    assert client.put("/api/properties/HISJ/intake-address",
+                      json={"sender_domains": ["pms.test"]}, headers=h).status_code == 403
+    assert _addresses(db_session) == []
+
+    assert client.get("/api/properties/HISJ/intake-address", headers=h).status_code == 200
+    assert client.get("/api/properties/HISJ/intake-events", headers=h).status_code == 200
 
 
 def test_every_verb_confines_a_gm_of_another_property(db_engine, db_session, tmp_path):
@@ -454,8 +563,61 @@ def test_every_verb_confines_a_gm_of_another_property(db_engine, db_session, tmp
                        headers=h).status_code == 403
     assert client.put("/api/properties/HISJ/intake-address",
                       json={"sender_domains": ["pms.test"]}, headers=h).status_code == 403
+    # Confinement precedes VALIDATION too: a body this route would refuse as
+    # 422 must not be judged before the caller is, or the refusal an outsider
+    # meets depends on what they sent.
+    assert client.put("/api/properties/HISJ/intake-address",
+                      json={"sender_domains": ["not a domain"]},
+                      headers=h).status_code == 403
     assert client.get("/api/properties/HISJ/intake-events", headers=h).status_code == 403
     assert _addresses(db_session) == []
+
+
+def test_an_org_two_operator_writes_its_own_org(
+    two_tenant_world, db_session, db_url, tmp_path
+):
+    """The write side of the two-org world: org 2's admin, active in org 2,
+    creates, rotates and scopes TWO1's address over the RLS-bound stack.
+
+    Every row must land in org 2. `property_intake_address` is not OrgScoped,
+    so nothing stamps `org_id` for it — the route reads
+    `tenancy.current_org_id(session)`, the same predicate both walls read, and
+    a literal here would either plant org 1's id (refused by
+    `fk_property_intake_address_property_org`, since (1, TWO1) is no property)
+    or, worse in another shape, quietly file one tenant's capability under
+    another. The `audit_event` rows are the OrgScoped half of the same
+    question.
+    """
+    w = two_tenant_world
+    verifier, mint = make_authkit()
+    client = rls_client(db_url, tmp_path, verifier)
+    token = mint(roles=["org_admin"], sub=w.org2_admin, organizations=[ORG2_ALIAS])
+    h = {"Authorization": f"Bearer {token}", ACTIVE_ORG_HEADER: ORG2_ALIAS}
+
+    created = client.post("/api/properties/TWO1/intake-address", headers=h)
+    assert created.status_code == 201, created.text
+    rotated = client.post("/api/properties/TWO1/intake-address/rotate", headers=h)
+    assert rotated.status_code == 201, rotated.text
+    scoped = client.put("/api/properties/TWO1/intake-address",
+                        json={"sender_domains": ["pms.test"]}, headers=h)
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["sender_domains"] == ["pms.test"]
+
+    # Read on the superuser session, which is bound to no org and therefore
+    # sees every one of them — the org_id values below are the rows', not a
+    # filter's.
+    rows = _addresses(db_session, "TWO1")
+    assert [row.local_part for row in rows] == [
+        created.json()["local_part"], rotated.json()["local_part"]]
+    assert {row.org_id for row in rows} == {w.org2_id}
+
+    audits = list(db_session.scalars(
+        select(AuditEvent).where(AuditEvent.resource_type == "property_intake_address")
+        .order_by(AuditEvent.event_id)))
+    assert [a.action for a in audits] == [
+        "intake_address_created", "intake_address_revoked",
+        "intake_address_rotated", "intake_sender_domains_set"]
+    assert {a.org_id for a in audits} == {w.org2_id}
 
 
 def test_an_address_of_another_org_is_invisible_and_unrotatable(
