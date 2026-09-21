@@ -818,7 +818,10 @@ export async function createIntakeAddress(propertyId: string): Promise<IntakeAdd
 }
 
 /** Revoke the live address and mint a new one. The new address starts with NO
- * sender allowlist — the server does not carry the old policy across. */
+ * sender allowlist — the server does not carry the old policy across, so a
+ * rotation does not set a sender policy the operator never chose for it
+ * (tests/test_intake_address_api.py::
+ * test_rotate_carries_the_allowlist_nowhere_and_starts_open). */
 export async function rotateIntakeAddress(propertyId: string): Promise<IntakeAddress> {
   const res = await fetch(`/api/properties/${propertyId}/intake-address/rotate`, {
     method: 'POST',
@@ -851,7 +854,12 @@ export async function setIntakeSenderDomains(
 }
 
 /** The property's recent intake events, newest first. The server caps `limit`
- * at 100 and answers a 422 above that. */
+ * at 100 and answers a 422 above that
+ * (tests/test_intake_address_api.py::test_an_out_of_range_limit_is_refused).
+ * That 422 comes from query validation, so its `detail` is a LIST, not the
+ * string the allowlist PUT sends — see `senderDomainRefusal` in
+ * pages/PropertyConfigPage.tsx, which is why it does not render a detail
+ * verbatim. */
 export function getIntakeEvents(
   propertyId: string,
   limit: number = 20,

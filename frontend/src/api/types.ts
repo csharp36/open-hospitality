@@ -1024,7 +1024,9 @@ export interface IntakeEvent {
  * The property's live address. All four fields are null together, and only on
  * GET, when the property has no active address — the create/rotate/PUT routes
  * answer an address or an error. `sender_domains` is null ("any authenticated
- * sender"), never an empty array.
+ * sender"), never an empty array: an empty list sent to the PUT is stored as
+ * null (tests/test_intake_address_api.py::test_an_empty_allowlist_stores_null),
+ * so callers need not tell `[]` and null apart on the way back.
  */
 export interface IntakeAddress {
   address: string | null

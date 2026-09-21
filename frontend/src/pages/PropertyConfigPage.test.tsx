@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT } from '../test/fixtures'
 import { createAppRouter } from '../router'
@@ -42,7 +42,7 @@ const EVENTS: IntakeEvent[] = [
     event_id: 2,
     received_at: '2026-07-08T04:05:00Z',
     envelope_from: 'newest@pms.test',
-    subject: 'Night audit',
+    subject: null,
     outcome: 'no_attachment',
     message_id: '<two@pms.test>',
     attachments: [],
@@ -51,7 +51,7 @@ const EVENTS: IntakeEvent[] = [
     event_id: 1,
     received_at: '2026-07-07T04:00:00Z',
     envelope_from: 'oldest@pms.test',
-    subject: 'Night audit',
+    subject: 'Night Audit 2026-07-07 HISJ',
     outcome: 'ingested',
     message_id: '<one@pms.test>',
     attachments: [{ name: 'f.pdf', sha256: 'aa', bytes: 3, outcome: 'ingested', batch_id: 7 }],
@@ -96,6 +96,13 @@ beforeEach(() => {
   vi.mocked(getFiscalPeriods).mockResolvedValue({ periods: [] })
   vi.mocked(getIntakeAddress).mockResolvedValue(NO_ADDRESS)
   vi.mocked(getIntakeEvents).mockResolvedValue({ events: [] })
+})
+
+afterEach(() => {
+  // jsdom has no clipboard, and the copy cases install one. Take it back off
+  // the shared window so a later case still exercises the absent-clipboard
+  // path it is named for.
+  Reflect.deleteProperty(navigator, 'clipboard')
 })
 
 describe('PropertyConfigPage', () => {
@@ -167,12 +174,32 @@ describe('PropertyConfigPage night-audit email section', () => {
     expect(field).toHaveAttribute('readonly')
     expect(screen.queryByRole('button', { name: 'Create address' })).toBeNull()
 
-    const rows = screen.getAllByRole('row').filter((r) => r.closest('table')?.getAttribute('aria-label') === 'Night-audit intake events')
+    // Reached by its visible caption, not an aria-label.
+    const table = screen.getByRole('table', { name: 'Last 20 messages' })
+    const rows = within(table).getAllByRole('row')
     // [0] is the header; the newest message leads the body.
     expect(rows[1]).toHaveTextContent('newest@pms.test')
     expect(rows[1]).toHaveTextContent('no attachment')
     expect(rows[2]).toHaveTextContent('oldest@pms.test')
     expect(rows[2]).toHaveTextContent('ingested')
+    // The subject is carried through — it is how an operator picks a message
+    // out — and a message without one says so rather than showing a gap.
+    expect(rows[2]).toHaveTextContent('Night Audit 2026-07-07 HISJ')
+    expect(rows[1]).toHaveTextContent('(no subject)')
+  })
+
+  it('lists each attachment by name with its own outcome', async () => {
+    vi.mocked(getIntakeAddress).mockResolvedValue(ADDRESS)
+    vi.mocked(getIntakeEvents).mockResolvedValue({ events: EVENTS })
+    renderPage()
+
+    const table = await screen.findByRole('table', { name: 'Last 20 messages' })
+    const rows = within(table).getAllByRole('row')
+    // The ingested message names its file and how that file fared.
+    expect(rows[2]).toHaveTextContent('f.pdf')
+    expect(within(rows[2]!).getByText(/f\.pdf — ingested/)).toBeInTheDocument()
+    // The message that carried nothing shows an em dash, not a stray filename.
+    expect(rows[1]).not.toHaveTextContent('f.pdf')
   })
 
   it('creates the address on demand', async () => {
@@ -248,6 +275,21 @@ describe('PropertyConfigPage night-audit email section', () => {
     expect(setIntakeSenderDomains).not.toHaveBeenCalled()
   })
 
+  it('saves the sender domains on Enter as well as on blur', async () => {
+    vi.mocked(getIntakeAddress).mockResolvedValue(ADDRESS)
+    vi.mocked(setIntakeSenderDomains).mockResolvedValue({
+      ...ADDRESS, sender_domains: ['pms.test', 'other.test'],
+    })
+    renderPage()
+
+    const field = await screen.findByLabelText('Allowed sender domains')
+    fireEvent.change(field, { target: { value: 'PMS.test, other.test, ' } })
+    fireEvent.keyDown(field, { key: 'Enter' })
+    await waitFor(() => {
+      expect(setIntakeSenderDomains).toHaveBeenCalledWith('HISJ', ['PMS.test', 'other.test'])
+    })
+  })
+
   it('shows a 422 refusal beside the sender-domain field', async () => {
     vi.mocked(getIntakeAddress).mockResolvedValue(ADDRESS)
     vi.mocked(setIntakeSenderDomains).mockRejectedValue(
@@ -261,6 +303,56 @@ describe('PropertyConfigPage night-audit email section', () => {
     expect(await screen.findByText(/not a sender domain: 'nope'/)).toBeInTheDocument()
   })
 
+  it('reports a list-shaped 422 detail by status rather than stringifying it', async () => {
+    // FastAPI spells a query-validation refusal as a LIST of error objects.
+    // Only a string detail names an offending entry; anything else must not
+    // reach the operator as "[object Object]" or a JSON dump.
+    vi.mocked(getIntakeAddress).mockResolvedValue(ADDRESS)
+    vi.mocked(setIntakeSenderDomains).mockRejectedValue(
+      new ApiError(422, '[{"loc":["query","limit"]}]', [{ loc: ['query', 'limit'] }]),
+    )
+    renderPage()
+
+    const field = await screen.findByLabelText('Allowed sender domains')
+    fireEvent.change(field, { target: { value: 'other.test' } })
+    fireEvent.blur(field)
+
+    expect(await screen.findByText('Save failed (HTTP 422).')).toBeInTheDocument()
+    expect(screen.queryByText(/object Object/)).toBeNull()
+    expect(screen.queryByText(/"loc"/)).toBeNull()
+  })
+
+  it('re-reads the address when a rotate is refused with 404', async () => {
+    // 404 from rotate means only that the address was revoked elsewhere, so
+    // the section resyncs instead of leaving a dead form up.
+    vi.mocked(getIntakeAddress).mockResolvedValueOnce(ADDRESS).mockResolvedValue(NO_ADDRESS)
+    vi.mocked(rotateIntakeAddress).mockRejectedValue(
+      new ApiError(404, 'this property has no active intake address'),
+    )
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rotate address' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm rotation' }))
+
+    await waitFor(() => { expect(vi.mocked(getIntakeAddress).mock.calls.length).toBeGreaterThan(1) })
+    expect(await screen.findByRole('button', { name: 'Create address' })).toBeInTheDocument()
+  })
+
+  it('keeps a create refusal with the branch that raised it', async () => {
+    // A 409 means the address now exists: the refetch replaces the whole
+    // no-address branch, so the "Create failed" banner must go with it.
+    vi.mocked(getIntakeAddress).mockResolvedValueOnce(NO_ADDRESS).mockResolvedValue(ADDRESS)
+    vi.mocked(createIntakeAddress).mockRejectedValue(
+      new ApiError(409, 'this property already has an active intake address'),
+    )
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create address' }))
+    expect(await screen.findByLabelText('Night-audit email address'))
+      .toHaveValue('na-abc@intake.example.test')
+    expect(screen.queryByText(/Create failed/)).toBeNull()
+  })
+
   it('copies the address to the clipboard', async () => {
     const writeText = vi.fn<(text: string) => Promise<void>>().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
@@ -270,6 +362,19 @@ describe('PropertyConfigPage night-audit email section', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Copy' }))
     expect(writeText).toHaveBeenCalledWith('na-abc@intake.example.test')
     expect(await screen.findByText('Copied')).toBeInTheDocument()
+  })
+
+  it('falls back to a message when there is no clipboard', async () => {
+    // No clipboard is the default here (afterEach removes any the cases above
+    // installed), which is also an insecure-context browser. The click must
+    // say so rather than throw.
+    expect(navigator.clipboard).toBeUndefined()
+    vi.mocked(getIntakeAddress).mockResolvedValue(ADDRESS)
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Copy' }))
+    expect(await screen.findByText(/Could not copy/)).toBeInTheDocument()
+    expect(screen.queryByText('Copied')).toBeNull()
   })
 
   it('renders an empty event log as "No messages yet"', async () => {

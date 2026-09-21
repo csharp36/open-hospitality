@@ -7,7 +7,9 @@ import {
   getPropertyConfig, removeOoo, rotateIntakeAddress, setFiscalCalendar, setIntakeSenderDomains,
   setInventory,
 } from '../api/client'
-import { OOO_REASONS, type FiscalConfig, type IntakeEvent } from '../api/types'
+import {
+  OOO_REASONS, type FiscalConfig, type IntakeEvent, type IntakeOutcome,
+} from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
 
@@ -535,9 +537,11 @@ const quietButtonClass =
 const dangerButtonClass =
   'rounded-control border border-line px-2 py-1 text-xs text-danger-red hover:bg-surface-sunken disabled:opacity-50'
 
-/** The raw outcome as the API spells it, underscores opened out. The set of
- * outcomes is closed by `IntakeOutcome` in api/types.ts. */
-function outcomeLabel(outcome: string): string {
+/** The raw outcome as the API spells it, underscores opened out. Taking
+ * `IntakeOutcome` rather than a string is what keeps the set closed here: an
+ * outcome the API grows that api/types.ts has not been told about stops at
+ * this signature instead of being rendered as whatever text arrived. */
+function outcomeLabel(outcome: IntakeOutcome): string {
   return outcome.replace(/_/g, ' ')
 }
 
@@ -616,10 +620,14 @@ function IntakeSection({ propertyId }: { propertyId: string }) {
           >
             Create address
           </button>
+          {/* Inside the no-address branch on purpose: a 409 means the address
+              now exists, and the refetch that follows replaces this whole
+              branch — a banner outside it would outlive the failure it
+              describes and sit beside the address that answered it. */}
+          {create.isError && (
+            <p className="text-sm text-danger-red">Create failed: {errorMessage(create.error)}</p>
+          )}
         </div>
-      )}
-      {create.isError && (
-        <p className="mt-2 text-sm text-danger-red">Create failed: {errorMessage(create.error)}</p>
       )}
 
       {live !== undefined && live.address !== null && (
@@ -636,9 +644,6 @@ function IntakeSection({ propertyId }: { propertyId: string }) {
       )}
 
       <div className="mt-4 border-t border-line pt-4">
-        <h3 className="mb-2 text-xs font-semibold text-ink-muted">
-          Last {INTAKE_EVENT_LIMIT} messages
-        </h3>
         {events.isError && (
           <p className="text-sm text-danger-red">
             Failed to load the message log: {errorMessage(events.error)}
@@ -835,11 +840,18 @@ function IntakeEventTable({ events }: { events: IntakeEvent[] }) {
     return <p className="text-sm text-ink-muted">No messages yet.</p>
   }
   return (
-    <table className={tableClass} aria-label="Night-audit intake events">
+    // The caption both heads the log on screen and names the table for a
+    // screen reader — one visible string doing both jobs, so there is no
+    // aria-label here to drift away from what is drawn.
+    <table className={tableClass}>
+      <caption className="mb-2 text-left text-xs font-semibold text-ink-muted">
+        Last {INTAKE_EVENT_LIMIT} messages
+      </caption>
       <thead>
         <tr className="border-b border-line">
           <th className={headCellClass}>Received</th>
           <th className={headCellClass}>From</th>
+          <th className={headCellClass}>Subject</th>
           <th className={headCellClass}>Outcome</th>
           <th className={headCellClass}>Attachments</th>
         </tr>
@@ -849,6 +861,11 @@ function IntakeEventTable({ events }: { events: IntakeEvent[] }) {
           <tr key={event.event_id} className="border-b border-line last:border-0">
             <td className={cellClass}>{new Date(event.received_at).toLocaleString()}</td>
             <td className={cellClass}>{event.envelope_from}</td>
+            {/* The subject is how an operator recognizes a message; a PMS that
+                sends none still has to be tellable from one that did. */}
+            <td className={cellClass}>
+              {event.subject ?? <span className="text-ink-muted">(no subject)</span>}
+            </td>
             <td className={cellClass}>{outcomeLabel(event.outcome)}</td>
             <td className={cellClass}>
               {event.attachments.length === 0 ? (
