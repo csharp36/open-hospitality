@@ -39,6 +39,13 @@ dig +short MX intake.mandati.ai
 # expect route1.mx.cloudflare.net, route2..., route3...
 ```
 
+Enabling a subdomain writes more than those three. Cloudflare also adds a
+`cf-bounce` MX for the subdomain's bounce handling, an SPF TXT record, and the
+DKIM and DMARC records Email Routing needs. Leave all of them; deleting the
+SPF or DKIM record does not stop mail arriving, it just degrades the
+`Authentication-Results` header the sender policy is built on, and the symptom
+shows up much later as `sender_rejected`.
+
 Whatever subdomain you choose here must be the same string as
 `USALI_EMAIL_INTAKE_DOMAIN` in `scripts/cloud/deploy_app.sh` —
 `intake_api._resolve_address` compares the envelope recipient's domain against
@@ -49,8 +56,18 @@ nothing.
 
 **Email → Email Routing → Destination addresses → Add.** Cloudflare mails a
 confirmation link to it; a destination that has not been confirmed cannot be
-forwarded to, and the worker's forward will simply fail. Confirm it, and
-re-read the warning above about what that mailbox will hold.
+forwarded to. Confirm it, and re-read the warning above about what that mailbox
+will hold.
+
+**Do not skip this, and do not leave the address blank later.** A forward to an
+unset or unverified destination *rejects*, and that rejection escapes the
+worker's `email()` handler — which means the message is not quietly dropped,
+it is **failed back to the sender**, who sees a bounce or a retry. A bounce to
+a PMS's automated sender is exactly what D-OH23.1 refuses to produce, so a
+broken fallback is worse than no fallback: it turns the safety net into the
+one behavior the design rules out. The deploy workflow refuses to run if
+`EMAIL_INTAKE_FALLBACK` is empty, but it cannot tell whether the address was
+ever confirmed.
 
 Note the address down — it is the `EMAIL_INTAKE_FALLBACK` GitHub secret in
 step 5.
@@ -65,6 +82,13 @@ deploy a Worker. Create a **second** token
 | --- | --- |
 | Account → Workers Scripts | Edit |
 | Zone → Email Routing Rules | Edit (zone `mandati.ai`) |
+
+**Issue it on the same Cloudflare account as the `CLOUDFLARE_ACCOUNT_ID` repo
+secret.** The workflow passes that account id to wrangler alongside this
+token; a token minted on a different account (easy to do with more than one in
+the dashboard's account switcher) authenticates fine and then fails on the
+account id, or — worse — succeeds against the wrong account and deploys a
+worker nobody is looking for.
 
 Store it as the repo secret `CLOUDFLARE_WORKERS_API_TOKEN`. Leave the Pages
 token alone — two narrow tokens, so the deploy that runs on every marketing
@@ -96,8 +120,12 @@ gcloud secrets add-iam-policy-binding usali-email-intake-secret \
   --role roles/secretmanager.secretAccessor
 ```
 
-`printf '%s'`, not `echo`: a trailing newline is part of an HMAC key and the
-mismatch it causes is invisible everywhere except a wall of 401s.
+**`printf '%s'`, not `echo`, and it matters on this side only.** `wrangler
+secret put` trims trailing whitespace off what it reads from stdin; Secret
+Manager stores exactly the bytes it is given. So a newline added to *both*
+sides cancels out, and a newline added *here alone* — which is what `echo`
+does — leaves the app signing with a key one byte longer than the worker's.
+Every message then 401s, and nothing anywhere prints a reason.
 
 Create the secret **before** the next `deploy_app.sh` run — the `--set-secrets`
 line that mounts it is what fails if it is missing. It also has to exist before
@@ -110,26 +138,47 @@ complain — see the comment beside `USALI_EMAIL_INTAKE_SECRET` in that script.
 ### 5. Add the two GitHub secrets and deploy the worker
 
 `EMAIL_INTAKE_SECRET` (step 4) and `EMAIL_INTAKE_FALLBACK` (step 2), then
-dispatch **Actions → Deploy email intake worker → Run workflow**. It runs the
-tests, puts both worker secrets, and uploads the worker.
+dispatch **Actions → Deploy email intake worker → Run workflow**. It refuses to
+run if either secret is empty, runs the tests, puts both worker secrets, and
+uploads the worker.
 
-### 6. Point the catch-all rule at the worker
+The job declares `environment: email-intake`. GitHub creates that environment
+on the first run; if you want a second pair of eyes on anything that can
+rewrite mail handling, add required reviewers to it (repo → Settings →
+Environments → email-intake) and every future dispatch will wait for approval.
 
-Only now, once the worker exists and has its secrets: **Email → Email Routing →
-Routing rules → Catch-all address** for `intake.mandati.ai` → action **Send to
-a Worker** → `oh-email-intake`. Enable it.
+### 6. Redeploy the app — **before** the routing rule
+
+`scripts/cloud/deploy_app.sh` now carries `USALI_EMAIL_INTAKE_DOMAIN` and
+mounts `USALI_EMAIL_INTAKE_SECRET`. Until it has run, the app is verifying
+signatures against the committed dev default and resolving addresses at
+`intake.example.test`.
+
+**This is why it comes before the catch-all rule.** Turn routing on first and
+every message in the gap is signed with the real secret, refused by an app
+still holding the dev default, and forwarded — unredacted — into the ops
+mailbox. Nothing is lost, but somebody has to re-deliver a night's reports by
+hand, and the fallback mailbox fills with exactly the content it exists to
+minimize.
+
+While you are here, check `cloudflare/email-intake/wrangler.toml`'s
+`INTAKE_URL` is the app host you just deployed. A wrong origin has no other
+symptom: the worker signs correctly, gets a non-2xx or a connection error from
+a host that is not the app, and forwards every message to the fallback mailbox
+unredacted. The intake events page stays empty, which reads like "no mail
+arrived" rather than "mail arrived and went somewhere else".
+
+### 7. Point the catch-all rule at the worker
+
+Only now, with the worker deployed and the app expecting the real secret:
+**Email → Email Routing → Routing rules → Catch-all address** for
+`intake.mandati.ai` → action **Send to a Worker** → `oh-email-intake`. Enable
+it.
 
 The catch-all is deliberate: addresses are minted per property in the app and
 Email Routing never needs to learn about them. Mail to a local part nothing
 answers to still reaches the worker, gets posted, and comes back
 `unknown_address` with nothing stored.
-
-### 7. Redeploy the app
-
-`scripts/cloud/deploy_app.sh` now carries `USALI_EMAIL_INTAKE_DOMAIN` and
-mounts `USALI_EMAIL_INTAKE_SECRET`. Until it has run, the app is verifying
-signatures against the dev default and resolving addresses at
-`intake.example.test`.
 
 ### 8. Send a real test message — and save its header here
 
@@ -156,9 +205,17 @@ Authentication-Results: <paste the real header from the first test message>
      check the assumption instead of re-deriving it. -->
 
 Work through the refusals too, so the failure modes are seen once on purpose
-rather than first at 3am: mail from a domain outside a configured
-`sender_domains` list (`sender_rejected`), mail to a rotated address
-(`revoked_address`), and the same message twice (`duplicate`).
+rather than first at 3am:
+
+- **`sender_rejected`.** This one needs setting up first: an address with no
+  `sender_domains` allowlist accepts any DKIM- or SPF-authenticated sender, so
+  there is nothing to reject. Set the allowlist on the property page's intake
+  address (the same place the address itself is shown) to the PMS's sending
+  domain, then mail from anywhere else.
+- **`revoked_address`.** Rotate the address on the property page, then mail to
+  the old one. It is recorded, not dropped — that row is the evidence a PMS is
+  still sending somewhere stale.
+- **`duplicate`.** Send the same message twice.
 
 ---
 
@@ -210,8 +267,9 @@ the raw message in-process** — do not just repoint the header.
 The worker and the app must hold the same value, and there is a window between
 the two writes when they will not.
 
-1. Add the new value to GCP Secret Manager (`gcloud secrets versions add`) and
-   redeploy the app. The app now expects the new secret.
+1. Add the new value to GCP Secret Manager — `printf '%s' | gcloud secrets
+   versions add`, never `echo`, for the reason in step 4 — and redeploy the
+   app. The app now expects the new secret.
 2. Update the `EMAIL_INTAKE_SECRET` GitHub secret and dispatch **Deploy email
    intake worker**.
 
@@ -230,7 +288,10 @@ In order, cheapest first:
    the worker. Check the catch-all rule is enabled and still points at
    `oh-email-intake`, and that the subdomain's MX records are intact.
 3. **Everything 401s?** The two copies of the secret have drifted. See the
-   rotation section — most often a trailing newline on one side.
+   rotation section — most often a trailing newline on the GCP copy, which
+   `wrangler secret put` would have trimmed off the worker's.
+   Also check `wrangler.toml`'s `INTAKE_URL` still names the app: a worker
+   pointed at the wrong origin looks identical from here.
 4. **`unknown_address` on the property page?** The address was rotated or
    belongs to another property. The current one is on the property page.
 5. **`sender_rejected`?** Read the event's `auth_result`. Either the sender's

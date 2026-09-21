@@ -69,13 +69,49 @@ jobs:
       # commit was green.
       - run: npm test
 
+      # An unset repo secret is the empty string, and GitHub gives no warning
+      # for one. Both failure modes are quiet and expensive:
+      #
+      #   INTAKE_SECRET   empty -> every message 401s and lands in the
+      #                   fallback mailbox, unredacted.
+      #   FALLBACK_ADDRESS empty -> `message.forward("")` REJECTS, and that
+      #                   rejection escapes the worker's email() handler. The
+      #                   sender then sees an error — a bounce or a retry to
+      #                   a PMS's automated address, which is exactly what
+      #                   D-OH23.1 refuses to produce. Worse than the first.
+      #
+      # So the job stops here rather than deploying a worker that cannot work.
+      - name: Refuse to deploy without both secrets
+        env:
+          INTAKE_SECRET: ${{ secrets.EMAIL_INTAKE_SECRET }}
+          FALLBACK: ${{ secrets.EMAIL_INTAKE_FALLBACK }}
+        run: |
+          set -euo pipefail
+          [ -n "$INTAKE_SECRET" ] || {
+            echo "::error::EMAIL_INTAKE_SECRET is unset — see docs/runbooks/email-intake.md step 4"
+            exit 1
+          }
+          [ -n "$FALLBACK" ] || {
+            echo "::error::EMAIL_INTAKE_FALLBACK is unset — see docs/runbooks/email-intake.md step 2"
+            exit 1
+          }
+
       # Secrets BEFORE deploy, so the first version of the worker that exists
       # already has both. A worker that started without INTAKE_SECRET would
       # sign with `undefined` and every message would 401 into the fallback
-      # mailbox.
+      # mailbox. On a FIRST run there is no worker yet, and that is fine:
+      # `secret put` catches isWorkerNotFoundError and calls createDraftWorker
+      # before retrying (wrangler 4.136.1, wrangler-dist/cli.js ~299209), so
+      # the draft exists to hold the secrets and `deploy` below fills it in.
       #
-      # `printf '%s'` rather than `echo`: a trailing newline inside an HMAC
-      # key is a different key, and it would be invisible in every log.
+      # `printf '%s'` rather than `echo`, though NOT because wrangler would
+      # keep the newline — it trims trailing whitespace off stdin
+      # (`trimTrailingWhitespace(readFromStdin())`, cli.js ~299168). The
+      # asymmetry is what matters: GCP Secret Manager stores exactly the bytes
+      # it is given. A newline added on both sides cancels out; one added only
+      # on the GCP side is a permanent 401 that nothing prints. Spelling both
+      # sides the same way is what keeps that from being a question.
+      #
       # The values go through `env:` rather than being interpolated into the
       # script, so nothing secret is ever part of a command line.
       - name: Put INTAKE_SECRET

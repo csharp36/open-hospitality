@@ -21,6 +21,17 @@ const encoder = new TextEncoder();
  * @returns {Promise<string>} the MAC as lowercase hex, with no `sha256=` prefix
  */
 export async function sign(secret, timestamp, bodyBytes) {
+  // A string here would be a silent catastrophe rather than an error: a
+  // string has no `.length` in bytes that `Uint8Array.prototype.set` can use,
+  // so `signed.set(bodyBytes, ...)` writes nothing and the body is MAC'd as a
+  // run of zero bytes — every message would sign identically and the app
+  // would refuse all of them. Fail loudly instead.
+  // Pinned by test/sign.test.js's "a string body is refused, not signed as
+  // zeros".
+  if (!ArrayBuffer.isView(bodyBytes)) {
+    throw new TypeError("sign() needs the body as a Uint8Array, not a string");
+  }
+
   const key = await crypto.subtle.importKey(
     "raw",
     encoder.encode(secret),
@@ -31,7 +42,8 @@ export async function sign(secret, timestamp, bodyBytes) {
 
   // The separator is part of the signed bytes, not a formatting nicety: it is
   // what stops a timestamp/body pair being re-cut into a different pair with
-  // the same MAC.
+  // the same MAC. test/sign.test.js's "the separator is signed: the timestamp
+  // cannot be recut into the body" is the case that fails without it.
   const prefix = encoder.encode(`${timestamp}\n`);
   const signed = new Uint8Array(prefix.length + bodyBytes.length);
   signed.set(prefix, 0);

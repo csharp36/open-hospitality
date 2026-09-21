@@ -37,6 +37,18 @@ test("a different secret gives a different MAC", async () => {
   assert.notEqual(await sign("s2", TIMESTAMP, bytes(BODY)), EXPECTED);
 });
 
+test("a string body is refused, not signed as zeros", async () => {
+  // `Uint8Array.prototype.set` ignores a string, so without the guard this
+  // would quietly MAC a run of zero bytes — the same MAC for every message.
+  await assert.rejects(() => sign(SECRET, TIMESTAMP, BODY), TypeError);
+  await assert.rejects(() => sign(SECRET, TIMESTAMP, undefined), TypeError);
+
+  // And the zeros it would otherwise have produced are not the right answer,
+  // which is what makes the guard worth having rather than pedantry.
+  const zeros = await sign(SECRET, TIMESTAMP, new Uint8Array(BODY.length));
+  assert.notEqual(zeros, EXPECTED);
+});
+
 test("an empty body signs", async () => {
   const hex = await sign(SECRET, TIMESTAMP, new Uint8Array(0));
   assert.match(hex, /^[0-9a-f]{64}$/);

@@ -168,6 +168,47 @@ test("a missing Authentication-Results is sent as an empty header", async () => 
   assert.equal(calls[0].init.headers["X-Intake-Auth"], "");
 });
 
+test("a redirect is never followed: it forwards, like any other non-2xx", async () => {
+  // The stub MODELS a redirect-following runtime rather than just handing
+  // back a 307, because that is the behavior at issue: under the default
+  // `redirect: "follow"` the runtime re-POSTs the raw message and its valid
+  // signature to the Location host, and a 2xx from there reads as "disposed
+  // of" — the message would never reach the fallback mailbox, and an
+  // unredacted night audit would have been sent off-origin. Asserting only
+  // that a 307 forwards would pass with the fix reverted.
+  const REDIRECT_TO = "https://attacker.example.test/collect";
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    if (url === REDIRECT_TO) {
+      return ok();
+    }
+    if (init.redirect === "manual") {
+      return new Response("", {
+        status: 307,
+        headers: { location: REDIRECT_TO },
+      });
+    }
+    // "follow" (and the default): the runtime chases it for us.
+    return globalThis.fetch(REDIRECT_TO, init);
+  };
+  const message = fakeMessage();
+
+  await worker.email(message, ENV, {});
+
+  assert.equal(calls.length, 1, "the message must not be re-POSTed off-origin");
+  assert.equal(calls[0].url, ENV.INTAKE_URL);
+  assert.deepEqual(message.forwarded, [FALLBACK]);
+  assert.deepEqual(logged, []);
+});
+
+test("the fetch init asks for manual redirect handling", async () => {
+  stubFetch(ok);
+
+  await worker.email(fakeMessage(), ENV, {});
+
+  assert.equal(calls[0].init.redirect, "manual");
+});
+
 test("a non-2xx forwards to the fallback", async () => {
   stubFetch(() => new Response("nope", { status: 500 }));
   const message = fakeMessage();
@@ -185,6 +226,9 @@ test("a 401 forwards too — a refused signature is not a disposition", async ()
   await worker.email(message, ENV, {});
 
   assert.deepEqual(message.forwarded, [FALLBACK]);
+  // A 4xx is the tempting place to bounce — the app "said no". It is the one
+  // place that must not: a 401 means the app never looked at the message.
+  assert.deepEqual(message.rejected, []);
 });
 
 test("a fetch that throws forwards to the fallback", async () => {
@@ -238,25 +282,63 @@ test("a message exactly at MAX_BYTES is posted, not forwarded", async () => {
 });
 
 test("setReject is never called, on any path", async () => {
+  // The 4xx entries carry their weight: rejecting only on a status the app
+  // chose deliberately (`if (response.status < 500) message.setReject(...)`)
+  // is the plausible mistake, and a paths list of 2xx/5xx/throw would pass
+  // straight through it. A bounce to a PMS's automated sender is silent, so
+  // there is no status that earns one.
   const paths = [
-    () => stubFetch(ok),
-    () => stubFetch(() => new Response("", { status: 500 })),
-    () => {
+    ["2xx", () => stubFetch(ok)],
+    ["401 bad signature or stale timestamp", () =>
+      stubFetch(() => new Response("", { status: 401 }))],
+    ["413 over the app's body cap", () =>
+      stubFetch(() => new Response("", { status: 413 }))],
+    ["429 flood", () => stubFetch(() => new Response("", { status: 429 }))],
+    ["307 redirect", () =>
+      stubFetch(
+        () =>
+          new Response("", {
+            status: 307,
+            headers: { location: "https://elsewhere.example.test/" },
+          }),
+      )],
+    ["500", () => stubFetch(() => new Response("", { status: 500 }))],
+    ["fetch threw", () => {
       globalThis.fetch = async () => {
         throw new TypeError("network");
       };
-    },
+    }],
   ];
-  for (const arrange of paths) {
+  for (const [label, arrange] of paths) {
     arrange();
     const message = fakeMessage();
     await worker.email(message, ENV, {});
-    assert.deepEqual(message.rejected, []);
+    assert.deepEqual(message.rejected, [], `setReject called on ${label}`);
   }
 
   const oversized = fakeMessage({ raw: new Uint8Array(500) });
   await worker.email(oversized, { ...ENV, MAX_BYTES: 64 }, {});
-  assert.deepEqual(oversized.rejected, []);
+  assert.deepEqual(oversized.rejected, [], "setReject called over MAX_BYTES");
+
+  const misconfigured = fakeMessage();
+  await worker.email(misconfigured, { ...ENV, MAX_BYTES: undefined }, {});
+  assert.deepEqual(misconfigured.rejected, [], "setReject called on bad config");
+});
+
+test("a MAX_BYTES that is not a number forwards without POSTing", async () => {
+  // `undefined` and "twenty" are the dangerous shape: they give NaN, which
+  // loses every comparison, so without the guard an unset MAX_BYTES would
+  // REMOVE the cap rather than tighten it. "" and null coerce to 0 and take
+  // the ordinary over-the-cap path. Either way nothing is POSTed.
+  stubFetch(ok);
+
+  for (const bad of [undefined, "", "twenty", null]) {
+    calls = [];
+    const message = fakeMessage();
+    await worker.email(message, { ...ENV, MAX_BYTES: bad }, {});
+    assert.deepEqual(calls, [], `POSTed with MAX_BYTES=${String(bad)}`);
+    assert.deepEqual(message.forwarded, [FALLBACK]);
+  }
 });
 
 test("the message is forwarded at most once", async () => {

@@ -25,6 +25,15 @@ AUTH_HOST="${AUTH_HOST:-auth.example.com}"
 # invite job needs this explicitly. Placeholder here; the deploy workflow
 # supplies the real host (DEMO_APP_HOST=demo.mandati.ai).
 APP_HOST="${APP_HOST:-app.example.com}"
+# The subdomain every property's intake address is minted under (OH-23). Unlike
+# AUTH_HOST and APP_HOST this defaults to the REAL host rather than an
+# *.example.com placeholder, so `_refuse_placeholder_host` below would never
+# fire on it and is deliberately not called: the value is not a credential and
+# not a host anyone logs in to, and the Cloudflare side of it
+# (docs/runbooks/email-intake.md) is committed to this same subdomain. Override
+# it when the Email Routing subdomain is not this one — it must match what
+# Email Routing is enabled on, or every message resolves to no address.
+INTAKE_HOST="${INTAKE_HOST:-intake.mandati.ai}"
 
 # The *.example.com defaults are what an open-core repo can commit -- they are
 # NOT something that can be deployed. Refuse rather than default into them.
@@ -141,7 +150,7 @@ COMMON_ENV+=",USALI_KC_ADMIN_BASE_URL=${AUTH_URL}"
 # envelope recipient's domain against it, so an address at any other domain
 # resolves nothing. The Cloudflare Email Routing side of it is
 # docs/runbooks/email-intake.md; the two must name the same subdomain.
-COMMON_ENV+=",USALI_EMAIL_INTAKE_DOMAIN=intake.mandati.ai"
+COMMON_ENV+=",USALI_EMAIL_INTAKE_DOMAIN=${INTAKE_HOST}"
 # Both the serving revision (signup request + OTP) and the invite job send mail,
 # so the notifier config is shared. `notifier_from_settings` REFUSES to build an
 # smtp notifier without a host and a From, which is why this is all-or-nothing:
@@ -190,6 +199,12 @@ APP_SECRETS+=",USALI_PROVISIONER_DB_PASSWORD=usali-provisioner-db-password:lates
 # into the worker as INTAKE_SECRET. Rotate one without the other and every
 # message 401s and piles up in the ops fallback mailbox, unredacted. The
 # rotation order is in docs/runbooks/email-intake.md.
+#
+# A TRAILING NEWLINE ONLY BITES ON THIS SIDE. `wrangler secret put` trims
+# trailing whitespace off stdin, and Secret Manager does not trim anything —
+# so `echo` into `gcloud secrets versions add` stores a value the worker will
+# never send, and every message 401s with nothing in any log to say why.
+# Create versions with `printf '%s'`; the runbook spells the command out.
 #
 # CREATE THE SECRET BEFORE USALI_ENV=prod IS EVER TURNED ON.
 # `config._DEV_DEFAULT_SECRETS` lists `email_intake_secret`, and

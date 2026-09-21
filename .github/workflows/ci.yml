@@ -99,10 +99,11 @@ jobs:
           cache: 'npm'
           cache-dependency-path: cloudflare/email-intake/package-lock.json
       - run: npm ci
-      # `node --test` only: the worker's two source files use nothing beyond
-      # crypto.subtle, fetch, ReadableStream and Headers, all of which Node 22
-      # has as globals, so these tests need neither wrangler nor a network.
-      # The wrangler devDependency exists for the deploy workflow, not this.
+      # `node --test`, with no wrangler and no network. That the worker's
+      # runtime surface is available on plain Node 22 is not asserted in a
+      # comment here — this step passing IS the assertion, and it is the step
+      # that fails if the worker ever reaches for something only the Workers
+      # runtime has. The wrangler devDependency is the deploy workflow's.
       - run: npm test
 
   image:

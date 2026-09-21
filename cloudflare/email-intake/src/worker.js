@@ -76,11 +76,16 @@ async function readCapped(stream, maxBytes) {
 /**
  * Log what the app said it did with the message, and nothing else.
  *
- * The response is re-serialized from parsed JSON rather than logged as text,
- * so a response that is not the documented `{outcome, attachments}` object
- * cannot put arbitrary bytes in the log line. Never throws: the message has
- * already been accepted by the time this runs, and a logging failure is not a
- * reason to mail it to a human.
+ * The response is parsed as JSON and re-serialized rather than logged as
+ * text. That buys one specific property and no more: whatever is logged is
+ * valid JSON with its control characters escaped, so a response cannot inject
+ * newlines and forge extra log lines. It does NOT bound the length, and it
+ * does not vouch for the content — a response that parsed is logged whatever
+ * it says. What keeps report content out of it is the app: `intake_api._entry`
+ * and `_stored` are where every string in that payload is masked.
+ *
+ * Never throws: the message has already been accepted by the time this runs,
+ * and a logging failure is not a reason to mail it to a human.
  *
  * @param {Response} response
  */
@@ -102,6 +107,17 @@ async function logOutcome(response) {
  */
 async function deliver(message, env) {
   const maxBytes = Number(env.MAX_BYTES);
+
+  // A missing or unparseable MAX_BYTES is a misconfiguration, and the safe
+  // reading of one is the strict one. Without this, `Number(undefined)` is
+  // NaN, every `> NaN` comparison below is false, and the cap silently stops
+  // existing — the worker would read a message of any size into memory and
+  // POST it. Forwarding instead puts the message somewhere a human will see
+  // it, which is what a worker that cannot trust its own config should do.
+  if (!Number.isFinite(maxBytes)) {
+    console.error("MAX_BYTES is not a finite number — refusing to POST");
+    return false;
+  }
 
   // `rawSize` is Cloudflare's own count of the message bytes; when it is
   // present an over-large message costs no read at all.
@@ -133,14 +149,31 @@ async function deliver(message, env) {
         // lands on and whether its sender is allowed (D-OH23.1).
         "X-Intake-To": message.to,
         "X-Intake-From": message.from,
-        // Cloudflare's own SPF/DKIM/DMARC verdicts. Sent as "" when the
-        // header is absent rather than omitted, so the app sees the same
-        // empty string either way; tests/test_intake.py::
-        // test_a_missing_authentication_results_header_is_refused is what
-        // holds an empty header to a refusal there.
+        // Cloudflare's own SPF/DKIM/DMARC verdicts.
+        //
+        // The `?? ""` is not about the app's default — the app already reads
+        // an absent header as "" and `intake_api.receive_email` passes
+        // `sender_allowed(auth_result or None, ...)`, so absent and empty
+        // reach the policy identically, and tests/test_intake.py::
+        // test_a_missing_authentication_results_header_is_refused pins that
+        // a header with nothing in it vouches for nobody.
+        //
+        // It is about THIS side. `Headers.get` answers null for a header the
+        // message does not carry, and a null in a header init is stringified
+        // by the fetch spec: the app would receive the four characters
+        // `null`, a non-empty free-text header handed to a parser. Verified
+        // in Node 22: `new Headers({h: null}).get("h") === "null"`.
         "X-Intake-Auth": message.headers.get("authentication-results") ?? "",
       },
       body,
+      // NEVER follow a redirect. The default, "follow", would re-POST the
+      // whole raw message AND its valid signature to whatever host a 307
+      // names — an unredacted night audit sent off-origin, and a 2xx from
+      // that host would read here as "the app disposed of it", so the
+      // message would not even reach the fallback mailbox. With "manual" a
+      // 3xx arrives as a response whose `.ok` is false, which is already the
+      // forward path below.
+      redirect: "manual",
     });
 
     if (!response.ok) {

@@ -29,6 +29,11 @@ content, and never calls `setReject`. A bounce to a PMS's automated sender is
 silent, so the only two dispositions are "the app took it" and "the fallback
 mailbox has it".
 
+It also never follows a redirect (`redirect: "manual"`). Following one would
+re-POST the raw message and its valid signature to whatever host a 3xx named,
+and a 2xx from there would read as "disposed of" — so the message would not
+even reach the fallback mailbox.
+
 **A non-2xx means forward.** `../../src/usali/intake_api.py` is where the
 status codes are chosen, and it reserves non-2xx for "this service did not
 dispose of the message". Everything the app *did* decide — an unknown address,

@@ -11,9 +11,13 @@ compatibility_date = "2026-09-21"
 [vars]
 INTAKE_URL = "https://demo.mandati.ai/api/intake/email"
 
-# The app's own body cap, `Settings.email_intake_max_bytes` in
-# src/usali/config.py, which defaults to 25 MiB. Over this the worker forwards
-# to the fallback mailbox without POSTing, so raising one side without the
-# other only changes which of the two refuses. Cloudflare's own message limit
-# is the same 25 MiB, so a larger value here buys nothing.
+# The app's own body cap: `Settings.email_intake_max_bytes` in
+# src/usali/config.py is `25 * 1024 * 1024`, and this is the same number. Over
+# it the worker forwards to the fallback mailbox without POSTing, so the two
+# caps agreeing is what makes the worker's refusal and the app's 413 the same
+# boundary rather than two nearby ones.
+#
+# Cloudflare documents its own message limit as 25 MB decimal (25,000,000),
+# marginally BELOW this, so in practice Email Routing refuses an oversized
+# message before the worker ever sees it and this cap is the backstop.
 MAX_BYTES = 26214400
