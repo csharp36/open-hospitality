@@ -27,7 +27,7 @@ from usali.crm_api import router as crm_router
 from usali.crm_feed import CrmFeed
 from usali.db import make_engine, make_session_factory
 from usali.detect import detect_report_signature
-from usali.ingestion import ProcessingError, process_file
+from usali.ingestion import ProcessingError, process_bytes
 from usali.integrations_api import callback_router as integrations_callback_router
 from usali.integrations_api import qbo_redirect_uri
 from usali.integrations_api import router as integrations_router
@@ -323,8 +323,10 @@ def create_app(
     app = FastAPI(
         title="Open Hospitality", docs_url=None, redoc_url=None, openapi_url=None
     )
-    # The night-audit upload runs the same inbox -> process pipeline as
-    # /ingest; the router reads the dirs from app.state.
+    # The night-audit upload files its artifacts exactly where /ingest does;
+    # the router reads the dirs from app.state. `inbox` stays in the triple as
+    # the drop directory `usali watch` polls (cli.py::watch); no route in this
+    # app writes to it — both upload endpoints process from memory.
     app.state.ingest_dirs = (inbox, processed, failed)
     # Per-request sessions (tests inject a factory bound to their engine;
     # the default reads settings once here — the engine connects lazily,
@@ -498,14 +500,13 @@ def create_app(
     async def ingest(request: Request, file: UploadFile) -> dict[str, object]:
         # The request's org-bound factory (L3): the upload lands inside
         # the caller's validated active org — require_active_org stashed
-        # the factory, and both walls confine every row process_file
-        # writes. The session opens BEFORE anything touches the inbox:
-        # opening it is what fires the deferred alias -> org_id
-        # resolution, and a token whose org has no DB row must refuse
-        # (403) leaving NOTHING behind — bytes written first would
-        # dangle un-filed in the inbox for a later `usali watch` (which
-        # drains pre-existing files under the founding org) to ingest
-        # into org 1's data.
+        # the factory, and both walls confine every row process_bytes
+        # writes. The session opens FIRST: opening it is what fires the
+        # deferred alias -> org_id resolution, so a token whose org has
+        # no DB row refuses (403) before any processing, and the failed
+        # IngestBatch and error record a refusable upload produces land
+        # in the caller's own org rather than under whatever org a later
+        # session would resolve.
         factory = request_session_factory(request)
         with factory() as session:
             upload_name = file.filename or "upload"
@@ -525,27 +526,21 @@ def create_app(
                 raise HTTPException(status_code=413, detail="upload too large")
             # Magic bytes, never the suffix: the is_pdf/is_xlsx pair that
             # usali.adaptors.reader.read_words_from_bytes dispatches on, and
-            # ingestion.process_file reads through read_words, so this
-            # boundary and the reader decide a format the same way.
+            # ingestion.process_bytes reads through, so this boundary and the
+            # reader decide a format the same way.
             if not (is_pdf(payload) or is_xlsx(payload)):
                 raise HTTPException(
                     status_code=422, detail=f"upload must be a {ACCEPTED_FORMATS}"
                 )
 
-            inbox.mkdir(parents=True, exist_ok=True)
-            dest = inbox / upload_name
             try:
-                # Exclusive creation prevents a concurrent or repeated upload
-                # from overwriting a report already waiting in the inbox.
-                with dest.open("xb") as staged:
-                    staged.write(payload)
-            except FileExistsError as exc:
-                raise HTTPException(
-                    status_code=409, detail="an upload with that filename is pending"
-                ) from exc
-            try:
-                r = process_file(
-                    session, dest, processed_dir=processed, failed_dir=failed
+                # From memory (design D1): the payload is never written
+                # anywhere. `upload_name` is the display name process_bytes
+                # records as source_file and uses as the artifact stem, which
+                # is why the scrub above still matters.
+                r = process_bytes(
+                    session, payload, upload_name,
+                    processed_dir=processed, failed_dir=failed,
                 )
             except ProcessingError as exc:
                 raise HTTPException(status_code=422, detail=str(exc)) from exc

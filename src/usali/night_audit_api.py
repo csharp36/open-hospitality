@@ -11,8 +11,9 @@ is parsed once up front to check it detects as this property, as one of the
 night's required report types, and as the CURRENT business date — a mismatched
 file is refused with nothing staged
 (the generic /ingest stays unrestricted for backfills and corrections). Only a
-valid file reaches `process_file`, which owns staging, transform, coverage, and
-filing exactly as it does for every other ingest path.
+valid upload reaches `process_bytes`, which owns staging, transform, coverage,
+and filing exactly as it does for every other ingest path. Like /ingest, the
+payload is processed in memory and never written anywhere (design D1).
 
 THE ACCESS RULE, stated once (the property_config_api convention): every
 mutation here — upload, roll, and BOTH corrections (/adjust, /segments) — gates
@@ -27,7 +28,6 @@ by test_the_adjustment_log_is_append_only_by_grant in test_night_audit.py).
 """
 
 import re
-from pathlib import Path
 from datetime import UTC, datetime, timedelta
 
 from collections.abc import Callable
@@ -46,8 +46,13 @@ from usali.adaptors import opera_trial_balance as opera
 from usali.adaptors import skytouch_hotel_journal as sky_journal
 from usali.adaptors import skytouch_hotel_statistics as sky_stats
 from usali.adaptors.pack import split_pack
-from usali.adaptors.pdf import extract_pages
-from usali.adaptors.reader import ACCEPTED_FORMATS, is_pdf, is_xlsx, read_words
+from usali.adaptors.pdf import extract_pages_from_bytes
+from usali.adaptors.reader import (
+    ACCEPTED_FORMATS,
+    is_pdf,
+    is_xlsx,
+    read_words_from_bytes,
+)
 from usali.auth import (
     ORG_ADMIN,
     PROPERTY_GM,
@@ -57,7 +62,7 @@ from usali.auth import (
     require_operator,
 )
 from usali.detect import Detection, detect, load_registry
-from usali.ingestion import ProcessingError, process_file, process_pack
+from usali.ingestion import ProcessingError, process_bytes, process_pack_bytes
 from usali.segment_promote import (
     SegmentMappingError,
     SegmentReconciliationError,
@@ -191,9 +196,9 @@ async def upload_night_audit_report(
     payload = await file.read(_MAX_UPLOAD_BYTES + 1)
     if len(payload) > _MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=413, detail="upload too large")
-    # The /ingest magic-byte refusal, mirrored — and checked BEFORE the inbox
-    # write below, so a blob that is neither format never touches the
-    # filesystem at all. The same is_pdf/is_xlsx pair read_words dispatches on.
+    # The /ingest magic-byte refusal, mirrored: a blob that is neither format
+    # is refused before it reaches the pipeline at all. The same is_pdf/is_xlsx
+    # pair read_words_from_bytes dispatches on.
     if not (is_pdf(payload) or is_xlsx(payload)):
         raise HTTPException(status_code=422, detail=f"upload must be a {ACCEPTED_FORMATS}")
 
@@ -203,36 +208,31 @@ async def upload_night_audit_report(
         prop = _get_property(session, property_id)
         state = get_or_init_state(session, prop)
 
-        inbox.mkdir(parents=True, exist_ok=True)
-        # Prefix with the property + date so a night's re-send can't collide
-        # with another property's same-named export.
+        # The artifact's stem and the `source_file` this upload records, kept
+        # prefixed by the property so one night's artifacts are readable side
+        # by side with another property's same-named export.
         # BOTH components are scrubbed. property_id is gated by the Property
         # lookup above so it cannot be arbitrary today, but it is still
-        # request-controlled text being spliced into a filesystem path, and the
-        # asymmetry (scrub one, trust the other) invites relaxing that gate
+        # request-controlled text that ends up in a filed artifact's name, and
+        # the asymmetry (scrub one, trust the other) invites relaxing that gate
         # later. _safe_component is the single rule for both.
-        dest = inbox / (
+        name = (
             f"night-audit-{_safe_component(property_id)}"
             f"-{_safe_component(upload_name)}"
         )
-        try:
-            with dest.open("xb") as staged:
-                staged.write(payload)
-        except FileExistsError as exc:
-            raise HTTPException(
-                status_code=409, detail="an upload with that filename is pending"
-            ) from exc
 
+        # Every pre-ingest refusal below raises through this, and a refusal
+        # has nothing to undo: the payload was never written anywhere. It
+        # stays so the pack path and this one refuse through one call.
         def _refuse(status: int, detail: str) -> HTTPException:
-            dest.unlink(missing_ok=True)  # nothing staged — leave no orphan
             return HTTPException(status_code=status, detail=detail)
 
         if PACK_UPLOAD.get(prop.pms_source.upper()) is not None:
-            return _ingest_pack(session, request, prop, state, dest, _refuse)
+            return _ingest_pack(session, request, prop, state, payload, name, _refuse)
 
         # -- Pre-ingest validation: right property, right report, right day. --
         try:
-            words = read_words(dest)
+            words = read_words_from_bytes(payload)
             det = detect(words, load_registry(session))
         except Exception as exc:
             raise _refuse(422, f"could not read report: {exc}") from exc
@@ -276,7 +276,9 @@ async def upload_night_audit_report(
             )
 
         try:
-            r = process_file(session, dest, processed_dir=processed, failed_dir=failed)
+            r = process_bytes(
+                session, payload, name, processed_dir=processed, failed_dir=failed
+            )
         except ProcessingError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -298,15 +300,16 @@ async def upload_night_audit_report(
 
 def _ingest_pack(
     session: Session, request: Request, prop: Property, state: NightAuditState,
-    dest: Path, _refuse: Callable[[int, str], HTTPException],
+    payload: bytes, name: str, _refuse: Callable[[int, str], HTTPException],
 ) -> dict[str, object]:
     """Split the pack, validate every RECOGNIZED section (right property, right
-    business date) BEFORE anything stages, then hand the file to process_pack —
-    which owns the shared transaction, per-section coverage, quarantine, and
-    filing. The response names every section so the auditor sees exactly what
-    the pack contained and what was skipped."""
+    business date) BEFORE anything stages, then hand the bytes to
+    process_pack_bytes — which owns the shared transaction, per-section
+    coverage, and filing the redacted artifact or the error record. The
+    response names every section so the auditor sees exactly what the pack
+    contained and what was skipped."""
     try:
-        pages = extract_pages(dest)
+        pages = extract_pages_from_bytes(payload)
         sections = split_pack(pages)
     except Exception as exc:
         raise _refuse(422, f"could not read the pack: {exc}") from exc
@@ -315,7 +318,14 @@ def _ingest_pack(
     skipped_titles: list[str] = []
     for section in sections:
         try:
-            det = detect(section.words, registry)
+            # The section TITLE decides the report signature — the same call
+            # ingestion.process_pack_bytes makes over these same sections. A
+            # `Rate Plan` COLUMN heading inside the 120-word header window
+            # matches an earlier signature (issue #78), which skipped the
+            # section here while ingestion recognized it. Pinned by
+            # tests/test_night_audit.py::
+            # test_pack_validation_recognizes_a_section_by_its_title.
+            det = detect(section.words, registry, section.title)
         except ValueError:
             skipped_titles.append(section.title or "(untitled)")
             continue
@@ -359,7 +369,9 @@ def _ingest_pack(
 
     _, processed, failed = request.app.state.ingest_dirs
     try:
-        results = process_pack(session, dest, processed_dir=processed, failed_dir=failed)
+        results = process_pack_bytes(
+            session, payload, name, processed_dir=processed, failed_dir=failed
+        )
     except ProcessingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
