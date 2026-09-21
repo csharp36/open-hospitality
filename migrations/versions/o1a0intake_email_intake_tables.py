@@ -20,14 +20,17 @@ table is NOT in that test's `_L1_ORG_INDEPENDENT` set — that set means "no
 org_id column at all"). What stands in for the missing wall is the
 composite `(org_id, property_id)` FK, which makes a row naming another
 org's property unrepresentable, plus per-org filtering in the operator
-routes, which D-OH23.3 requires and
-`tests/test_intake_address_api.py::test_an_address_of_another_org_is_invisible_and_unrotatable`
-checks.
+routes, which D-OH23.3 requires; Task 4 owes
+`test_an_address_of_another_org_is_invisible_and_unrotatable`.
 
 Two constraints beyond the FK. `uq_property_intake_address_active` is a
 partial unique on `(org_id, property_id) WHERE revoked_at IS NULL`: one
 live address per property is enforced here, so two concurrent creates
-cannot both land and leave a rotate revoking only one.
+cannot both land and leave a rotate revoking only one. The obligation it
+puts on Task 4's rotate: set `revoked_at` on the old row BEFORE inserting
+the new one, in one transaction, or the insert is refused.
+`tests/test_intake_schema.py` pins the WHERE clause, both CHECKs against
+the model's own `CheckConstraint` text, and the refusals.
 `ck_property_intake_address_local_part_lower` refuses a local part that is
 not already lowercase, so the unique on `local_part` is case-insensitive
 in effect — the same refuse-unknown posture `outcome` takes below.

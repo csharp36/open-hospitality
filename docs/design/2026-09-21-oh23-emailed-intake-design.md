@@ -97,7 +97,12 @@ exists and why sender checks are a second layer, not the first. Operator
 reads and writes of this table filter `org_id == principal.org_id`
 explicitly (the ORM read wall covers `OrgScoped` classes only) AND resolve
 the property through the org-bound `Property` lookup, which is walled.
-Pinned by a two-tenant test.
+Pinned by a two-tenant test. At most one un-revoked address exists per
+property, enforced by the partial unique index
+`uq_property_intake_address_active` on `(org_id, property_id) WHERE
+revoked_at IS NULL` (review decision, 2026-09-21); rotate sets
+`revoked_at` on the old row and inserts the new one in one transaction,
+or the insert is refused.
 
 **D-OH23.4 — Sender policy: authenticated or allowlisted, never
 unauthenticated.** From `X-Intake-Auth`, require `dkim=pass` or `spf=pass`

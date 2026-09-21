@@ -19,6 +19,7 @@ migration module itself so there is no transcription drift.
 import importlib.util
 from pathlib import Path
 import os
+import re
 
 import pytest
 from alembic import command
@@ -93,6 +94,13 @@ _n2 = _load_migration(
     "n2a0nightadjust", "migrations/versions/n2a0nightadjust_night_audit_adjustment.py"
 )
 _o1 = _load_migration("o1a0intake", "migrations/versions/o1a0intake_email_intake_tables.py")
+
+_VERSIONS_DIR = Path(__file__).resolve().parents[1] / "migrations" / "versions"
+_ORG_WALL_DECL = re.compile(
+    r"""^_POLICY\s*(?::\s*str\s*)?=\s*["']org_wall["']"""
+    r"""|CREATE\s+POLICY\s+org_wall\b""",
+    re.MULTILINE,
+)
 
 # Every migration that declares an `org_wall` policy with its own _PREDICATE
 # literal, keyed by revision id. test_the_stacked_migrations_share_the_l2_rls_predicate
@@ -580,6 +588,11 @@ def test_the_stacked_migrations_share_the_l2_rls_predicate():
     did fall behind once — six stacked migrations were unpinned when OH-23's
     review swapped o1a0intake's predicate for a fail-open one and 66 tests
     passed."""
+    # A mis-keyed entry (module loaded under the wrong name) would pin the
+    # wrong file's predicate under this key and hide the real one.
+    for rev, mod in _STACKED_ORG_WALL.items():
+        assert mod.revision == rev, f"{rev!r} is keyed to migration {mod.revision!r}"
+
     drifted = {
         rev: mod._PREDICATE
         for rev, mod in _STACKED_ORG_WALL.items()
@@ -587,10 +600,14 @@ def test_the_stacked_migrations_share_the_l2_rls_predicate():
     }
     assert not drifted, f"predicate drifted from l2a0rlswall's: {drifted}"
 
+    # The disk scan matches the constant however it is spelled (spacing,
+    # quote style, an optional `: str` annotation) AND a bare
+    # `CREATE POLICY org_wall` with no constant at all. A substring match on
+    # one spelling let a respelled `_POLICY="org_wall"` drop out of the scan.
     on_disk = {
         path.name.split("_", 1)[0]
-        for path in Path("migrations/versions").glob("*.py")
-        if '_POLICY = "org_wall"' in path.read_text()
+        for path in _VERSIONS_DIR.glob("*.py")
+        if _ORG_WALL_DECL.search(path.read_text())
     }
     assert on_disk == set(_STACKED_ORG_WALL) | {"l2a0rlswall"}, (
         f"org_wall migrations on disk {sorted(on_disk)} != pinned "

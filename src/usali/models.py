@@ -2345,9 +2345,8 @@ class PropertyIntakeAddress(Base):
     requires the webhook resolve a local part before any org is known, so
     that lookup must run on the unbound base session, and a policy keyed on
     app.org_id would refuse it. Operator routes are required to filter by
-    the caller's org;
-    tests/test_intake_address_api.py::test_an_address_of_another_org_is_invisible_and_unrotatable
-    is where that is checked.
+    the caller's org; Task 4 owes
+    `test_an_address_of_another_org_is_invisible_and_unrotatable`.
 
     It therefore carries org_id WITHOUT the mixin's RLS wall. Two tests fix
     that shape:
@@ -2365,7 +2364,11 @@ class PropertyIntakeAddress(Base):
         UniqueConstraint("local_part", name="uq_property_intake_address_local_part"),
         # One live address per property, at the database: a partial unique
         # over the un-revoked rows. Two concurrent creates cannot both land,
-        # so a rotate never has two live capabilities to revoke.
+        # so a rotate never has two live capabilities to revoke. The
+        # obligation it puts on Task 4's rotate: set revoked_at on the old
+        # row BEFORE inserting the new one, in one transaction, or the
+        # insert is refused. tests/test_intake_schema.py pins the WHERE
+        # clause and both behaviors.
         Index(
             "uq_property_intake_address_active", "org_id", "property_id",
             unique=True, postgresql_where=text("revoked_at IS NULL"),
@@ -2405,10 +2408,9 @@ class PropertyIntakeAddress(Base):
 
 class EmailIntakeEvent(OrgScoped, Base):
     """One row per message received for a property's address (D-OH23.7).
-    This table has no body column. Subject and error text pass mask_pans
-    before the write;
-    tests/test_intake_email.py::test_event_text_carries_no_card_numbers is
-    where that is checked."""
+    This table has no body column. D-OH23.7 requires subject and error text
+    pass mask_pans before the write; Task 3 owes
+    `test_event_text_carries_no_card_numbers`."""
 
     __tablename__ = "email_intake_event"
     __table_args__ = (
@@ -2439,10 +2441,10 @@ class EmailIntakeEvent(OrgScoped, Base):
         DateTime(timezone=True), server_default=func.now()
     )
     # The four String widths below are hard limits: Postgres raises
-    # StringDataRightTruncation on overflow rather than truncating, so the
-    # writer must clip envelope_from, subject, auth_result and message_id
-    # to width before the INSERT — an obligation on Task 3 that this schema
-    # creates.
+    # StringDataRightTruncation on overflow (trailing whitespace is the one
+    # exception: trimmed silently), so the writer must clip envelope_from,
+    # subject, auth_result and message_id to width before the INSERT — an
+    # obligation on Task 3 that this schema creates.
     envelope_from: Mapped[str] = mapped_column(String(320))
     subject: Mapped[str | None] = mapped_column(String(500), nullable=True)
     auth_result: Mapped[str | None] = mapped_column(String(1000), nullable=True)
