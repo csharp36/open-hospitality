@@ -151,8 +151,8 @@ refuse the attachment (`wrong_property`) if any recognized section resolves
 to a different property than the address's. The report-type-in-required
 check is kept (`not_a_night_audit_report`). The business-date check is NOT
 applied: an email can arrive late, and a backfill by email is the point.
-The shared validator moves out of `night_audit_api.py` into `intake.py` so
-both callers run the same code. Two consequences of that move (review
+The shared validator moves out of `night_audit_api.py` into
+`night_audit_validation.py` so both callers run the same code. Two consequences of that move (review
 decision, 2026-09-21): the upload's PACK path now runs the report-type check
 too, which it did not before — it is symmetric with the single-report path and
 is a no-op for every pack reachable today — and the property and report-type
@@ -163,8 +163,12 @@ ways names the wrong-property section rather than the wrong-date one.
 **D-OH23.6 — Duplicates are skipped by content hash before processing.**
 PMS schedulers re-send. An attachment whose sha256 already has a
 `transformed` `IngestBatch` in this org is recorded as `duplicate` and not
-processed. (The gate's design left hash-refusal out of the upload path as a
-UX decision; for email it is the expected case.)
+processed. Only `transformed` batches count: a re-sent report that FAILED
+the first time is processed again and produces a second failed batch and a
+second error record, so a corrupt nightly report repeats in the log until
+somebody fixes it rather than going quiet as a `duplicate` of something that
+never landed. (The gate's design left hash-refusal out of the upload path as
+a UX decision; for email it is the expected case.)
 
 **D-OH23.7 — Every message is an event row; the event log is the
 expectation model's first surface.** `email_intake_event` (`OrgScoped`,
@@ -175,7 +179,11 @@ no_attachment | sender_rejected | wrong_property | not_a_night_audit_report
 | unreadable | failed | revoked_address`), `attachments` (JSON:
 `[{name, sha256, bytes, outcome, batch_id?, error?}]`, errors through
 `mask_pans`), `message_id` (the MIME `Message-ID`, capped). Message bodies
-are never stored. A message to an unknown local part has no org and is not
+are never stored. `unreadable` stays in the set for the validator's other
+callers, but the webhook does not produce it: bytes the reader cannot open
+are a FAILURE rather than a judgment about the report, so they go through the
+gate, which records the failed batch and the error record, and the attachment
+comes back `failed`. A message to an unknown local part has no org and is not
 recorded; the response tells the worker, which logs it. A message to a
 revoked address is recorded under the address's org (`revoked_address`) so
 the operator can see the PMS still sends to the old address.
@@ -199,9 +207,17 @@ the trace, alerting is OH-26.** A processing failure records the failed
 batch and the error record (the gate), marks the attachment `failed` in
 the event, and returns 200 to the worker (the message was received and
 disposed). Only auth, size and 5xx-class problems return non-2xx, which is
-what makes the worker forward to the fallback mailbox. No email is sent
-from this feature; "you have not received tonight's report" is OH-26's
-notification, fed by these events.
+what makes the worker forward to the fallback mailbox.
+
+One gap is named rather than closed: the event is committed LAST, so an
+exception between the final ingest and that commit leaves committed batches
+with no event row. The worker sees the 5xx and forwards the message to the
+fallback mailbox, and a re-delivery of the same attachments is recorded as
+`duplicate` against the batches already there. That is provenance loss, not
+data loss — the reports are staged and the event log is missing one line.
+
+No email is sent from this feature; "you have not received tonight's
+report" is OH-26's notification, fed by these events.
 
 ## 3. Data flow
 
@@ -210,11 +226,13 @@ PMS ──SMTP──> Cloudflare Email Routing (intake.<domain>, catch-all)
         ──> Email Worker: size check, HMAC(ts, raw), POST message/rfc822
         ──> POST /api/intake/email
               1. verify signature + timestamp window, size caps, rate limit
-              2. local part of X-Intake-To -> property_intake_address (unbound lookup)
-                   none -> 200 {outcome: unknown_address}; revoked -> event(revoked_address)
-              3. OrgBoundSessionFactory(base, row.org_id)
+              2. domain + local part of X-Intake-To -> property_intake_address
+                   (unbound lookup; at most one row) -> none: 200 {outcome: unknown_address},
+                   recorded nowhere and the message never opened
+              3. OrgBoundSessionFactory(base, row.org_id); revoked -> event(revoked_address)
               4. sender policy (X-Intake-Auth, sender_domains) -> event(sender_rejected) or continue
-              5. parse MIME; attachments by magic bytes; none -> event(no_attachment)
+              5. parse MIME (subject + Message-ID, then attachments by magic
+                   bytes); none -> event(no_attachment)
               6. per attachment: sha256 dedupe -> duplicate
                                | validate_for_property -> wrong_property / not_a_night_audit_report / unreadable
                                | process_document_bytes -> ingested (batch ids) / failed (masked error)

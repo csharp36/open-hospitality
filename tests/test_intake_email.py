@@ -623,11 +623,19 @@ def test_attachments_past_the_cap_are_recorded_and_not_processed(
 
 
 def test_event_text_carries_no_card_numbers(db_session, client, tmp_path):
-    """The event table has no body column, and the one piece of author-chosen
-    text it does keep goes through `redaction.mask_pans` first."""
+    """Every piece of author-chosen text the event keeps goes through
+    `redaction.mask_pans` first: the subject, and each attachment's name.
+
+    The attachment here also FAILS, so the third string an event can carry —
+    an error — is exercised too, and the name is followed past the event into
+    the `source_file` the batch records and the stem of the filed error
+    record, which is where an unmasked filename would otherwise land.
+    """
     _seed(db_session, "opera")
     _address(db_session, HISJ_ADDRESS, "HISJ")
-    raw = _message(subject="Report 4111 1111 1111 1111")
+    payload = b"%PDF-1.4 this is not a real pdf at all"
+    raw = _message(subject="Report 4111 1111 1111 1111",
+                   attachments=[("4111111111111111.pdf", payload)])
 
     r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}")
 
@@ -636,6 +644,79 @@ def test_event_text_carries_no_card_numbers(db_session, client, tmp_path):
     assert event.subject is not None
     assert "4111" not in event.subject
     assert "•••• 1111" in event.subject
+
+    assert event.outcome == "failed"
+    for entry in event.attachments:
+        assert "4111" not in str(entry["name"]), entry
+        assert "4111" not in str(entry.get("error", "")), entry
+    assert event.attachments == r.json()["attachments"]
+
+    # Past the event: the name the gate was handed carries no card number
+    # either, so neither the batch row nor the filed record does.
+    batch = _batches(db_session, "failed")[0]
+    assert "4111" not in batch.source_file
+    record = _error_records(tmp_path)[0]
+    assert "4111" not in record.name
+    assert "4111" not in record.read_text()
+    _clean(tmp_path, raw, payload)
+
+
+def test_a_message_is_partial_when_only_some_attachments_ingest(
+    db_session, client, tmp_path
+):
+    """A mixed message is neither `ingested` nor `failed`: the operator needs
+    to see that tonight's mail landed one report and lost another."""
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    good = FLASH.read_bytes()
+    bad = b"%PDF-1.4 this is not a real pdf at all"
+    raw = _message(attachments=[("flash.pdf", good), ("broken.pdf", bad)])
+
+    r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}")
+
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["outcome"] == "partial"
+    assert [a["outcome"] for a in body["attachments"]] == ["ingested", "failed"]
+    assert len(_batches(db_session, "transformed")) == 1
+    assert len(_batches(db_session, "failed")) == 1
+    assert len(_error_records(tmp_path)) == 1
+    event = _events(db_session)[0]
+    assert event.outcome == "partial"
+    assert event.attachments == body["attachments"]
+    _clean(tmp_path, raw, good, bad)
+
+
+def test_the_recipient_domain_is_compared_case_insensitively(
+    db_session, client, tmp_path
+):
+    """A receiver may hand the envelope recipient back in any case; the
+    address still resolves."""
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    raw = _message()
+
+    r = _post(client, raw, to=f"{HISJ_ADDRESS.upper()}@{_DOMAIN.upper()}")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == "no_attachment"
+    assert [e.outcome for e in _events(db_session)] == ["no_attachment"]
+    _clean(tmp_path, raw)
+
+
+def test_a_long_message_id_is_clipped_to_the_column_width(
+    db_session, client, tmp_path
+):
+    width = EmailIntakeEvent.__table__.c.message_id.type.length
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    raw = _message(message_id="<" + "m" * (width + 80) + "@pms.test>")
+
+    r = _post(client, raw, to=f"{HISJ_ADDRESS}@{_DOMAIN}")
+
+    assert r.status_code == 200, r.text
+    event = _events(db_session)[0]
+    assert event.message_id is not None and len(event.message_id) == width
     _clean(tmp_path, raw)
 
 

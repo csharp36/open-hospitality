@@ -179,13 +179,34 @@ def _transformed_batch_ids(session: Session, sha256: str) -> list[int]:
     )
 
 
+def _safe_name(name: str) -> str:
+    """The one spelling of an attachment's name, everywhere it is kept.
+
+    An attachment name is author-chosen text that ends up in three places a
+    card number must not reach: the event's `attachments` JSON, the
+    `source_file` an ingest records, and the stem of the filed artifact or
+    error record. So the digits are masked FIRST and the result reduced to the
+    artifact-stem alphabet second — `4111111111111111.pdf` becomes
+    `_____1111.pdf`, and the sha256 beside it in every entry is the identity
+    the name never was. Applying this twice changes nothing, which is what
+    lets `_entry` apply it to whatever it is handed.
+    """
+    return safe_component(mask_pans(name))
+
+
 def _entry(
     name: str, data: bytes, sha256: str, outcome: AttachmentOutcome, **extra: object
 ) -> dict[str, object]:
     """One element of the event's `attachments` JSON, in D-OH23.7's shape:
     `{name, sha256, bytes, outcome, batch_id?, error?}`. The response hands the
-    worker the same objects the event stores."""
-    return {"name": name, "sha256": sha256, "bytes": len(data),
+    worker the same objects the event stores.
+
+    The name is masked here rather than at the one call site that ingests, so
+    that the `too_many_attachments` entry — which never reaches an ingest —
+    is covered by the same rule. Pinned by tests/test_intake_email.py::
+    test_event_text_carries_no_card_numbers.
+    """
+    return {"name": _safe_name(name), "sha256": sha256, "bytes": len(data),
             "outcome": outcome, **extra}
 
 
@@ -209,8 +230,8 @@ def _ingest_attachment(
     `failed`. Both paths read through `adaptors.reader.read_words_from_bytes`
     and route the same way, which
     tests/test_night_audit_validation.py::test_routing_agrees_with_the_ingest_path
-    pins; if they ever disagree, the ingest below has committed rows for a
-    document nothing validated, so it raises rather than answering `ingested`.
+    pins; the guard below is what happens if they ever disagree, and it
+    refuses to call such an ingest `ingested`.
     """
     sha256 = hashlib.sha256(data).hexdigest()
     if len(data) > _MAX_ATTACHMENT_BYTES:
@@ -233,8 +254,10 @@ def _ingest_attachment(
         return _entry(name, data, sha256, "failed", error=_masked(str(exc)))
     if verdict is not None:
         raise RuntimeError(
-            f"{name}: the validator answered {verdict} but the ingest succeeded, "
-            "so rows are committed for a document nothing validated"
+            f"{name}: the validator answered {verdict} but the gate ingested it "
+            "— the two readers diverged (their agreement is pinned by "
+            "tests/test_night_audit_validation.py::"
+            "test_routing_agrees_with_the_ingest_path)"
         )
     batch_ids = _transformed_batch_ids(session, sha256)
     # One attachment may stage several batches — a pack stages one per
@@ -267,11 +290,11 @@ def _attachment_entries(
                        error="too_many_attachments")
             )
             continue
-        # `safe_component` is the single rule for every name that becomes part
-        # of a filed artifact's stem — night_audit_api.upload_night_audit_report
-        # applies it to its own upload name for the same reason.
+        # The same `_safe_name` the entry stores, so the name that reaches
+        # `IngestBatch.source_file` and the filed artifact's stem is the one
+        # the event log shows — and carries no card number either.
         entries.append(_ingest_attachment(
-            session, data, safe_component(name), property_id=property_id,
+            session, data, _safe_name(name), property_id=property_id,
             pms_source=pms_source, processed_dir=processed_dir,
             failed_dir=failed_dir,
         ))
@@ -344,11 +367,11 @@ def _resolve_address(
     message addressed to the right local part at somebody else's domain
     resolves nothing, exactly like a local part no row answers to.
 
-    An un-revoked row wins over a revoked one. `local_part` is unique and
-    `uq_property_intake_address_active` allows one live row per property, so
-    the sort below decides nothing today; it is written this way so that the
-    caller's revoked/active branch reads off the row rather than off those two
-    constraints holding.
+    A local part answers to at most one row — `uq_property_intake_address_local_part`
+    is where that is enforced — so there is nothing to choose between: the row
+    is active or it is revoked, and the caller branches on the flag. If that
+    unique were ever dropped, `one_or_none` raises rather than silently
+    picking one of them.
     """
     if envelope_to.rpartition("@")[2].strip().lower() != domain.strip().lower():
         return None
@@ -357,12 +380,10 @@ def _resolve_address(
     except ValueError:
         return None
     with factory() as session:
-        rows = list(session.scalars(
+        row = session.scalars(
             select(PropertyIntakeAddress)
             .where(PropertyIntakeAddress.local_part == local)
-            .order_by(PropertyIntakeAddress.address_id)
-        ))
-        row = next((r for r in rows if r.revoked_at is None), rows[-1] if rows else None)
+        ).one_or_none()
         if row is None:
             return None
         return (row.address_id, row.org_id, row.property_id, row.sender_domains,
@@ -412,7 +433,6 @@ async def receive_email(request: Request) -> dict[str, object]:
 
     envelope_from = request.headers.get("X-Intake-From", "")
     auth_result = request.headers.get("X-Intake-Auth", "")
-    subject, message_id = _subject_and_message_id(raw)
 
     base: SessionFactory = request.app.state.db_session_factory
     found = _resolve_address(
@@ -420,8 +440,15 @@ async def receive_email(request: Request) -> dict[str, object]:
     )
     if found is None:
         # No org, so nothing is recorded (D-OH23.7). The worker logs it.
+        # Returning here is also what keeps a message for a local part we
+        # never minted from being opened at all: the MIME parse is below.
         return {"outcome": UNKNOWN_ADDRESS, "attachments": []}
     address_id, org_id, property_id, sender_domains, revoked = found
+
+    # The message is parsed twice, once for these headers and once inside
+    # `attachments_of`; two cheap passes are worth more than threading a
+    # parsed message through the pure-function boundary `usali.intake` keeps.
+    subject, message_id = _subject_and_message_id(raw)
 
     _inbox, processed_dir, failed_dir = request.app.state.ingest_dirs
     factory = OrgBoundSessionFactory(base, org_id)
