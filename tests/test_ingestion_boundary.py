@@ -98,7 +98,8 @@ def test_failure_files_an_error_record_and_no_raw_bytes(db_session, tmp_path, fo
     data = FLASH.read_bytes()
     with pytest.raises(ProcessingError):
         process_document_bytes(
-            db_session, data, FLASH.name, processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
+            db_session, data, FLASH.name,
+            processed_dir=tmp_path / "done", failed_dir=tmp_path / "fail",
         )
     records = list((tmp_path / "fail").glob("*.error.json"))
     assert len(records) == 1 and "words" not in json.loads(records[0].read_text())

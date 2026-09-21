@@ -14,8 +14,10 @@ IngestBatch (with the error message), files an error record with no content to
 `failed_dir` (`retention.write_error_record`), and re-raises as ProcessingError. Success
 commits, then files ONE redacted words artifact to `processed_dir`
 (`retention.build_artifact` + `write_artifact`) as a separate phase — a filing failure
-after the commit never fabricates a `failed` batch, because the data is committed.
-Exactly one IngestBatch row is produced per `process_bytes` call, regardless of outcome.
+after the commit never fabricates a `failed` batch, because the data is committed. That
+outcome is the one pinned case of "one IngestBatch row per `process_bytes` call"
+(tests/test_ingestion.py::test_filing_failure_after_commit_does_not_fabricate_failed_batch);
+on the other paths it follows from each handler opening exactly one batch.
 
 `process_pack_bytes` splits a bundled night-audit pack and ingests each recognized
 section under a shared transaction, producing one IngestBatch per recognized section on
@@ -418,10 +420,11 @@ def _file_artifact(
     """Build and write the redacted artifact, post-commit.
 
     Filing is a separate phase from the transaction: the data is already committed, so
-    a failure here must NOT fabricate a `failed` batch or roll anything back. Every
-    failure — retention's own (a policy whose kept columns are absent) as well as the
-    filesystem's — becomes a ProcessingError naming that the data is committed, so
-    nothing but ProcessingError escapes a post-commit filing. Pinned by
+    a failure here must NOT fabricate a `failed` batch or roll anything back. Both
+    failures become a ProcessingError saying the data is committed, so nothing but
+    ProcessingError escapes a post-commit filing, and each names its layer: building
+    the artifact is retention's and redaction's work, and a failure there is a bug in
+    us, not a disk that filled. Pinned by
     tests/test_ingestion.py::test_filing_failure_after_commit_does_not_fabricate_failed_batch.
     """
     try:
@@ -432,10 +435,15 @@ def _file_artifact(
             sections=sections,
             sections_dropped=sections_dropped,
         )
+    except Exception as exc:
+        raise ProcessingError(
+            f"{name}: data committed, but filing failed in retention: {_safe_message(exc)}"
+        ) from exc
+    try:
         return write_artifact(processed_dir, artifact)
     except Exception as exc:
         raise ProcessingError(
-            f"{name}: data committed, but filing to {processed_dir} failed: {exc}"
+            f"{name}: data committed, but filing to {processed_dir} failed: {_safe_message(exc)}"
         ) from exc
 
 
@@ -509,15 +517,15 @@ def process_pack_bytes(
     edition: int = 12,
 ) -> list[ProcessResult]:
     """Split a bundled night-audit pack held in memory into its constituent reports
-    and ingest each recognised section under a shared transaction.
+    and ingest each recognized section under a shared transaction.
 
     Unknown sections (housekeeping/filler like A/R Aging, or a report with no registered
     handler) are skipped: their words are discarded at the boundary and only their titles
-    are kept, in the artifact's `sections_dropped`. All recognised sections stage +
+    are kept, in the artifact's `sections_dropped`. All recognized sections stage +
     transform in one transaction: any failure rolls the whole pack back, records a
     `failed` IngestBatch, files an error record to `failed_dir`, and re-raises as
-    ProcessingError. A pack with no recognised sections is itself a failure. On success
-    the transaction commits and ONE artifact holding the recognised sections is filed to
+    ProcessingError. A pack with no recognized sections is itself a failure. On success
+    the transaction commits and ONE artifact holding the recognized sections is filed to
     `processed_dir`; every result's `destination` is that artifact.
     """
     file_hash = _hash(data)

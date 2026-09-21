@@ -325,8 +325,12 @@ def create_app(
     )
     # The night-audit upload files its artifacts exactly where /ingest does;
     # the router reads the dirs from app.state. `inbox` stays in the triple as
-    # the drop directory `usali watch` polls (cli.py::watch); no route in this
-    # app writes to it — both upload endpoints process from memory.
+    # the drop directory `usali watch` polls (cli.py::watch); both upload
+    # endpoints process from memory and leave it empty, which
+    # tests/test_ingestion_boundary.py asserts after each of them:
+    # test_ingest_endpoint_leaves_no_raw_bytes_anywhere,
+    # test_night_audit_single_upload_leaves_no_raw_bytes_anywhere,
+    # test_night_audit_pack_upload_leaves_no_raw_bytes_anywhere.
     app.state.ingest_dirs = (inbox, processed, failed)
     # Per-request sessions (tests inject a factory bound to their engine;
     # the default reads settings once here — the engine connects lazily,
