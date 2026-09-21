@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from usali.adaptors.hotelkey_ar_aging import _AGING_COLUMNS
 from usali.adaptors.pdf import Word
 from usali.adaptors.xlsx import XLSX_COL_STEP, XLSX_ROW_STEP
 from usali.redaction import RedactionStats, redact_words
@@ -20,7 +21,8 @@ from usali.redaction import RedactionStats, redact_words
 @dataclass(frozen=True)
 class Policy:
     keep_columns: tuple[str, ...] | None = None  # XLSX allowlist; None = keep every word
-    xlsx: bool = False  # title-block cells beginning "User:" are dropped for XLSX reports
+    keep_first_column: bool = False  # also keep each section header's own first column
+    drop_user_cells: bool = False  # title-block cells beginning "User:" are dropped
 
 
 KEEP_ALL = Policy()
@@ -35,17 +37,28 @@ RETENTION: dict[tuple[str, str], Policy] = {
     ("SKYTOUCH", "hotel_journal"): KEEP_ALL,
     ("SKYTOUCH", "hotel_statistics"): KEEP_ALL,
     ("HOTELKEY", "hotel_statistics"): KEEP_ALL,
-    ("HOTELKEY", "settlement"): Policy(xlsx=True, keep_columns=(
+    # "Count" is not in the design's D5.2 list and is not a detail column; it is
+    # the Summary block's, and parse_settlement reads it to check the footing, so
+    # dropping it would file an artifact the adapter refuses
+    # (tests/test_retention.py::test_settlement_artifact_round_trips_through_the_adapter).
+    ("HOTELKEY", "settlement"): Policy(drop_user_cells=True, keep_columns=(
         "Account Category", "Date", "Time", "Transaction Number", "Folio Number",
-        "Room Number", "Payment Type", "Payment Description", "Amount",
+        "Room Number", "Payment Type", "Payment Description", "Amount", "Count",
     )),
-    ("HOTELKEY", "all_payments"): Policy(xlsx=True, keep_columns=("Payment Type", "Amount")),
-    # Every column: the label column's account names are what the adapter
-    # stages (design section 1, last paragraph); the AR slice owns that decision.
-    ("HOTELKEY", "ar_aging"): Policy(xlsx=True, keep_columns=None),
+    ("HOTELKEY", "all_payments"): Policy(
+        drop_user_cells=True, keep_columns=("Payment Type", "Amount")
+    ),
+    # The label column's account names are what the adapter stages (design
+    # section 1, last paragraph); the AR slice owns that decision. Its name
+    # differs per section, so it is kept positionally rather than by name.
+    ("HOTELKEY", "ar_aging"): Policy(
+        drop_user_cells=True, keep_first_column=True, keep_columns=_AGING_COLUMNS
+    ),
 }
 
 _XLSX_HEADER_DROP_PREFIXES = ("User:",)
+_ORDINAL_COLUMN = 1  # column A: the row ordinal split_report classifies rows by
+_CAPTION_COLUMN = 2  # column B: a row holding only this cell opens a section
 
 
 @dataclass
@@ -58,45 +71,53 @@ class RetainedSection:
     words: list[Word] = field(default_factory=list)
 
 
-def _apply_columns(words: list[Word], keep: tuple[str, ...]) -> tuple[list[Word], int]:
-    """Filter detail cells to an XLSX column allowlist (design D5.2).
+def _apply_columns(
+    words: list[Word], keep: tuple[str, ...], *, keep_first_column: bool
+) -> tuple[list[Word], int]:
+    """Filter an XLSX export's cells to a per-section column allowlist (design D5.2).
 
-    The header row is the first row (by ``round(top / XLSX_ROW_STEP)``) whose
-    cell texts include every name in ``keep`` together; rows above it (title
-    block, section captions) are free-form and pass through unfiltered, while
-    the header row itself and every row below it keep only the cells whose
-    column index (``round(x0 / XLSX_COL_STEP)``) belongs to a kept column —
-    dropping the header labels, and every value beneath them, for any column
-    not on the allowlist.
+    A HotelKey export is a stack of sections, each with its own header row;
+    ``adaptors/hotelkey_xlsx.split_report`` is where that shape is read back.
+    A caption row — one cell, in column B — opens a section, and the first row
+    under it naming at least two kept columns is that section's header; from
+    there down, a cell is kept when its column is one of that header's kept
+    columns. Column A is always kept: it holds the ordinal ``split_report``
+    classifies a row by (tests/test_retention.py::
+    test_settlement_artifact_round_trips_through_the_adapter). With
+    ``keep_first_column`` the header's own first column is kept as well, for a
+    report whose label column is named differently in every section.
+
+    Rows above the first caption are the title block and pass through, as does
+    a section in which no row names two kept columns. A kept column the export
+    does not have is simply absent from that header
+    (test_a_kept_column_the_export_lacks_does_not_fail_retention); nothing here
+    refuses an export, because this runs after the adapter has accepted one.
     """
-    rows: dict[int, list[Word]] = defaultdict(list)
-    for w in words:
-        rows[round(w.top / XLSX_ROW_STEP)].append(w)
+    rows: dict[int, list[tuple[int, int]]] = defaultdict(list)  # row -> [(column, index)]
+    for i, w in enumerate(words):
+        rows[round(w.top / XLSX_ROW_STEP)].append((round(w.x0 / XLSX_COL_STEP), i))
 
-    header_idx: int | None = None
-    for idx in sorted(rows):
-        row_texts = {w.text for w in rows[idx]}
-        if set(keep) <= row_texts:
-            header_idx = idx
-            break
-    if header_idx is None:
-        present = {w.text for w in words}
-        missing = sorted(set(keep) - present)
-        raise ValueError(f"no header row contains the kept columns: {', '.join(missing) or keep}")
-
-    keep_cols = {round(w.x0 / XLSX_COL_STEP) for w in rows[header_idx] if w.text in keep}
-    kept: list[Word] = []
-    dropped = 0
-    for w in words:
-        row_idx = round(w.top / XLSX_ROW_STEP)
-        if row_idx < header_idx:
-            kept.append(w)
+    dropped_indices: set[int] = set()
+    keep_cols: set[int] | None = None
+    in_section = False
+    for row_idx in sorted(rows):
+        cells = sorted(rows[row_idx])
+        if [column for column, _ in cells] == [_CAPTION_COLUMN]:
+            in_section, keep_cols = True, None
             continue
-        if round(w.x0 / XLSX_COL_STEP) in keep_cols:
-            kept.append(w)
-        else:
-            dropped += 1
-    return kept, dropped
+        if not in_section:
+            continue
+        if keep_cols is None:
+            named = [column for column, i in cells if words[i].text in keep]
+            if len(named) < 2:
+                continue  # not this section's header row yet
+            keep_cols = set(named) | {_ORDINAL_COLUMN}
+            if keep_first_column:
+                keep_cols.add(cells[0][0])
+        dropped_indices.update(i for column, i in cells if column not in keep_cols)
+
+    kept = [w for i, w in enumerate(words) if i not in dropped_indices]
+    return kept, len(dropped_indices)
 
 
 def _drop_header_cells(words: list[Word]) -> tuple[list[Word], int]:
@@ -113,8 +134,10 @@ def retain_section(section: RetainedSection) -> tuple[RetainedSection, Redaction
     cells_dropped = 0
     header_cells_dropped = 0
     if policy.keep_columns is not None:
-        words, cells_dropped = _apply_columns(words, policy.keep_columns)
-    if policy.xlsx:
+        words, cells_dropped = _apply_columns(
+            words, policy.keep_columns, keep_first_column=policy.keep_first_column
+        )
+    if policy.drop_user_cells:
         words, header_cells_dropped = _drop_header_cells(words)
     words, pan_stats = redact_words(words)
     stats = RedactionStats(

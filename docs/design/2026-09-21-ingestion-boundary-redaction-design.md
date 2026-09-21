@@ -125,13 +125,21 @@ Retention applies:
    becomes `••••`; the last covered word becomes `•••• <last4>`. Counted in
    `redaction.pans_masked`.
 2. *XLSX column allowlist per report type.* For an XLSX report the policy
-   names the header columns whose detail cells are retained; every other
-   detail cell is dropped (an allowlist, so an unknown column is dropped,
-   not kept). Settlement keeps `Account Category, Date, Time, Transaction
-   Number, Folio Number, Room Number, Payment Type, Payment Description,
-   Amount`. All Payments keeps `Payment Type, Amount`. AR aging keeps every
-   column (§1, last paragraph). Title-block cells beginning `User:` are
-   dropped for every XLSX report.
+   names the header columns whose cells are retained; every other cell is
+   dropped (an allowlist, so an unknown column is dropped, not kept). The
+   allowlist is applied per SECTION, against that section's own header row,
+   and column A — the ordinal `split_report` classifies a row by — is kept
+   everywhere, so the artifact re-parses (D3). Settlement keeps `Account
+   Category, Date, Time, Transaction Number, Folio Number, Room Number,
+   Payment Type, Payment Description, Amount` and, in the Summary block,
+   `Count`, which `parse_settlement` reads for the footing check. All
+   Payments keeps `Payment Type, Amount`. AR aging keeps each section's
+   first column — its label column, an account name (§1, last paragraph) —
+   plus the eight aging columns the adapter reads, which is what the adapter
+   itself uses; nothing wider. Title-block cells beginning `User:` are
+   dropped for every XLSX report. A kept column an export does not have is
+   not a refusal: retention runs after the adapter has accepted the export
+   and must not be stricter than it.
 3. *PDF reports retain every word of a recognized section after rule 1.*
    The recognized report types are label-and-figure reports (§1); no
    per-column rule exists for them today, and the policy table makes that
