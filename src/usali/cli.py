@@ -365,12 +365,16 @@ def transform_cmd(
 @app.command("process")
 def process_cmd(
     pdf_path: str = typer.Argument(..., help="PDF or XLSX to run through the full pipeline"),
-    processed_dir: str | None = typer.Option(None, help="Where successful files are filed"),
-    failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
+    processed_dir: str | None = typer.Option(
+        None, help="Where the redacted artifact is filed"
+    ),
+    failed_dir: str | None = typer.Option(
+        None, help="Where the error record is written"
+    ),
     edition: int = typer.Option(12, help="USALI edition"),
 ) -> None:
     """Detect, parse, stage, transform, and file one PDF or XLSX (auto-detects
-    source/report/property)."""
+    source/report/property). The file is left where it is."""
     settings = get_settings()
     with _session_factory()() as s:
         try:
@@ -401,11 +405,17 @@ _WATCH_SUFFIXES = frozenset({".pdf", ".xlsx"})
 @app.command("watch")
 def watch_cmd(
     inbox_dir: str | None = typer.Option(None, help="Directory to watch for PDF/XLSX reports"),
-    processed_dir: str | None = typer.Option(None, help="Where successful files are filed"),
-    failed_dir: str | None = typer.Option(None, help="Where failed files are quarantined"),
+    processed_dir: str | None = typer.Option(
+        None, help="Where the redacted artifact is filed"
+    ),
+    failed_dir: str | None = typer.Option(
+        None, help="Where the error record is written"
+    ),
     edition: int = typer.Option(12, help="USALI edition"),
 ) -> None:
-    """Watch the inbox directory and run the full pipeline on every PDF or XLSX that appears."""
+    """Watch the inbox directory and run the full pipeline on every PDF or XLSX
+    that appears. Each file is deleted after processing; the redacted artifact
+    in processed-dir or the error record in failed-dir is the trace."""
     import time
 
     from watchdog.events import FileSystemEvent, FileSystemEventHandler
@@ -429,8 +439,19 @@ def watch_cmd(
                     edition=edition,
                 )
                 typer.echo(f"processed {path.name}: mapped={r.mapped} skipped={r.skipped}")
+                # The pipeline files a redacted artifact or an error record and
+                # leaves this file alone; deleting it here is what keeps the
+                # next start from re-reading it
+                # (tests/test_cli_commands.py::
+                # test_watch_deletes_the_inbox_file_after_processing).
+                path.unlink(missing_ok=True)
             except ProcessingError as exc:
                 typer.echo(f"FAILED {path.name}: {exc}", err=True)
+                # Same reasoning as the success path above: the error record
+                # is the trace, so the inbox copy must still go
+                # (tests/test_cli_commands.py::
+                # test_watch_deletes_the_inbox_file_after_a_failure).
+                path.unlink(missing_ok=True)
 
     class Handler(FileSystemEventHandler):
         def on_created(self, event: FileSystemEvent) -> None:

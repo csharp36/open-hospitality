@@ -247,3 +247,126 @@ def test_watch_drains_every_accepted_suffix_already_in_the_inbox(tmp_path, monke
     ])
     assert result.exit_code == 0, result.output
     assert seen == ["a.xlsx", "b.pdf"], seen  # sorted, both suffixes, the .txt ignored
+
+
+def test_watch_deletes_the_inbox_file_after_processing(tmp_path, monkeypatch):
+    """process_file no longer moves or deletes its input (Task 3): the
+    redacted artifact it files is the trace, so watch must remove the inbox
+    copy itself or the next start would re-read it. Same stub/observer setup
+    as test_watch_drains_every_accepted_suffix_already_in_the_inbox."""
+    import contextlib
+    import time
+    from datetime import date
+    from types import SimpleNamespace
+
+    import watchdog.observers
+
+    import usali.cli as cli
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").touch()  # contents irrelevant: process_file is stubbed below
+
+    def fake_process_file(session, path, **kwargs):
+        return SimpleNamespace(
+            pms_source="OPERA",
+            report_type="trial_balance",
+            property_id="HISJ",
+            business_date=date(2026, 7, 7),
+            staged=1,
+            mapped=1,
+            unmapped=0,
+            skipped=0,
+            destination=tmp_path / "done" / "a.pdf",
+        )
+
+    class StubObserver:
+        def schedule(self, handler, path): ...
+        def start(self): ...
+        def stop(self): ...
+        def join(self): ...
+
+    def stop_now(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "process_file", fake_process_file)
+    monkeypatch.setattr(cli, "_session_factory", lambda: lambda: contextlib.nullcontext(None))
+    monkeypatch.setattr(watchdog.observers, "Observer", StubObserver)
+    monkeypatch.setattr(time, "sleep", stop_now)
+
+    result = runner.invoke(app, [
+        "watch", "--inbox-dir", str(inbox),
+        "--processed-dir", str(tmp_path / "done"), "--failed-dir", str(tmp_path / "fail"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert not (inbox / "a.pdf").exists()
+
+
+def test_watch_deletes_the_inbox_file_after_a_failure(tmp_path, monkeypatch):
+    """A failure files an error record instead of an artifact, but the trace
+    still lives outside the inbox, so the file must still go."""
+    import contextlib
+    import time
+
+    import watchdog.observers
+
+    import usali.cli as cli
+    from usali.ingestion import ProcessingError
+
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "a.pdf").touch()  # contents irrelevant: process_file is stubbed below
+
+    def fake_process_file(session, path, **kwargs):
+        raise ProcessingError("a.pdf: could not detect report type")
+
+    class StubObserver:
+        def schedule(self, handler, path): ...
+        def start(self): ...
+        def stop(self): ...
+        def join(self): ...
+
+    def stop_now(seconds):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "process_file", fake_process_file)
+    monkeypatch.setattr(cli, "_session_factory", lambda: lambda: contextlib.nullcontext(None))
+    monkeypatch.setattr(watchdog.observers, "Observer", StubObserver)
+    monkeypatch.setattr(time, "sleep", stop_now)
+
+    result = runner.invoke(app, [
+        "watch", "--inbox-dir", str(inbox),
+        "--processed-dir", str(tmp_path / "done"), "--failed-dir", str(tmp_path / "fail"),
+    ])
+    assert result.exit_code == 0, result.output
+    assert not (inbox / "a.pdf").exists()
+    assert "FAILED a.pdf" in result.output  # the failure is still reported
+
+
+def test_process_leaves_the_argument_in_place(db_url, tmp_path):
+    """D2: `process` is the operator's own invocation, not the drained inbox
+    — the pipeline never moved the file (Task 3) and `process` must not
+    either. Stubbed the way test_process_command_runs_full_pipeline is, but
+    against a real pipeline run since process_file itself is not mocked
+    here; a plain touch()'d PDF would fail detection before reaching the
+    unlink question this test is actually about, so seed and copy a real
+    sample the same way that test does."""
+    import shutil
+
+    # seed-properties find-or-creates org 1 (see
+    # test_gl_seed_chart_fill_usali_reports_counts) — needed here because,
+    # run alone, this test has no earlier test in the session to leave it
+    # behind, unlike test_process_command_runs_full_pipeline above.
+    runner.invoke(app, ["seed-properties", "mapping/properties.yaml"])
+    runner.invoke(app, ["seed-schedules", "mapping/usali_schedules.yaml"])
+    runner.invoke(app, ["seed-mappings", "mapping/opera.yaml"])
+    pdf = tmp_path / "keep.pdf"
+    shutil.copy(Path("docs/reference/samples/Trial Balance 07.07.2026 - Opera.pdf"), pdf)
+
+    result = runner.invoke(
+        app,
+        ["process", str(pdf), "--processed-dir", str(tmp_path / "done"),
+         "--failed-dir", str(tmp_path / "failed")],
+    )
+    assert result.exit_code == 0, result.output
+    assert pdf.exists()
