@@ -136,6 +136,12 @@ COMMON_ENV+=",USALI_PHOTO_STORE_GCS_BUCKET=${BUCKET}"
 COMMON_ENV+=",USALI_BIOMETRIC_MATCHING_ENABLED=true"
 COMMON_ENV+=",USALI_CRM_PROVIDER=delphi"
 COMMON_ENV+=",USALI_KC_ADMIN_BASE_URL=${AUTH_URL}"
+# OH-23: the domain every property's intake address is minted under. It is a
+# ROUTING value, not a secret — `intake_api._resolve_address` compares the
+# envelope recipient's domain against it, so an address at any other domain
+# resolves nothing. The Cloudflare Email Routing side of it is
+# docs/runbooks/email-intake.md; the two must name the same subdomain.
+COMMON_ENV+=",USALI_EMAIL_INTAKE_DOMAIN=intake.mandati.ai"
 # Both the serving revision (signup request + OTP) and the invite job send mail,
 # so the notifier config is shared. `notifier_from_settings` REFUSES to build an
 # smtp notifier without a host and a From, which is why this is all-or-nothing:
@@ -175,6 +181,28 @@ APP_SECRETS="USALI_DB_PASSWORD=usali-app-db-password:latest,${SHARED_SECRETS}${S
 # for signup /complete, so it alone mounts the provisioner password — a
 # strong secret in place of config.py's dev default.
 APP_SECRETS+=",USALI_PROVISIONER_DB_PASSWORD=usali-provisioner-db-password:latest"
+# OH-23 (D-OH23.2): the HMAC the Cloudflare Email Worker signs every emailed
+# night audit with. The SERVING revision alone — the migrate job runs no HTTP
+# surface, so it has no webhook to authenticate.
+#
+# ONE VALUE IN TWO PLACES. The same string is the GitHub secret
+# EMAIL_INTAKE_SECRET, which .github/workflows/deploy-email-intake.yml puts
+# into the worker as INTAKE_SECRET. Rotate one without the other and every
+# message 401s and piles up in the ops fallback mailbox, unredacted. The
+# rotation order is in docs/runbooks/email-intake.md.
+#
+# CREATE THE SECRET BEFORE USALI_ENV=prod IS EVER TURNED ON.
+# `config._DEV_DEFAULT_SECRETS` lists `email_intake_secret`, and
+# `config._refuse_dev_secrets_in_prod` is where the committed dev default is
+# refused — but that guard runs only when USALI_ENV=prod, which this script
+# deliberately does not set (see the note at the top of COMMON_ENV above).
+# So on this deployment nothing in the APP shouts about a missing secret: the
+# only thing standing between an absent `usali-email-intake-secret` and an app
+# happily signing against a public default is this --set-secrets line failing
+# at `gcloud run deploy`. The day a real environment sets USALI_ENV=prod, that
+# guard turns the same absence into a refusal to start — which is a much worse
+# day to discover the secret was never created.
+APP_SECRETS+=",USALI_EMAIL_INTAKE_SECRET=usali-email-intake-secret:latest"
 
 echo "== [2/5] migrate-seed job (migrate BEFORE deploy)"
 gcloud run jobs deploy usali-migrate-seed \

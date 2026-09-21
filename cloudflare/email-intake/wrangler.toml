@@ -1,0 +1,19 @@
+name = "oh-email-intake"
+main = "src/worker.js"
+compatibility_date = "2026-09-21"
+
+# Everything the worker reads out of `env`. The two values here are public —
+# the URL is the app's own endpoint and the cap is a number — and the two
+# SECRETS are not listed: `INTAKE_SECRET` and `FALLBACK_ADDRESS` are set by
+# .github/workflows/deploy-email-intake.yml with `wrangler secret put`, from
+# the GitHub secrets EMAIL_INTAKE_SECRET and EMAIL_INTAKE_FALLBACK. A `[vars]`
+# entry would put both of them in this file, which is a public repo.
+[vars]
+INTAKE_URL = "https://demo.mandati.ai/api/intake/email"
+
+# The app's own body cap, `Settings.email_intake_max_bytes` in
+# src/usali/config.py, which defaults to 25 MiB. Over this the worker forwards
+# to the fallback mailbox without POSTing, so raising one side without the
+# other only changes which of the two refuses. Cloudflare's own message limit
+# is the same 25 MiB, so a larger value here buys nothing.
+MAX_BYTES = 26214400

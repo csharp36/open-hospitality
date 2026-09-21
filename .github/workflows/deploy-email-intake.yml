@@ -1,0 +1,92 @@
+name: Deploy email intake worker
+
+# Publishes cloudflare/email-intake/ as the Cloudflare Email Worker that
+# fronts POST /api/intake/email (OH-23, D-OH23.1). Separate from
+# deploy-marketing.yml because the two need DIFFERENT credentials, not because
+# they do different things — see the token note below.
+#
+# Trigger: workflow_dispatch only, matching deploy-marketing.yml and
+# deploy-demo.yml. Fork pull requests cannot run workflow_dispatch, so no
+# outside contributor can reach the Cloudflare credential or the intake secret.
+#
+# THE TOKEN IS NOT THE MARKETING ONE. deploy-marketing.yml's
+# CLOUDFLARE_API_TOKEN is scoped to Account -> Cloudflare Pages -> Edit, and
+# that scope cannot upload a Worker or touch Email Routing. This workflow
+# needs a SECOND token, kept as the repo secret CLOUDFLARE_WORKERS_API_TOKEN,
+# with:
+#
+#   * Account -> Workers Scripts -> Edit       (wrangler deploy, secret put)
+#   * Zone    -> Email Routing Rules -> Edit   (the catch-all rule -> worker)
+#
+# Two tokens rather than one widened token: the Pages deploy runs far more
+# often, and nothing it does should be able to replace the code that handles
+# every property's mail. Both live only as repo secrets.
+#
+# Setup, the routing rules, and the ops fallback mailbox:
+# docs/runbooks/email-intake.md.
+
+on:
+  workflow_dispatch:
+
+# A newer deploy waits rather than racing an in-flight upload onto the same
+# worker.
+concurrency:
+  group: deploy-email-intake
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: email-intake
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: cloudflare/email-intake
+    env:
+      # wrangler reads the credential from CLOUDFLARE_API_TOKEN whatever the
+      # secret is called; the Workers-scoped secret is mapped onto that name
+      # here, and the Pages-scoped CLOUDFLARE_API_TOKEN secret is never
+      # referenced in this file.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_WORKERS_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: cloudflare/email-intake/package-lock.json
+
+      - run: npm ci
+
+      # The same tests CI runs. A deploy is dispatched by hand months apart,
+      # so it re-runs them rather than trusting that the last CI run on this
+      # commit was green.
+      - run: npm test
+
+      # Secrets BEFORE deploy, so the first version of the worker that exists
+      # already has both. A worker that started without INTAKE_SECRET would
+      # sign with `undefined` and every message would 401 into the fallback
+      # mailbox.
+      #
+      # `printf '%s'` rather than `echo`: a trailing newline inside an HMAC
+      # key is a different key, and it would be invisible in every log.
+      # The values go through `env:` rather than being interpolated into the
+      # script, so nothing secret is ever part of a command line.
+      - name: Put INTAKE_SECRET
+        env:
+          VALUE: ${{ secrets.EMAIL_INTAKE_SECRET }}
+        run: printf '%s' "$VALUE" | npx wrangler secret put INTAKE_SECRET
+
+      - name: Put FALLBACK_ADDRESS
+        env:
+          VALUE: ${{ secrets.EMAIL_INTAKE_FALLBACK }}
+        run: printf '%s' "$VALUE" | npx wrangler secret put FALLBACK_ADDRESS
+
+      - name: Deploy the worker
+        run: npx wrangler deploy

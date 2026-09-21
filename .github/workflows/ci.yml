@@ -86,6 +86,25 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  email-intake:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare/email-intake
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: cloudflare/email-intake/package-lock.json
+      - run: npm ci
+      # `node --test` only: the worker's two source files use nothing beyond
+      # crypto.subtle, fetch, ReadableStream and Headers, all of which Node 22
+      # has as globals, so these tests need neither wrangler nor a network.
+      # The wrangler devDependency exists for the deploy workflow, not this.
+      - run: npm test
+
   image:
     runs-on: ubuntu-latest
     steps:
