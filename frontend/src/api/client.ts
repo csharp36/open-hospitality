@@ -858,7 +858,7 @@ export async function setIntakeSenderDomains(
  * (tests/test_intake_address_api.py::test_an_out_of_range_limit_is_refused).
  * That 422 comes from query validation, so its `detail` is a LIST, not the
  * string the allowlist PUT sends — see `senderDomainRefusal` in
- * pages/PropertyConfigPage.tsx, which is why it does not render a detail
+ * pages/IntakeSection.tsx, which is why it does not render a detail
  * verbatim. */
 export function getIntakeEvents(
   propertyId: string,

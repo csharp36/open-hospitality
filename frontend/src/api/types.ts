@@ -993,6 +993,12 @@ export interface PropertyConfig {
  * `Record<IntakeOutcome, string>`, so a member added here without a label
  * fails `npx tsc -b`. Code that RENDERS an outcome still has to cope with a
  * value outside the union.
+ *
+ * Neither toolchain compares this union with the server's set, so a Python
+ * test does it: tests/test_intake_schema.py::
+ * test_the_frontend_outcome_union_matches_intake_outcomes reads this file and
+ * asserts set equality with `intake.INTAKE_OUTCOMES`. Editing the members
+ * below without editing that set fails there.
  */
 export type IntakeOutcome =
   | 'ingested'
@@ -1011,8 +1017,10 @@ export interface IntakeAttachment {
   sha256: string
   bytes: number
   outcome: IntakeOutcome
-  /** Present only when the attachment was ingested. */
-  batch_id?: number
+  /** The batch the attachment staged into. Absent, or explicitly null,
+   * when it did not stage one: intake_api writes the key with a null
+   * value rather than omitting it. */
+  batch_id?: number | null
   /** Present only when the attachment failed. */
   error?: string
 }

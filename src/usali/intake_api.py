@@ -418,7 +418,17 @@ def _resolve_address(
     is active or it is revoked, and the caller branches on the flag. If that
     unique were ever dropped, `one_or_none` raises rather than silently
     picking one of them.
+
+    The recipient is unwrapped exactly as `intake._domain_of` unwraps the
+    SENDER, and for the same reason: a worker forwarding `message.to` verbatim
+    can hand over `<na-abc@intake.example.test>`. Left bracketed, the `>` would
+    ride on the domain and fail the compare below, and the `<` would fail
+    `intake.local_part`'s alphabet — so the message would answer 200
+    `unknown_address`, the worker would NOT forward it to the fallback mailbox,
+    and the night's report would be gone with no event to show for it.
+    `test_a_bracketed_recipient_resolves_like_a_bare_one` is the pin.
     """
+    envelope_to = envelope_to.strip().strip("<>").strip()
     if envelope_to.rpartition("@")[2].strip().lower() != domain.strip().lower():
         return None
     try:

@@ -669,6 +669,47 @@ def test_the_recipient_domain_is_compared_case_insensitively(
     _clean(tmp_path, raw)
 
 
+def test_a_bracketed_recipient_resolves_like_a_bare_one(
+    db_session, client, tmp_path
+):
+    """`<na-hisj@intake.example.test>` is the same address as the bare form.
+
+    `intake._domain_of` already unwraps the SENDER, on the stated grounds that
+    a worker forwarding the envelope verbatim can hand over `<gm@hotel.test>`.
+    The recipient arrives by the same route and had no such unwrapping: the
+    `>` rode on the domain and failed the compare, so the message answered
+    200 `unknown_address` — which the worker does NOT forward to the fallback
+    mailbox, so the night's report would have been lost with no event. The
+    refusal below is therefore what a lost report looks like from here.
+    """
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    raw = _message()
+
+    r = _post(client, raw, to=f"<{HISJ_ADDRESS}@{_DOMAIN}>")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == "no_attachment"
+    assert [e.outcome for e in _events(db_session)] == ["no_attachment"]
+    _clean(tmp_path, raw)
+
+
+def test_a_bracketed_recipient_at_another_domain_is_still_refused(
+    db_session, client, tmp_path
+):
+    """Unwrapping the brackets must not unwrap the domain check with them."""
+    _seed(db_session, "opera")
+    _address(db_session, HISJ_ADDRESS, "HISJ")
+    raw = _message()
+
+    r = _post(client, raw, to=f"<{HISJ_ADDRESS}@not-our-intake-domain.test>")
+
+    assert r.status_code == 200, r.text
+    assert r.json()["outcome"] == "unknown_address"
+    assert _events(db_session) == []
+    _clean(tmp_path, raw)
+
+
 def test_a_long_message_id_is_clipped_to_the_column_width(
     db_session, client, tmp_path
 ):

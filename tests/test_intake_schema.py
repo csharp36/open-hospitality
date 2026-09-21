@@ -14,6 +14,7 @@ alone.
 
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import CheckConstraint, text
@@ -99,6 +100,31 @@ def test_intake_outcomes_match_the_check_constraint():
     declared = set(re.findall(r"'([a-z_]+)'", _model_check(EmailIntakeEvent, _OUTCOME_CHECK)))
     assert declared, "no quoted outcomes found in the model's CHECK"
     assert declared == set(intake.INTAKE_OUTCOMES)
+
+
+def test_the_frontend_outcome_union_matches_intake_outcomes():
+    """The FOURTH copy of D-OH23.7's outcome set lives in another language.
+
+    `IntakeOutcome` in the SPA is what makes `OUTCOME_LABELS` in
+    pages/IntakeSection.tsx a total `Record`, so a server-side outcome missing
+    from the union renders with no label and an outcome added to the union
+    alone fails `npx tsc -b`. Nothing in either toolchain compares the two
+    sets, though: TypeScript cannot see Python and the Python tests do not
+    read TypeScript. This is that comparison, and it is why the union's own
+    comment names this test.
+    """
+    types_ts = Path(__file__).resolve().parents[1] / "frontend/src/api/types.ts"
+    source = types_ts.read_text(encoding="utf-8")
+    union = re.search(
+        r"export type IntakeOutcome\s*=\s*((?:\s*\|\s*'[a-z_]+')+)", source
+    )
+    assert union, f"no IntakeOutcome union found in {types_ts}"
+    declared = set(re.findall(r"'([a-z_]+)'", union.group(1)))
+    assert declared == set(intake.INTAKE_OUTCOMES), (
+        "frontend/src/api/types.ts::IntakeOutcome has drifted from "
+        f"intake.INTAKE_OUTCOMES: only in TS {sorted(declared - set(intake.INTAKE_OUTCOMES))}, "
+        f"only in Python {sorted(set(intake.INTAKE_OUTCOMES) - declared)}"
+    )
 
 
 @pytest.mark.parametrize(

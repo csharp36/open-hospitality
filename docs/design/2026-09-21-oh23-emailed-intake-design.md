@@ -29,9 +29,10 @@ manual upload.
   anything that goes through the pipeline shows up on the night-audit page
   without extra wiring.
 - **Tenancy.** Operator routes get an org-bound session from the OIDC token
-  (`require_active_org`). The one non-OIDC surface today, the kiosk device
-  token, is pinned to the founding org (`server.py`: "no OIDC claim to
-  resolve an org from"). An email has no token either; the address must
+  (`require_active_org`). Two surfaces today do not go through it: the kiosk
+  device token, pinned to the founding org (`server.py`: "no OIDC claim to
+  resolve an org from"), and the public signup surface. Neither resolves an
+  org from a caller-supplied identity. An email has no token either; the address must
   carry the org. `invites.validate` is the precedent for a lookup that runs
   before any org is known: an org-independent table read on the unbound
   base factory (`resolve_org_id` does the same for aliases).
@@ -223,8 +224,9 @@ should not carry an unused capability.
 the trace, alerting is OH-26.** A processing failure records the failed
 batch and the error record (the gate), marks the attachment `failed` in
 the event, and returns 200 to the worker (the message was received and
-disposed). Only auth, size and 5xx-class problems return non-2xx, which is
-what makes the worker forward to the fallback mailbox.
+disposed). Only auth (401), size (413), the rate limiter (429) and
+5xx-class problems return non-2xx, which is what makes the worker forward
+to the fallback mailbox.
 
 One gap is named rather than closed: the event is committed LAST, so an
 exception between the final ingest and that commit leaves committed batches
@@ -285,8 +287,12 @@ PMS ──SMTP──> Cloudflare Email Routing (intake.<domain>, catch-all)
   `_L1_ORG_INDEPENDENT`, and — the one the first draft of this doc missed —
   the exact `ix_<table>_org_id` index set in
   `tests/test_l1_org_wall_migration.py`.
-- The webhook is the second non-OIDC surface. Unlike the kiosk it is
-  multi-org by construction, because the address row carries the org.
+- The webhook is the THIRD ungated surface, after the kiosk device token
+  and the public signup routes. Unlike either it is multi-org by
+  construction, because the address row carries the org. (An earlier
+  draft of this doc called it the second and §1 called the kiosk the only
+  one; both undercounted signup.) A door test enumerating the three is a
+  named follow-up rather than something this change adds.
 - The secret is one value in two places (GitHub secret → `wrangler secret
   put`; GCP Secret Manager → the app's env), rotated together.
 - The worker forwards raw mail to the fallback mailbox on failure: that

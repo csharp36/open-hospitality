@@ -30,7 +30,7 @@ class PropertyIntakeAddress(Base):
     """Per-property inbound address (D-OH23.3). NOT OrgScoped: the webhook
     looks it up by local part before any org is known, then binds a session
     to `org_id`. Operator routes filter org_id explicitly
-    (tests/test_intake_email.py::test_an_address_of_another_org_is_invisible_and_unrotatable)."""
+    (tests/test_intake_address_api.py::test_an_address_of_another_org_is_invisible_and_unrotatable)."""
     __tablename__ = "property_intake_address"
     address_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     local_part: Mapped[str] = mapped_column(String(64), unique=True)
