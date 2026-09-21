@@ -4,42 +4,61 @@
 Two tables, two different tenancy shapes.
 
 `property_intake_address` is NOT OrgScoped and gets NO org_wall policy, on
-the `invite` / `otp_challenge` precedent (b1b0invite, b1c0otp): the webhook
-resolves a message's local part to a row on the UNBOUND base session,
-before any org is known, and only then opens an org-bound session on the
-row's `org_id`. A policy keyed on `app.org_id` would refuse that lookup.
+the `invite` / `otp_challenge` precedent (b1b0invite, b1c0otp). D-OH23.3
+requires the webhook resolve a message's local part before any org is
+known — a lookup on the unbound base session — and only then bind a
+session to the row's `org_id`; a policy keyed on `app.org_id` would refuse
+that lookup. The no-policy choice is named, not inferred: the exclusion
+loop in `test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`
+asserts this table is absent from the policied set.
 
 It differs from `invite` in one way worth naming: it DOES carry a NOT NULL
-`org_id`, because the address is what resolves the tenant. What stands in
-for the missing RLS wall is the composite `(org_id, property_id)` FK —
-which makes a row naming another org's property unrepresentable — plus
-explicit `org_id` filtering in the operator routes. Two tests record the
-shape: `test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
-checks the NOT NULL org_id half (it treats this table as tenant-owned,
-which is why the table is NOT in that test's `_L1_ORG_INDEPENDENT` set —
-that set means "no org_id column at all"), and this table's ABSENCE from
-the exact policy set in
-`test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced` is
-where the no-policy choice is written down.
+`org_id`, because the address is what resolves the tenant.
+`test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
+checks that half (it treats this table as tenant-owned, which is why the
+table is NOT in that test's `_L1_ORG_INDEPENDENT` set — that set means "no
+org_id column at all"). What stands in for the missing wall is the
+composite `(org_id, property_id)` FK, which makes a row naming another
+org's property unrepresentable, plus per-org filtering in the operator
+routes, which D-OH23.3 requires and
+`tests/test_intake_address_api.py::test_an_address_of_another_org_is_invisible_and_unrotatable`
+checks.
+
+Two constraints beyond the FK. `uq_property_intake_address_active` is a
+partial unique on `(org_id, property_id) WHERE revoked_at IS NULL`: one
+live address per property is enforced here, so two concurrent creates
+cannot both land and leave a rotate revoking only one.
+`ck_property_intake_address_local_part_lower` refuses a local part that is
+not already lowercase, so the unique on `local_part` is case-insensitive
+in effect — the same refuse-unknown posture `outcome` takes below.
 
 `email_intake_event` is OrgScoped and joins the L2 database wall on the
 same terms as every other org-scoped table: ENABLE + FORCE ROW LEVEL
-SECURITY and the `org_wall` policy. `_PREDICATE` below follows the
-l5a0orgsettings / n1a0nightaudit template, but only the session-variable
-NAME is shared with them — `usali.tenancy.RLS_ORG_VAR`, imported. The
-predicate text itself is retyped in each of those migrations. No GRANT
-here: usali_app's DML arrives through l2a0rlswall's ALTER DEFAULT
-PRIVILEGES for future tables.
+SECURITY and the `org_wall` policy. `_PREDICATE` below is a literal copy
+of l2a0rlswall's, sharing only the imported `usali.tenancy.RLS_ORG_VAR`
+with it; `test_l2_rls_wall.py::test_the_stacked_migrations_share_the_l2_rls_predicate`
+is the drift guard, pinning this copy byte-equal to l2's. No GRANT here:
+usali_app's DML arrives through l2a0rlswall's ALTER DEFAULT PRIVILEGES for
+future tables.
 
 `outcome` carries a CHECK over the closed set D-OH23.7 names — the
 refuse-unknown posture at the schema, so no code path can land an outcome
-the event log's readers do not know how to render.
+the event log's readers do not know how to render. `_OUTCOMES` is
+duplicated in `EmailIntakeEvent.__table_args__`; compare_metadata does not
+compare CHECKs, so Task 3's INTAKE_OUTCOMES pin is what will hold the two
+copies together.
 
-Downgrade drops both tables; the policy goes with its table.
+Both JSON columns are JSONB: `json` has no equality operator and cannot be
+indexed, and the tables are empty at this revision so there is nothing to
+cast.
+
+downgrade() drops the policy explicitly, then both tables; the partial
+unique index and both CHECKs go with their tables.
 """
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy.dialects.postgresql import JSONB
 
 from usali.tenancy import RLS_ORG_VAR
 
@@ -73,12 +92,18 @@ def upgrade() -> None:
         sa.Column("created_at", sa.DateTime(timezone=True),
                   server_default=sa.func.now(), nullable=False),
         sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("sender_domains", sa.JSON(), nullable=True),
+        sa.Column("sender_domains", JSONB(), nullable=True),
         sa.UniqueConstraint("local_part",
                             name="uq_property_intake_address_local_part"),
+        sa.CheckConstraint("local_part = lower(local_part)",
+                           name="ck_property_intake_address_local_part_lower"),
         sa.ForeignKeyConstraint(
             ["org_id", "property_id"], ["property.org_id", "property.property_id"],
             name="fk_property_intake_address_property_org"),
+    )
+    op.create_index(
+        "uq_property_intake_address_active", _ADDRESS, ["org_id", "property_id"],
+        unique=True, postgresql_where=sa.text("revoked_at IS NULL"),
     )
     op.create_table(
         _EVENT,
@@ -96,8 +121,8 @@ def upgrade() -> None:
         sa.Column("auth_result", sa.String(length=1000), nullable=True),
         sa.Column("message_id", sa.String(length=320), nullable=True),
         sa.Column("outcome", sa.String(length=32), nullable=False),
-        sa.Column("attachments", sa.JSON(),
-                  server_default=sa.text("'[]'::json"), nullable=False),
+        sa.Column("attachments", JSONB(),
+                  server_default=sa.text("'[]'::jsonb"), nullable=False),
         sa.CheckConstraint(f"outcome IN {_OUTCOMES}",
                            name="ck_email_intake_event_outcome"),
         sa.ForeignKeyConstraint(

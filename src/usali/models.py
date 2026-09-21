@@ -12,7 +12,6 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
-    JSON,
     Numeric,
     String,
     Text,
@@ -22,6 +21,7 @@ from sqlalchemy import (
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, declared_attr, mapped_column
 
 from usali.crypto import EncryptedBytes, EncryptedString
@@ -2341,24 +2341,42 @@ class OccupancyForecast(OrgScoped, Base):
 
 
 class PropertyIntakeAddress(Base):
-    """Per-property inbound address (D-OH23.3). NOT OrgScoped: the webhook
-    looks it up by local part before any org is known, then binds a session
-    to `org_id`. Operator routes filter org_id explicitly
-    (tests/test_intake_email.py::test_an_address_of_another_org_is_invisible_and_unrotatable).
+    """Per-property inbound address (D-OH23.3). NOT OrgScoped: D-OH23.3
+    requires the webhook resolve a local part before any org is known, so
+    that lookup must run on the unbound base session, and a policy keyed on
+    app.org_id would refuse it. Operator routes are required to filter by
+    the caller's org;
+    tests/test_intake_address_api.py::test_an_address_of_another_org_is_invisible_and_unrotatable
+    is where that is checked.
 
-    It therefore carries org_id WITHOUT the mixin's RLS wall. The two
-    inventory tests that between them fix that shape are
+    It therefore carries org_id WITHOUT the mixin's RLS wall. Two tests fix
+    that shape:
     `test_migration_on_populated_data.py::test_l1_every_tenant_table_carries_org_id_and_the_backfill_landed_org_1`
-    (org_id NOT NULL) and
+    (org_id NOT NULL) and the exclusion loop in
     `test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`
-    (an exact policy set this table is absent from). The composite
-    (org_id, property_id) FK below is what makes a row naming another
-    org's property unrepresentable.
+    (this table named as unpolicied). The composite (org_id, property_id)
+    FK below makes a row naming another org's property unrepresentable;
+    `uq_property_intake_address_active` makes a second live address for one
+    property unrepresentable.
     """
 
     __tablename__ = "property_intake_address"
     __table_args__ = (
         UniqueConstraint("local_part", name="uq_property_intake_address_local_part"),
+        # One live address per property, at the database: a partial unique
+        # over the un-revoked rows. Two concurrent creates cannot both land,
+        # so a rotate never has two live capabilities to revoke.
+        Index(
+            "uq_property_intake_address_active", "org_id", "property_id",
+            unique=True, postgresql_where=text("revoked_at IS NULL"),
+        ),
+        # Stored lowercase or refused, so the unique on local_part is
+        # case-insensitive in effect. Duplicated as o1a0intake's CHECK of the
+        # same name; compare_metadata does not compare CHECKs.
+        CheckConstraint(
+            "local_part = lower(local_part)",
+            name="ck_property_intake_address_local_part_lower",
+        ),
         ForeignKeyConstraint(
             ["org_id", "property_id"], ["property.org_id", "property.property_id"],
             name="fk_property_intake_address_property_org",
@@ -2382,19 +2400,22 @@ class PropertyIntakeAddress(Base):
     )
     # D-OH23.4 defines the column: NULL is "any authenticated sender", a list
     # narrows it to those envelope-sender domains.
-    sender_domains: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
+    sender_domains: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
 
 
 class EmailIntakeEvent(OrgScoped, Base):
     """One row per message received for a property's address (D-OH23.7).
-    Bodies are never stored; subject and errors pass mask_pans before the write
-    (tests/test_intake_email.py::test_event_text_carries_no_card_numbers).
-
-    `outcome` carries a CHECK over the closed set D-OH23.7 names; the
-    o1a0intake migration is where the schema enforces it."""
+    This table has no body column. Subject and error text pass mask_pans
+    before the write;
+    tests/test_intake_email.py::test_event_text_carries_no_card_numbers is
+    where that is checked."""
 
     __tablename__ = "email_intake_event"
     __table_args__ = (
+        # CHECK over D-OH23.7's closed outcome set, duplicated as o1a0intake's
+        # _OUTCOMES. compare_metadata does not compare CHECKs, so nothing in
+        # this file holds the two copies together; Task 3's INTAKE_OUTCOMES
+        # pin test is what will catch drift.
         CheckConstraint(
             "outcome IN ('ingested', 'partial', 'duplicate', 'no_attachment', "
             "'sender_rejected', 'wrong_property', 'not_a_night_audit_report', "
@@ -2417,6 +2438,11 @@ class EmailIntakeEvent(OrgScoped, Base):
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # The four String widths below are hard limits: Postgres raises
+    # StringDataRightTruncation on overflow rather than truncating, so the
+    # writer must clip envelope_from, subject, auth_result and message_id
+    # to width before the INSERT — an obligation on Task 3 that this schema
+    # creates.
     envelope_from: Mapped[str] = mapped_column(String(320))
     subject: Mapped[str | None] = mapped_column(String(500), nullable=True)
     auth_result: Mapped[str | None] = mapped_column(String(1000), nullable=True)
@@ -2424,5 +2450,5 @@ class EmailIntakeEvent(OrgScoped, Base):
     outcome: Mapped[str] = mapped_column(String(32))
     # Shape (D-OH23.7): [{name, sha256, bytes, outcome, batch_id?, error?}].
     attachments: Mapped[list[dict[str, object]]] = mapped_column(
-        JSON, default=list, server_default=text("'[]'::json")
+        JSONB, default=list, server_default=text("'[]'::jsonb")
     )
