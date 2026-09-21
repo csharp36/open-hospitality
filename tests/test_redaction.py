@@ -70,3 +70,29 @@ def test_redact_words_preserves_positions_and_order():
     out, _ = redact_words(words)
     assert [(w.x0, w.top) for w in out] == [(w.x0, w.top) for w in words]
     assert [w.text for w in out] == ["Total", "Occupied", "Rooms", "62"]
+
+
+def test_redact_words_masks_a_pan_followed_by_a_digit_cell():
+    # Room number after the card: the card must still be found and the room kept.
+    out, stats = redact_words(_row("Folio", "4111", "1111", "1111", "1111", "205"))
+    assert [w.text for w in out] == ["Folio", "••••", "••••", "••••", "•••• 1111", "205"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_masks_a_pan_preceded_by_a_digit_cell():
+    out, stats = redact_words(_row("88213", "4111111111111111", "Room", "12"))
+    assert [w.text for w in out] == ["88213", "•••• 1111", "Room", "12"]
+    assert stats.pans_masked == 1
+
+
+def test_redact_words_masks_two_pans_in_one_row():
+    out, stats = redact_words(_row("4111111111111111", "and", "5500000000000004"))
+    assert [w.text for w in out] == ["•••• 1111", "and", "•••• 0004"]
+    assert stats.pans_masked == 2
+
+
+def test_redact_words_does_not_mask_a_luhn_valid_run_that_spans_a_non_digit_cell():
+    # "4111 1111" + "x" + "1111 1111": the digits never sit in one run.
+    out, stats = redact_words(_row("4111", "1111", "x", "1111", "1111"))
+    assert [w.text for w in out] == ["4111", "1111", "x", "1111", "1111"]
+    assert stats.pans_masked == 0
