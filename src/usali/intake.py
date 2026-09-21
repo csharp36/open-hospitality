@@ -2,12 +2,27 @@
 
 Webhook signature verification, intake address local parts, the sender policy,
 and pulling the report attachments out of a MIME message. Everything here is a
-pure function of its arguments: no database, no filesystem, and no PDF or XLSX
-adaptor, which is what lets the unauthenticated webhook import this module and
-decide whether to go any further before it opens anything.
+pure function of its arguments, and the import graph is deliberately shallow —
+no database driver, no filesystem, and no PDF or XLSX parser; format detection
+comes from the leaf module `usali.adaptors.magic`. That is what lets the
+unauthenticated webhook import this module and decide whether to go any
+further before it opens anything, and it is pinned by
+tests/test_intake.py::test_intake_imports_no_parser.
 
 The night-audit checks a message's attachments must then pass live in
 `usali.night_audit_validation`, which does read the database.
+
+WHAT THE SENDER POLICY RESTS ON. `sender_allowed` reads a decision out of a
+free-text header that a RECEIVER formats, and receivers interpolate
+attacker-influenced text into it. `_auth_results` and the dot-atom rule in
+`sender_allowed` are written against that, but they bound the damage rather
+than remove the dependency: a receiver that echoed an attacker-chosen string
+containing `;` into its comment could still manufacture a result. The design
+(D-OH23.4) records the assumption this rests on — that Cloudflare's
+Authentication-Results echoes the MAIL FROM address and the connecting IP, not
+the HELO string — as an assumption, not something measured here. If
+`X-Intake-Auth` is ever sourced from a different receiver, the free-text
+policy has to be replaced by verifying DKIM over the raw message in-process.
 """
 
 import base64
@@ -20,7 +35,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from email import message_from_bytes, policy
 
-from usali.adaptors.reader import is_pdf, is_xlsx
+from usali.adaptors.magic import is_pdf, is_xlsx
 
 # D-OH23.7's closed outcome set, duplicated from the CHECK on
 # email_intake_event. The two copies are held together by
@@ -46,6 +61,11 @@ _LOCAL_PART_RANDOM_BYTES = 16
 
 _SIGNATURE_PREFIX = "sha256="
 _SIGNATURE_HEX_LEN = 64
+# Unix seconds, bounded. `int()` itself is happy to build an arbitrarily large
+# integer, and converting one to a float for the window comparison raises
+# OverflowError — on an unauthenticated route, a raised exception is a 500 and
+# a 500 is an oracle. 12 digits reaches the year 33658.
+_TIMESTAMP = re.compile(r"\d{1,12}\Z")
 
 # An attachment name is spliced into the `source_file` an ingest records and
 # into the filed artifact's name, so it is bounded as well as scrubbed. 120 is
@@ -74,6 +94,19 @@ _AUTH_METHODS = frozenset({
     "dkim", "spf", "dmarc", "iprev", "auth", "arc", "dkim-adsp", "sender-id",
 })
 
+# RFC 5322 atext, and a dot-atom built from it. An envelope local part outside
+# this alphabet is refused (`sender_allowed`): every character a receiver's
+# free-text comment could be broken out of — `(`, `)`, `;`, space, `"` — is
+# outside atext, so a MAIL FROM that could be echoed as a forged result cannot
+# reach the parser in the first place. Quoted local parts are legal in RFC 5322
+# and are refused here anyway; a PMS night-audit mailer does not use one.
+_ATEXT = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~-]"
+_DOT_ATOM = re.compile(rf"{_ATEXT}+(?:\.{_ATEXT}+)*\Z")
+# Deliberately narrow: letters, digits, dot and hyphen. Applied to the envelope
+# sender's domain and to every domain read out of the header, so a domain that
+# could carry a separator never reaches an alignment comparison.
+_DOMAIN = re.compile(r"[A-Za-z0-9.-]+\Z")
+
 
 def safe_component(value: str) -> str:
     """Reduce text to the `[A-Za-z0-9._-]` alphabet, one character for one."""
@@ -94,15 +127,16 @@ def verify_signature(
     `now` in EITHER direction is refused, so a captured call cannot be replayed
     later and a forward-dated one cannot buy itself a longer life.
 
-    Every malformed input — a non-numeric timestamp, a missing or wrong prefix,
-    non-hex or wrong-length digest — answers False. It never raises: the caller
-    is an unauthenticated route, and a traceback there is a different response
-    than a refusal, which is itself a signal.
+    Every malformed input — a non-numeric or absurdly long timestamp, a
+    missing or wrong prefix, non-hex or wrong-length digest — answers False.
+    It never raises: the caller is an unauthenticated route, and a traceback
+    there is a different response than a refusal, which is itself a signal.
+    Pinned over random input by tests/test_intake.py::
+    test_no_timestamp_makes_verify_signature_raise.
     """
-    try:
-        sent_at = int(timestamp)
-    except (TypeError, ValueError):
+    if not _TIMESTAMP.fullmatch(timestamp):
         return False
+    sent_at = int(timestamp)
     if abs(now.timestamp() - sent_at) > window:
         return False
     if not header.startswith(_SIGNATURE_PREFIX):
@@ -160,23 +194,33 @@ class _AuthResult:
 def _auth_results(auth_result: str) -> list[_AuthResult]:
     """Parse Authentication-Results into (method, verdict, properties) triples.
 
-    Quoted strings and parenthesised comments are removed first, so a
-    `dkim=pass` written inside one is not read as a result. Comments are
-    stripped to a FIXPOINT: `_AUTH_COMMENT` matches innermost parentheses
-    only, so one pass over `((x) dkim=pass)` leaves `( dkim=pass)` — and the
-    surviving text tokenizes into a live pass. Repeating the substitution
-    until it changes nothing removes nesting; if a parenthesis is still
-    standing after `_AUTH_COMMENT_ROUNDS` rounds the header is unbalanced,
-    which no honest receiver writes, and this returns NO results rather than
-    guess where the comment ended. That matters because receivers interpolate
-    the MAIL FROM into the SPF comment, so the local part of a crafted sender
-    address lands inside these parentheses.
+    Three rules, each of which answers NO RESULTS AT ALL rather than guess:
 
-    Results are cut at `;` (RFC 8601 puts one result per resinfo), so a
-    property never attaches across a boundary to the wrong method.
+    1. Quoted strings go first, then comments are stripped to a FIXPOINT.
+       `_AUTH_COMMENT` matches innermost parentheses only, so one pass over
+       `((x) dkim=pass)` leaves `( dkim=pass)`, whose surviving text tokenizes
+       into a live pass. If a parenthesis is still standing after
+       `_AUTH_COMMENT_ROUNDS` rounds the header is unbalanced and it is
+       refused whole.
+    2. Results are cut at `;` — RFC 8601 puts one result per resinfo — and a
+       `method=` token may only appear as the FIRST `key=value` token of its
+       clause. A method token met anywhere else is a result that arrived
+       without a separator of its own, which is what a comment BREAKOUT
+       produces, and it refuses the header.
 
-    Both behaviors are pinned by tests/test_intake.py::
-    test_a_nested_comment_grants_no_pass and
+    Rule 2 is the one that matters. Receivers interpolate the MAIL FROM into
+    the SPF comment, so a sender whose local part is `a) dkim=pass
+    header.d=victim.test (b` closes the receiver's comment, writes its own
+    result, and reopens a comment that the closing paren balances — the
+    header ends up well formed, with one real result and one forged one. The
+    forged result has no `;` in front of it, and that is what is detectable.
+    The other half of the defense is in `sender_allowed`, which refuses an
+    envelope local part that is not a dot-atom, so such an address cannot be
+    accepted whatever the receiver does with it.
+
+    Pinned by tests/test_intake.py::test_a_comment_breakout_grants_no_pass,
+    ::test_a_result_without_its_own_separator_refuses_the_header,
+    ::test_a_nested_comment_grants_no_pass and
     ::test_an_unbalanced_comment_yields_no_results.
     """
     text = _AUTH_QUOTED.sub(" ", auth_result)
@@ -189,22 +233,35 @@ def _auth_results(auth_result: str) -> list[_AuthResult]:
     results: list[_AuthResult] = []
     for clause in text.split(";"):
         current: _AuthResult | None = None
+        seen_key_value = False
         for token in clause.split():
             key, separator, value = token.partition("=")
             if not separator:
                 continue
             key, value = key.strip().lower(), value.strip().lower()
             if key in _AUTH_METHODS:
+                if seen_key_value:
+                    return []  # a result that brought no `;` of its own
                 current = _AuthResult(method=key, verdict=value, properties={})
                 results.append(current)
             elif "." in key and current is not None:
                 current.properties[key] = value
+            seen_key_value = True
     return results
 
 
 def _domain_of(address: str) -> str:
-    """The domain of an envelope address, lowercased. Empty when there is none
-    — a bare local part or a null return-path (`<>`) aligns with nothing.
+    """The domain of an envelope address, lowercased, or "" if the address is
+    not one this policy will act on.
+
+    Empty when there is no domain at all — a bare local part or a null
+    return-path (`<>`) aligns with nothing. Empty ALSO when the local part is
+    not a dot-atom or the domain is not `[A-Za-z0-9.-]+`: every character a
+    receiver's comment could be broken out of is outside those alphabets, so
+    an address that could be echoed into the header as a forged result never
+    gets as far as being compared against one. A quoted local part
+    (`"a b"@hotel.test`) is legal mail and is refused here; a PMS night-audit
+    mailer does not send from one.
 
     Angle brackets and surrounding space are trimmed, because a worker that
     forwards `message.from` verbatim can hand over `<gm@hotel.test>`, and
@@ -213,13 +270,34 @@ def _domain_of(address: str) -> str:
     local, at, domain = address.strip().strip("<>").strip().rpartition("@")
     if not at or not local:
         return ""
-    return domain.strip().lower()
+    local, domain = local.lower(), domain.strip().lower()
+    if not _DOT_ATOM.fullmatch(local) or not _DOMAIN.fullmatch(domain):
+        return ""
+    return domain
 
 
-def _property_domain(value: str) -> str:
-    """The domain out of an Authentication-Results property value, which a
-    receiver may write as a bare domain, a whole address, or `@domain`."""
-    return value.strip().rpartition("@")[2].strip().lower()
+def _signing_domain(value: str) -> str:
+    """A `header.d` property, or "" if it is not a domain.
+
+    A value outside `_DOMAIN` is not a domain any DKIM signer could have used,
+    so it names nothing and the result it belongs to can vouch for nothing.
+    """
+    value = value.strip().lower()
+    return value if _DOMAIN.fullmatch(value) else ""
+
+
+def _mailfrom_domain(value: str) -> str:
+    """The domain out of an `smtp.mailfrom` property, or "" if the value is not
+    one of the three shapes a receiver writes it in: a bare domain, a whole
+    address, or `@domain`. Anything else — two `@`s, a local part outside
+    atext, a domain carrying a separator — is not read leniently; the property
+    is treated as absent, and an absent property vouches for nobody.
+    """
+    value = value.strip().lower()
+    local, at, domain = value.rpartition("@")
+    if at and local and not _DOT_ATOM.fullmatch(local):
+        return ""
+    return domain if _DOMAIN.fullmatch(domain) else ""
 
 
 def _aligned(signing_domain: str, envelope_domain: str) -> bool:
@@ -253,17 +331,18 @@ def _authenticated_for(auth_result: str, envelope_domain: str) -> bool:
       domain. SPF authenticates the MAIL FROM itself, so there is no parent to
       relax to, and `smtp.helo` is not the MAIL FROM and does not count. The
       value may be written as a bare domain, a whole address, or `@domain`;
-      `_property_domain` reduces all three.
+      `_mailfrom_domain` reduces those three and refuses everything else.
     * A pass carrying no usable property proves nothing and is a fail.
     """
     for result in _auth_results(auth_result):
         if result.verdict != "pass":
             continue
         if result.method == "dkim":
-            if _aligned(result.properties.get("header.d", ""), envelope_domain):
+            if _aligned(_signing_domain(result.properties.get("header.d", "")),
+                        envelope_domain):
                 return True
         elif result.method == "spf":
-            mailfrom = _property_domain(result.properties.get("smtp.mailfrom", ""))
+            mailfrom = _mailfrom_domain(result.properties.get("smtp.mailfrom", ""))
             if mailfrom and mailfrom == envelope_domain:
                 return True
     return False
@@ -273,6 +352,13 @@ def sender_allowed(
     auth_result: str | None, envelope_from: str, sender_domains: Sequence[str] | None,
 ) -> bool:
     """Two layers, both of which must hold.
+
+    Before either, the envelope sender must be an address this policy will
+    act on at all: a dot-atom local part at a `[A-Za-z0-9.-]` domain
+    (`_domain_of`). That is not cosmetic — a local part carrying `(`, `)`,
+    `;`, a space or a quote is exactly what a receiver echoes into its
+    Authentication-Results comment to forge a result, and refusing it here
+    means no such address is ever the subject of a comparison.
 
     First, the message must be authenticated FOR THE ENVELOPE SENDER'S DOMAIN:
     a `dkim=pass` or `spf=pass` that vouches for somebody else buys nothing
@@ -299,14 +385,22 @@ def sender_allowed(
 # --- attachments -------------------------------------------------------------
 
 
-def _attachment_name(filename: str | None, extension: str, ordinal: int) -> str:
+def _attachment_name(
+    filename: str | None, extension: str, ordinal: int, taken: set[str]
+) -> str:
     """The name one attachment is given: a scrubbed, bounded stem plus the
-    extension its MAGIC BYTES imply.
+    FINAL extension its magic bytes imply.
 
-    The declared suffix is discarded, not trusted — `lies.pdf` carrying XLSX
-    bytes comes back `lies.xlsx`, because the extension is what a later reader
-    and a human both read as the format claim. A stem that scrubs away to
-    nothing, `.`, or `..` falls back to `attachment-N`.
+    The declared final suffix is dropped and the magic one put in its place —
+    `lies.pdf` carrying XLSX bytes comes back `lies.xlsx` — because the
+    extension is what a later reader and a human both read as the format
+    claim. Only the final suffix moves: `report.xlsx` holding a PDF becomes
+    `report.pdf`, while `report.2026.xlsx` keeps the `.2026`. A stem that
+    scrubs away to nothing, `.`, or `..` falls back to `attachment-N`.
+
+    `taken` holds the names already used for THIS message; a repeat gets its
+    ordinal appended, so two parts both called `same.pdf` come back as
+    `same.pdf` and `same-2.pdf` rather than one name for two files.
     """
     scrubbed = safe_component(filename or "")
     head, dot, _tail = scrubbed.rpartition(".")
@@ -314,7 +408,12 @@ def _attachment_name(filename: str | None, extension: str, ordinal: int) -> str:
     stem = stem[: _ATTACHMENT_NAME_MAX - len(extension)]
     if stem in _UNUSABLE_STEMS:
         return f"attachment-{ordinal}{extension}"
-    return f"{stem}{extension}"
+    name = f"{stem}{extension}"
+    if name not in taken:
+        return name
+    suffix = f"-{ordinal}"
+    stem = stem[: _ATTACHMENT_NAME_MAX - len(extension) - len(suffix)]
+    return f"{stem}{suffix}{extension}"
 
 
 def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
@@ -329,8 +428,9 @@ def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
     test_a_forwarded_report_is_found).
 
     Each name is reduced to the `[A-Za-z0-9._-]` alphabet, is never `.` or
-    `..`, is at most 120 characters, and ends in the extension the part's
-    magic bytes imply (`_attachment_name`). Unparseable bytes yield an empty
+    `..`, is at most 120 characters, is distinct within one message, and ends
+    in the extension the part's magic bytes imply (`_attachment_name`).
+    Unparseable bytes yield an empty
     list rather than an exception: the caller records an outcome for a message
     it could not open, and has nothing to re-raise into.
     """
@@ -339,6 +439,7 @@ def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
     except Exception:
         return []
     found: list[tuple[str, bytes]] = []
+    taken: set[str] = set()
     for part in message.walk():
         if part.get_content_maintype() == "multipart":
             continue
@@ -354,8 +455,9 @@ def attachments_of(raw: bytes) -> list[tuple[str, bytes]]:
             extension = ".xlsx"
         else:
             continue
-        found.append((
-            _attachment_name(part.get_filename(), extension, len(found) + 1),
-            payload,
-        ))
+        name = _attachment_name(
+            part.get_filename(), extension, len(found) + 1, taken
+        )
+        taken.add(name)
+        found.append((name, payload))
     return found

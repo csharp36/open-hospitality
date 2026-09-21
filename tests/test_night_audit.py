@@ -1475,3 +1475,35 @@ def test_upload_refuses_a_report_outside_the_nights_required_set(
         select(func.count()).select_from(PmsDailyFinancialStage)
     ).scalar_one()
     assert staged == 0
+
+
+def test_upload_refuses_unsafe_filenames(db_session, db_engine, tmp_path):
+    """The multipart filename is attacker-controlled and ends up in the
+    `source_file` an ingest records, so the endpoint refuses `.`, `..` and any
+    separator or NUL before it reads a byte of the payload. Cited by
+    usali.intake's note on what `_attachment_name` mirrors."""
+    from pathlib import Path
+
+    from tests.test_ingestion_boundary import _assert_no_file_carries
+
+    _seed_world(db_session)
+    verifier, mint = make_authkit()
+    client = _client(db_engine, tmp_path, verifier)
+    headers = _admin_headers(mint, db_session)
+
+    payload = Path("docs/reference/samples/Manager Flash 07.07.2026 - Opera.pdf").read_bytes()
+    # No NUL case: the multipart encoder rewrites `\x00` to a space on the way
+    # out, so it never reaches the endpoint over HTTP. The guard still names
+    # it, for a caller that is not this client.
+    for filename in [".", "..", "a/b.pdf", "a\\b.pdf"]:
+        r = client.post(
+            "/api/properties/HISJ/night-audit/upload", headers=headers,
+            files={"file": (filename, payload, "application/pdf")},
+        )
+        assert r.status_code == 422, (filename, r.text)
+        assert r.json()["detail"] == "unsafe upload filename", filename
+
+    _assert_no_file_carries(
+        payload, processed=tmp_path / "processed", failed=tmp_path / "failed",
+        inbox=tmp_path / "inbox",
+    )

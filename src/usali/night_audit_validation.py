@@ -105,10 +105,12 @@ def _validate_detected(
 ) -> Validation:
     """The two checks, over a report that has already been read and detected.
 
-    Both entry points funnel through here, so a document is read, the registry
-    loaded, and `detect` run exactly ONCE however it arrived — the probe in
-    `validate_document` hands its work forward rather than making
-    `validate_single` repeat it.
+    Both single-report entry points funnel through here, so a SINGLE report is
+    read, the registry loaded, and `detect` run once however it arrived — the
+    probe in `validate_document` hands its work forward rather than making
+    `validate_single` repeat it. A pack is a different shape and pays
+    differently: `validate_sections` loads the registry again and detects once
+    per section.
     """
     if det.property_id != property_id:
         return Validation(

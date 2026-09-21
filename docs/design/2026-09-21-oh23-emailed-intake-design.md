@@ -114,7 +114,30 @@ of it on a label boundary (DMARC relaxed alignment), an `spf=pass` counts only
 when its `smtp.mailfrom` domain equals it exactly, a pass carrying no such
 property counts for nothing, and the `sender_domains` allowlist stays an exact
 match — without that binding, anyone holding a valid signature for a domain of
-their own could post a message under any envelope sender. A message failing either is
+their own could post a message under any envelope sender.
+
+WHAT THIS RESTS ON (review decision, 2026-09-21). The verdict is parsed out of
+a free-text header that the RECEIVER formats, and receivers interpolate
+attacker-influenced text into it: a MAIL FROM local part of
+`a) dkim=pass header.d=victim.test (b`, echoed into the SPF comment, closes the
+comment, writes a forged aligned result and reopens a comment the trailing
+paren balances. Two structural rules answer it, both fail-closed: a `method=`
+token may only appear as the first `key=value` of its `;`-delimited clause (a
+forged result brings no separator of its own), and the envelope sender's local
+part must be an RFC 5322 dot-atom, which excludes every character — `(`, `)`,
+`;`, space, `"` — a breakout needs. Property values must also match a strict
+domain/address grammar before they are compared.
+
+That bounds the exposure; it does not remove the dependency. A receiver that
+echoed an attacker-chosen string CONTAINING `;` — the HELO, say — into its
+comment could still manufacture a well-formed result. The assumption this
+design rests on is that Cloudflare's Authentication-Results comment echoes the
+MAIL FROM address and the connecting IP, not the HELO string. That is an
+ASSUMPTION, recorded here rather than measured. The trigger to revisit: if
+`X-Intake-Auth` is ever sourced from a receiver other than Cloudflare's Email
+Routing, or Cloudflare's comment format changes to include the HELO, the
+free-text policy must be replaced by verifying DKIM over the raw message
+in-process rather than trusting a header about it. A message failing either is
 recorded (`sender_rejected`) and not opened for attachments. Rejected: no
 sender check (the address is a capability but the PMS vendor's sending
 domain is a cheap second factor); DMARC-required (many PMS senders have no

@@ -7,7 +7,10 @@ attachments must then pass are in tests/test_night_audit_validation.py.
 
 import hashlib
 import hmac
+import random
 import re
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from email.message import EmailMessage
 
@@ -32,6 +35,13 @@ _VECTOR_NOW = datetime.fromtimestamp(int(_VECTOR_TIMESTAMP), UTC)
 def _verify(header: str, *, secret: str = _VECTOR_SECRET, now: datetime = _VECTOR_NOW) -> bool:
     return intake.verify_signature(
         secret, _VECTOR_TIMESTAMP, _VECTOR_BODY, header, now=now, window=300
+    )
+
+
+def _verify_ts(timestamp: str) -> bool:
+    return intake.verify_signature(
+        _VECTOR_SECRET, timestamp, _VECTOR_BODY, _VECTOR_HEADER,
+        now=_VECTOR_NOW, window=300,
     )
 
 
@@ -80,6 +90,26 @@ def test_the_wrong_secret_is_refused():
 )
 def test_a_malformed_header_is_false_not_an_exception(header):
     assert _verify(header) is False
+
+
+def test_an_absurdly_long_timestamp_is_false_not_an_exception():
+    """`int("9" * 400)` builds happily; converting it to a float for the window
+    comparison raised OverflowError, and on an unauthenticated route a raised
+    exception is a 500 an attacker can read."""
+    assert _verify_ts("9" * 400) is False
+
+
+def test_no_timestamp_makes_verify_signature_raise():
+    """Fuzz: whatever arrives in the timestamp header, the answer is a bool."""
+    rng = random.Random(20260921)
+    alphabet = "0123456789-+eE. \t\x00abcdefXYZ_"
+    for _ in range(2000):
+        candidate = "".join(
+            rng.choice(alphabet) for _ in range(rng.randrange(0, 40))
+        )
+        assert _verify_ts(candidate) in (True, False)
+    for candidate in ["9" * 400, "-" + "9" * 400, "0" * 500, "1e400", "inf", "nan"]:
+        assert _verify_ts(candidate) is False
 
 
 def test_a_non_numeric_timestamp_is_false_not_an_exception():
@@ -174,6 +204,130 @@ def test_a_missing_authentication_results_header_is_refused():
 )
 def test_pass_is_matched_as_a_token_not_a_substring(auth_result):
     assert intake.sender_allowed(auth_result, "gm@hotel.test", None) is False
+
+
+# --- comment BREAKOUT: the receiver echoes the MAIL FROM into its comment ----
+#
+# A sender whose local part is `a) dkim=pass header.d=<victim> (b` closes the
+# receiver's comment, writes its own result, and reopens a comment the trailing
+# paren balances. The header that comes out is well formed and carries an
+# aligned pass for a domain the sender does not own. Two rules kill it: a
+# result may only begin at a `;` boundary (`_auth_results`), and an envelope
+# local part must be a dot-atom (`sender_allowed`), which no breakout string is.
+
+_BREAKOUT_LOCAL = "a) dkim=pass header.d=hotel.test (b"
+
+_RECEIVER_TEMPLATES = [
+    "spf=none (sender <{a}> is not authorized)",
+    "mx.example.test; spf=fail ({a})",
+    "mx; spf=softfail (domain of {a} does not designate 1.2.3.4 as permitted "
+    "sender) smtp.mailfrom={a}",
+    "mx; spf=none (no SPF record for {a}) smtp.helo=mail.attacker.test",
+    "spf=permerror (bad record for {a})",
+    "mx; spf=neutral ({a})",
+]
+
+
+@pytest.mark.parametrize("template", _RECEIVER_TEMPLATES)
+@pytest.mark.parametrize("domains", [None, ["hotel.test"]], ids=["open", "allowlist"])
+def test_a_comment_breakout_grants_no_pass(template, domains):
+    auth_result = template.format(a=_BREAKOUT_LOCAL)
+    envelope_from = f"{_BREAKOUT_LOCAL}@hotel.test"
+    # Asserted at BOTH layers on purpose. The sender rule alone would refuse
+    # this address, which would leave the parser rule untested against exactly
+    # the header it exists for.
+    assert intake._auth_results(auth_result) == []
+    assert intake.sender_allowed(auth_result, envelope_from, domains) is False
+
+
+def test_a_result_without_its_own_separator_refuses_the_header():
+    """The breakout without any parentheses at all: a receiver that prints the
+    MAIL FROM bare still hands the forged `dkim=pass` to the parser. It has no
+    `;` in front of it, which is what makes it detectable."""
+    payload = "spf=none smtp.mailfrom=a dkim=pass header.d=hotel.test x@hotel.test"
+    assert intake._auth_results(payload) == []
+    assert intake.sender_allowed(payload, "a@hotel.test", None) is False
+
+
+def test_a_breakout_that_writes_its_own_separator_is_refused_at_the_sender():
+    """With a `;` of its own the forged result satisfies the parser — so the
+    local part carrying `)` and `;` is what has to be refused, and is."""
+    local = "x) dkim=pass header.d=hotel.test ; (y"
+    payload = "spf=none (x) dkim=pass header.d=hotel.test ; (y)"
+    assert intake.sender_allowed(payload, f"{local}@hotel.test", None) is False
+    assert intake._domain_of(f"{local}@hotel.test") == ""
+
+
+@pytest.mark.parametrize(
+    "envelope_from",
+    [
+        '"x"@hotel.test',
+        '"a b"@hotel.test',
+        "a(b@hotel.test",
+        "a;b@hotel.test",
+        "a b@hotel.test",
+        "a@hotel.test;evil.test",
+        "a@hotel test",
+    ],
+)
+def test_an_envelope_sender_outside_the_dot_atom_alphabet_is_refused(envelope_from):
+    """Even with a genuine, aligned pass in the header: an address that could
+    be echoed into a comment as a forged result is not one this policy acts
+    on."""
+    assert intake.sender_allowed(
+        f"{_MX}; dkim=pass header.d=hotel.test", envelope_from, None
+    ) is False
+
+
+@pytest.mark.parametrize(
+    "envelope_from",
+    ["gm@hotel.test", "night.audit@hotel.test", "gm+na@hotel.test", "a-b_c@hotel.test"],
+)
+def test_ordinary_sender_addresses_are_still_accepted(envelope_from):
+    domain = envelope_from.rpartition("@")[2]
+    assert intake.sender_allowed(
+        f"{_MX}; dkim=pass header.d={domain}", envelope_from, [domain]
+    ) is True
+
+
+def test_the_real_cloudflare_shape_passes():
+    """What the worker actually forwards, so the rules above cannot have been
+    tightened into refusing every real message."""
+    auth_result = (
+        "mx.cloudflare.net; dkim=pass header.i=@hotel.test header.d=hotel.test; "
+        "spf=pass smtp.mailfrom=gm@hotel.test; dmarc=pass header.from=hotel.test"
+    )
+    assert intake.sender_allowed(auth_result, "gm@hotel.test", ["hotel.test"]) is True
+
+
+def test_a_genuine_two_result_header_passes():
+    assert intake.sender_allowed(
+        f"{_MX}; dkim=pass header.d=hotel.test; spf=pass smtp.mailfrom=gm@hotel.test",
+        "gm@hotel.test", None,
+    ) is True
+
+
+@pytest.mark.parametrize(
+    "mailfrom", ["@@hotel.test", "a b@hotel.test", "a(b@hotel.test", "hotel test"]
+)
+def test_a_malformed_smtp_mailfrom_vouches_for_nobody(mailfrom):
+    """A property read leniently is a property an attacker can shape: the
+    domain out of `@@hotel.test` looks aligned until you ask what the local
+    part was."""
+    assert intake.sender_allowed(
+        f"{_MX}; spf=pass smtp.mailfrom={mailfrom}", "gm@hotel.test", None
+    ) is False
+
+
+@pytest.mark.parametrize("signing_domain", ["hotel_test", "<hotel.test>", "hotel..test"])
+def test_a_malformed_header_d_vouches_for_nobody(signing_domain):
+    """A `;` cannot appear here — clauses are cut on it before tokenizing — so
+    what is left to reject is a value that is not a domain. `_signing_domain`
+    is belt to `_domain_of`'s braces: neither of these could equal an envelope
+    domain that has already been through `_DOMAIN` either."""
+    assert intake.sender_allowed(
+        f"{_MX}; dkim=pass header.d={signing_domain}", "gm@hotel.test", None
+    ) is False
 
 
 def test_a_nested_comment_grants_no_pass():
@@ -425,7 +579,14 @@ def test_a_filename_that_scrubs_away_to_nothing_falls_back(filename):
     ],
 )
 def test_the_attachment_naming_table(filename, expected):
-    assert intake._attachment_name(filename, ".pdf", 3) == expected
+    assert intake._attachment_name(filename, ".pdf", 3, set()) == expected
+
+
+def test_a_repeat_name_takes_its_ordinal_and_stays_within_the_cap():
+    taken = {"x" * 116 + ".pdf"}
+    name = intake._attachment_name("x" * 200, ".pdf", 7, taken)
+    assert name == "x" * 114 + "-7.pdf"
+    assert len(name) == 120
 
 
 def test_a_very_long_filename_is_truncated_with_its_extension_kept():
@@ -458,6 +619,21 @@ def test_a_dotfile_name_keeps_its_leading_dot_as_the_stem():
     assert [name for name, _ in intake.attachments_of(raw)] == [".hidden.pdf"]
 
 
+def test_two_parts_with_the_same_name_do_not_collide():
+    """A PMS that exports two files under one name, or a forward that repeats
+    an attachment: one name for two payloads would lose one of them."""
+    raw = _message(
+        (_PDF, "application", "pdf", "same.pdf"),
+        (_PDF + b"second", "application", "pdf", "same.pdf"),
+    )
+    assert [name for name, _ in intake.attachments_of(raw)] == ["same.pdf", "same-2.pdf"]
+
+
+def test_only_the_final_extension_is_replaced_by_the_magic_one():
+    raw = _message((_PDF, "application", "vnd.ms-excel", "report.2026.xlsx"))
+    assert [name for name, _ in intake.attachments_of(raw)] == ["report.2026.pdf"]
+
+
 def test_a_forwarded_report_is_found():
     """The night auditor forwards the PMS email rather than re-sending the
     file; the report is then inside a `message/rfc822` part."""
@@ -487,3 +663,30 @@ def test_a_message_with_no_attachments_is_an_empty_list():
 
 def test_unparseable_bytes_are_an_empty_list_not_an_exception():
     assert intake.attachments_of(b"\x00\x01\x02 not a message") == []
+
+
+# --- the import graph ---------------------------------------------------------
+
+
+def test_intake_imports_no_parser():
+    """The webhook imports this module to decide whether a message is worth
+    opening. Pulling pdfminer, openpyxl, numpy and Pillow in to answer that is
+    work done before anything is authenticated, and it is what dragging
+    `adaptors.reader` in for `is_pdf` used to cost. A subprocess, because
+    `sys.modules` in this one is already full of everything."""
+    probe = (
+        "import sys, usali.intake; "
+        "assert 'usali.adaptors.pdf' not in sys.modules, 'pdf adaptor'; "
+        "assert 'usali.adaptors.xlsx' not in sys.modules, 'xlsx adaptor'; "
+        "assert 'usali.adaptors.reader' not in sys.modules, 'reader'; "
+        "assert 'pdfplumber' not in sys.modules, 'pdfplumber'; "
+        "assert 'pdfminer' not in sys.modules, 'pdfminer'; "
+        "assert 'openpyxl' not in sys.modules, 'openpyxl'; "
+        "assert 'numpy' not in sys.modules, 'numpy'; "
+        "assert 'PIL' not in sys.modules, 'PIL'; "
+        "assert 'sqlalchemy' not in sys.modules, 'sqlalchemy'"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=False
+    )
+    assert done.returncode == 0, done.stderr
