@@ -14,6 +14,7 @@ a live surface.
 At a glance:
 
 - **Ingestion** — detect → parse → map (USALI dictionary) → Core facts; transactional, fail-loud. Uploads are processed in memory; the only file kept is a redacted words extract of the recognized reports (`retention.py`), or an error record on failure — never the upload.
+- **Emailed intake** — a PMS mails its night audit to a per-property address; a Cloudflare Email Worker signs the raw message and POSTs it to `/api/intake/email`, where the address's local part resolves the property and its org, and each attachment goes through the same `ingestion.process_document_bytes` call and the same redaction gate an operator's upload goes through. Every message is recorded in `email_intake_event`. Turning it on is a manual procedure: [`runbooks/email-intake.md`](runbooks/email-intake.md).
 - **Identity** — Keycloak (OIDC), one realm + Organizations; per-request authority comes from DB grants, not token roles.
 - **Tenancy** — shared-schema `org_id` behind a two-wall RLS design; composite `(org_id, x_id)` FKs on the money/PII spine.
 - **PII** — HPKE client-side sealing for store-and-forward secrets; symmetric field encryption for compute-on data; per-org photo keys.

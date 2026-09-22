@@ -1288,6 +1288,12 @@ def test_j3_downgrade_drops_the_column_with_data_present(populated_url):
 # `pms_interest_request` joins for the same reason (Part-2): platform-level PMS
 # demand read across orgs — it stores the requesting workspace as an `org_alias`
 # STRING, deliberately carrying no org_id at all.
+# `property_intake_address` (OH-23, o1a0intake) is deliberately NOT here even
+# though it is plain Base rather than OrgScoped: membership in this set is
+# tested below as "has no org_id column at all", and that table DOES carry a
+# NOT NULL org_id — the address is what resolves the tenant. What it lacks is
+# the RLS wall, and that absence is enumerated in
+# `test_l2_rls_wall.py::test_the_rls_inventory_is_complete_and_forced`, not here.
 _L1_ORG_INDEPENDENT = {
     "usali_schedule", "usali_mapping_dictionary", "invite", "otp_challenge",
     "pms_interest_request",

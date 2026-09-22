@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from tests.employees import make_employee
 from tests.grants import grant_role
+from tests.conftest import prod_settings
 from usali.config import Settings
 from usali.db import make_session_factory
 from usali.keycloak_admin import InMemoryKeycloakAdmin
@@ -73,7 +74,7 @@ _REAL_FIELD_KEY = "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ=="
 
 def test_prod_without_an_injected_opener_refuses_the_in_process_key():
     # env=prod must NOT silently build a SoftwareOpener from the in-process key.
-    settings = Settings(env="prod", field_encryption_key=_REAL_FIELD_KEY)
+    settings = prod_settings(field_encryption_key=_REAL_FIELD_KEY)
     with pytest.raises(RuntimeError, match="HSM-backed Opener"):
         _opener_from_settings(settings)
 
@@ -86,7 +87,7 @@ def test_dev_builds_a_software_opener_from_settings():
 @pytest.mark.parametrize("env", ["production", "PROD", "prod\n", "staging"])
 def test_any_non_dev_env_refuses_the_in_process_opener(env):
     # Fail closed: the opener guard must NOT key off the exact string "prod".
-    settings = Settings(env=env, field_encryption_key=_REAL_FIELD_KEY)
+    settings = prod_settings(env=env, field_encryption_key=_REAL_FIELD_KEY)
     with pytest.raises(RuntimeError, match="HSM-backed Opener"):
         _opener_from_settings(settings)
 

@@ -75,6 +75,8 @@ def test_tables_registered():
         "journal_line",
         "gl_posting_ledger",
         "gl_period_event",
+        "property_intake_address",
+        "email_intake_event",
     }
 
 

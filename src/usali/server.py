@@ -44,6 +44,8 @@ from usali.payroll_run_api import router as payroll_run_router
 from usali.photo_store import PhotoStore, photo_store_from_settings
 from usali.pii_api import router as pii_router
 from usali.preview import PreviewPayload, build_financial_preview
+from usali.intake_address_api import router as intake_address_router
+from usali.intake_api import router as intake_router
 from usali.ratelimit import RateLimiter
 from usali.recognition import display_name, recognize_vendor
 from usali.redaction import redact
@@ -451,6 +453,9 @@ def create_app(
     app.include_router(portal_router, dependencies=operator_gates)
     app.include_router(workforce_router, dependencies=operator_gates)
     app.include_router(property_config_router, dependencies=operator_gates)
+    # The night-audit email address and its event log (D-OH23.8): the same
+    # prefix and the same gates as the property-config routes above.
+    app.include_router(intake_address_router, dependencies=operator_gates)
     app.include_router(night_audit_router, dependencies=operator_gates)
     app.include_router(checklist_router, dependencies=operator_gates)
     # The per-tenant connect surface (OH-17). EVERY route inside narrows to
@@ -499,6 +504,17 @@ def create_app(
     # Public, UNGATED signup surface (Track B/B1) — like kiosk_router, mounted
     # without operator_gates. Its own invite + OTP checks are the gate.
     app.include_router(signup_router)
+    # The emailed night-audit webhook (OH-23, D-OH23.2). The third non-OIDC
+    # surface, and mounted without operator_gates for the same reason as the
+    # two above: its authentication is the HMAC over the posted body, checked
+    # inside the route. Unlike the kiosk it is multi-org by construction — the
+    # intake address row is what resolves the tenant.
+    app.include_router(intake_router)
+    # A ceiling on the route, keyed globally rather than per client IP: one
+    # worker posts here (D-OH23.1), so there is no per-client budget to hand
+    # out. A 429 is non-2xx, which is what makes the worker forward to the
+    # fallback mailbox rather than drop the message under a flood.
+    app.state.intake_rate_limiter = RateLimiter(max_events=120, window_seconds=60.0)
 
     @app.post("/ingest", dependencies=operator_gates)
     async def ingest(request: Request, file: UploadFile) -> dict[str, object]:

@@ -8,6 +8,7 @@ import pytest
 
 from pathlib import Path
 
+from tests.conftest import prod_settings
 from usali.config import Settings
 
 _REAL_KEY = "bm90LWEtcmVhbC1rZXktYnV0LTMyLWJ5dGVzLWxvbmchIQ=="  # 32 bytes, base64
@@ -34,16 +35,14 @@ def test_prod_cannot_enable_matching_without_a_notice_version():
     notice version the employee was shown, so production with matching on
     and no versioned notice must fail at construction, not at enrollment."""
     with pytest.raises(ValueError, match="biometric_notice_version"):
-        Settings(
-            env="prod",
+        prod_settings(
             field_encryption_key=_REAL_KEY,
             biometric_matching_enabled=True,
         )
 
 
 def test_prod_with_a_notice_version_may_enable_matching():
-    s = Settings(
-        env="prod",
+    s = prod_settings(
         field_encryption_key=_REAL_KEY,
         biometric_matching_enabled=True,
         biometric_notice_version="2026-07-notice-v1",
@@ -58,5 +57,5 @@ def test_dev_may_enable_matching_without_a_notice_version():
 
 
 def test_prod_with_matching_off_needs_no_notice_version():
-    s = Settings(env="prod", field_encryption_key=_REAL_KEY)
+    s = prod_settings(field_encryption_key=_REAL_KEY)
     assert s.biometric_matching_enabled is False
