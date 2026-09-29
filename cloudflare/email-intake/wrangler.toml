@@ -2,6 +2,15 @@ name = "oh-email-intake"
 main = "src/worker.js"
 compatibility_date = "2026-09-21"
 
+# This worker is reached only by Email Routing (its export is `email`, not
+# `fetch`), so it needs neither a workers.dev subdomain nor an HTTP route.
+# Without this line `wrangler deploy` uploads the bundle and then exits 1
+# because the account has never registered a workers.dev subdomain — which
+# is what failed the first "Deploy email intake worker" run
+# (actions/runs/36537299878, 2026-09-29). It also keeps the worker off any
+# public URL, so nothing can reach it except a message.
+workers_dev = false
+
 # Everything the worker reads out of `env`. The two values here are public —
 # the URL is the app's own endpoint and the cap is a number — and the two
 # SECRETS are not listed: `INTAKE_SECRET` and `FALLBACK_ADDRESS` are set by
