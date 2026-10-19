@@ -7,23 +7,23 @@ name = "open-hospitality"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
-    "sqlalchemy>=2.0.54",
+    "sqlalchemy>=2.1.4",
     "alembic>=1.20.0",
-    "psycopg[binary]>=3.3.5",
-    "pydantic>=2.13.5",
-    "pydantic-settings>=2.15.0",
-    "typer>=0.27.2",
+    "psycopg[binary]>=3.3.6",
+    "pydantic>=2.14.1",
+    "pydantic-settings>=2.16.0",
+    "typer>=0.27.3",
     "pdfplumber>=0.11.10",
     "pyyaml>=6.0.3",
     "watchdog>=6.0.0",
-    "fastapi>=0.141.1",
-    "uvicorn>=0.53.0",
+    "fastapi>=0.143.2",
+    "uvicorn>=0.54.0",
     "python-multipart>=0.0.32",
     "httpx>=0.28.1",
-    "pyjwt[crypto]>=2.14.0",
-    "cryptography>=50.0.1",
+    "pyjwt[crypto]>=2.15.1",
+    "cryptography>=50.0.2",
     "pyhpke>=0.6.5",
-    "google-cloud-storage>=3.14.1",
+    "google-cloud-storage>=3.17.1",
     "defusedxml>=0.7.1",
     "openpyxl>=3.1.5",
 ]
@@ -32,15 +32,15 @@ dependencies = [
 # Face matching (Pillar F): heavy, optional, dark-flagged. The core install
 # never pays for onnxruntime; the engine imports lazily and fails loudly.
 face = [
-    "onnxruntime>=1.30.0",
-    "numpy>=2.5.3",
+    "onnxruntime>=1.31.0",
+    "numpy>=2.5.4",
     "pillow>=12.3.0",
 ]
 dev = [
     "pytest>=9.1.1",
     "testcontainers[postgres]>=4.15.0",
-    "ruff>=0.16.8",
-    "mypy>=2.3.1",
+    "ruff>=0.17.1",
+    "mypy>=2.4.0",
     "types-PyYAML",
     "types-defusedxml",
     "types-openpyxl",
