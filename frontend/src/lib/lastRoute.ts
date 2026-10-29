@@ -4,9 +4,21 @@
 // reload of the bare origin, or the post-login bounce, which always returns to
 // '/' — puts you back where you were. With nothing remembered (a genuine first
 // visit) the entry route opens the dashboard.
+//
+// The memory is PER SUBJECT (issue #103). It used to be per browser: nothing
+// cleared it on logout or signup, so a freshly provisioned owner inherited the
+// previous person's page, and on a shared machine the next login learned where
+// the last one had been. Storing the authenticated subject beside the route and
+// restoring only on a match covers logout, user-switching and signup with one
+// rule, while the intended case — the same person reloading — still works.
 
 const STORAGE_KEY = 'usali.last-route'
 const HOME = '/dashboard'
+
+interface Remembered {
+  href: string
+  subject: string
+}
 
 /**
  * Paths that must never become the restore target: '/' is the entry route
@@ -26,19 +38,46 @@ function restorable(href: string): boolean {
   )
 }
 
-/** Record the current location (pathname + search) as the restore target. */
-export function rememberRoute(href: string): void {
-  if (!restorable(href)) return
+/**
+ * Record the current location (pathname + search) as the restore target for
+ * `subject`. With no subject (not signed in yet, or on an unguarded page) there
+ * is nothing to attribute the route to, so nothing is written — an anonymous
+ * visit must not overwrite a signed-in user's place, and must never be
+ * restored for whoever signs in next.
+ */
+export function rememberRoute(href: string, subject: string | null | undefined): void {
+  if (!subject || !restorable(href)) return
+  const entry: Remembered = { href, subject }
   try {
-    localStorage.setItem(STORAGE_KEY, href)
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(entry))
   } catch {
     // Storage can be unavailable (private mode, blocked cookies). Losing
     // continuity is acceptable; throwing out of a render effect is not.
   }
 }
 
+function read(): Remembered | null {
+  const raw = localStorage.getItem(STORAGE_KEY)
+  if (raw === null || raw === '') return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (
+      parsed !== null && typeof parsed === 'object' &&
+      typeof (parsed as Remembered).href === 'string' &&
+      typeof (parsed as Remembered).subject === 'string'
+    ) {
+      return parsed as Remembered
+    }
+  } catch {
+    // The pre-#103 format was a bare href string with no owner. It cannot be
+    // attributed to anyone, so it is treated as nothing remembered.
+  }
+  return null
+}
+
 /**
- * The page to open at '/': the last one visited, else the dashboard.
+ * The page to open at '/' for `subject`: the last one THAT SUBJECT visited,
+ * else the dashboard. A route remembered by someone else is never returned.
  *
  * `resolves` answers "does the SPA actually serve this href?" and is checked
  * at RESTORE time, not only when the route was remembered. It is a required
@@ -56,11 +95,15 @@ export function rememberRoute(href: string): void {
  * `localStorage` left behind by any future route REMOVAL, which no hand-kept
  * list ever will.
  */
-export function lastRoute(resolves: (href: string) => boolean): string {
+export function lastRoute(
+  resolves: (href: string) => boolean,
+  subject: string | null | undefined,
+): string {
+  if (!subject) return HOME
   try {
-    const stored = localStorage.getItem(STORAGE_KEY)
-    return stored !== null && stored !== '' && restorable(stored) && resolves(stored)
-      ? stored
+    const stored = read()
+    return stored !== null && stored.subject === subject && restorable(stored.href) && resolves(stored.href)
+      ? stored.href
       : HOME
   } catch {
     return HOME
