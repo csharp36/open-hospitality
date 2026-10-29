@@ -6,6 +6,7 @@ import { getNightAudit, ApiError, getPerformance } from '../api/client'
 import type { CoreMetrics, PerformanceResponse } from '../api/types'
 import { useGlobalProperty } from '../lib/propertyContext'
 import { errorMessage } from '../lib/errors'
+import { formatRecon, formatReconDelta, occupancyExceedsCapacity } from '../lib/reconciliation'
 
 /**
  * Core performance statistics (issue #9): the property's occupancy / ADR /
@@ -203,6 +204,11 @@ function PerformanceBody({ data }: { data: PerformanceResponse }) {
             value={formatValue(data.current[kpi.key], kpi.kind)}
             priorPeriod={data.prior_period_delta_pct[kpi.key]}
             priorYear={data.prior_year_delta_pct[kpi.key]}
+            note={
+              kpi.key === 'occupancy' && occupancyExceedsCapacity(data.current.occupancy)
+                ? 'Over 100%: rooms sold exceed rooms available. Check the room inventory in Property config.'
+                : undefined
+            }
           />
         ))}
       </div>
@@ -281,11 +287,21 @@ function PerformanceBody({ data }: { data: PerformanceResponse }) {
         )}
         <ul className="flex flex-col gap-1 text-sm">
           {Object.entries(data.reconciliation).map(([metric, line]) => (
-            <li key={metric} className="flex items-center gap-2">
-              <span className="w-24 capitalize text-ink-muted">{metric}</span>
-              <span className="text-ink">
-                computed {line.computed ?? '—'} vs ingested {line.ingested ?? '—'}
+            <li key={metric} className="flex flex-wrap items-center gap-2">
+              <span className="w-32 text-ink-muted">{metric.replace(/_/g, ' ')}</span>
+              {/* Both sides in the metric's unit; the raw decimals ride in the
+                  tooltip for anyone auditing the arithmetic. */}
+              <span
+                className="font-mono tabular-nums text-ink"
+                title={`computed ${line.computed ?? '—'} vs ingested ${line.ingested ?? '—'}`}
+              >
+                computed {formatRecon(metric, line.computed)} vs ingested {formatRecon(metric, line.ingested)}
               </span>
+              {formatReconDelta(metric, line.computed, line.ingested) !== null && (
+                <span className="font-mono tabular-nums text-ink-muted">
+                  Δ {formatReconDelta(metric, line.computed, line.ingested)}
+                </span>
+              )}
               {line.agrees === false && (
                 <span className="text-xs font-semibold text-danger-red">does not reconcile</span>
               )}
@@ -302,11 +318,14 @@ function KpiCard({
   value,
   priorPeriod,
   priorYear,
+  note,
 }: {
   label: string
   value: string
   priorPeriod: string | null | undefined
   priorYear: string | null | undefined
+  /** A caveat the number cannot be read without (e.g. occupancy over 100%). */
+  note?: string
 }) {
   const pp = formatDelta(priorPeriod)
   const py = formatDelta(priorYear)
@@ -321,6 +340,9 @@ function KpiCard({
     <Card role="region" aria-label={`${label} KPI`}>
       <p className="text-xs font-semibold uppercase tracking-wide text-ink-muted">{label}</p>
       <p className="mt-1 text-2xl font-semibold text-ink">{value}</p>
+      {note !== undefined && (
+        <p role="note" className="mt-1 text-xs text-danger-red">{note}</p>
+      )}
       <dl className="mt-3 flex flex-col gap-1 text-xs">
         <div className="flex items-center justify-between">
           <dt className="text-ink-muted">vs prior period</dt>
