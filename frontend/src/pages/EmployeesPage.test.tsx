@@ -40,6 +40,15 @@ vi.mock('../api/client', async (importOriginal) => ({
   enrollFaceTemplate: vi.fn(),
   deleteFaceTemplate: vi.fn(),
 }))
+// The sick-leave panel talks to its own module; the page only needs the
+// balance read mocked to prove the button opens it.
+vi.mock('../api/sickLeave', () => ({
+  getSickLeave: vi.fn(),
+  recordSickLeaveUsage: vi.fn(),
+  voidSickLeaveUsage: vi.fn(),
+  adjustSickLeave: vi.fn(),
+}))
+import { getSickLeave } from '../api/sickLeave'
 import {
   deleteFaceTemplate,
   enrollFaceTemplate,
@@ -500,5 +509,29 @@ describe('EmployeesPage face enrollment', () => {
     renderPage()
     await screen.findByRole('table', { name: 'Employees' })
     expect(screen.queryByRole('button', { name: 'Face for Gina M' })).not.toBeInTheDocument()
+  })
+
+  // E4: sick leave rides the payroll gate exactly — payroll_admin sees the
+  // action and it opens the panel on that employee; any other role never sees
+  // a button whose first request would 403.
+  it('offers Sick leave to payroll_admin and opens the panel for that employee', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['payroll_admin'] })
+    vi.mocked(getSickLeave).mockResolvedValue({
+      employee_id: 1, balance_hours: '12.5000', usage_cap_hours: '40.0000',
+      accrual_cap_hours: '80.0000', usage_cap_window: 'calendar_year', used_this_year_hours: '24.0000',
+    })
+    renderPage()
+    await screen.findByRole('table', { name: 'Employees' })
+    await userEvent.click(screen.getByRole('button', { name: 'Sick leave for Gina M' }))
+    const summary = await screen.findByRole('region', { name: 'sick leave balance' })
+    expect(within(summary).getByText('12.50 h')).toBeInTheDocument()
+    expect(getSickLeave).toHaveBeenCalledWith(1)
+  })
+
+  it('hides the Sick leave button from roles that cannot write sick leave', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['property_gm'] })
+    renderPage()
+    await screen.findByRole('table', { name: 'Employees' })
+    expect(screen.queryByRole('button', { name: 'Sick leave for Gina M' })).not.toBeInTheDocument()
   })
 })
