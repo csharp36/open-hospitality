@@ -1446,3 +1446,20 @@ export interface GlPostOutcome {
   entry_id: number | null
   message: string | null
 }
+
+/** GET/PUT /api/payroll/properties/{id}/pay-schedule — PayScheduleModel /
+ * PayScheduleBody in src/usali/pii_api.py. `anchor` must sit on the platform
+ * biweekly grid (a whole number of 14-day periods from the platform anchor);
+ * the server refuses a misaligned one with a 422 that names the grid. */
+export interface PaySchedule {
+  property_id: string
+  frequency: string
+  anchor: string
+  check_date_offset_days: number
+}
+
+export interface PayScheduleBody {
+  frequency: string
+  anchor: string
+  check_date_offset_days: number
+}
