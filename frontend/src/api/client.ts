@@ -74,6 +74,7 @@ import type {
   StandardUpsertBody,
   TemplateCreateBody,
   Timecard,
+  TimecardAdjustmentBody,
   TimecardSummary,
   PreviewResponse,
 } from './types'
@@ -1207,4 +1208,23 @@ export async function disconnectIntegration(integration: string): Promise<void> 
 
 export function getAuthorizeUrl(): Promise<AuthorizeUrl> {
   return getJson('/api/integrations/accounting/authorize')
+}
+
+// --- Timecard corrections (approver: org_admin / property_gm) ----------------
+// Punches are immutable; a correction ADDS a synthetic event the server merges
+// into the day's timeline. 409 once the card is approved (locked); 422 for a
+// day or time outside the period, an unknown punch type, or an ambiguous
+// property for a two-property employee. Returns the updated card.
+export async function addTimecardAdjustment(
+  id: number,
+  body: TimecardAdjustmentBody,
+): Promise<Timecard> {
+  const res = await fetch(`/api/timecards/${id}/adjustments`, {
+    method: 'POST',
+    headers: await authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(body),
+  })
+  if (res.status === 401) { redirectToLogin(); await raiseApiError(res) }
+  if (!res.ok) await raiseApiError(res)
+  return res.json() as Promise<Timecard>
 }
