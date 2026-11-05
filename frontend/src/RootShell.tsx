@@ -9,6 +9,7 @@ import { Outlet, useRouterState } from '@tanstack/react-router'
 import Layout from './Layout'
 import { RequireAuth } from './auth/AuthProvider'
 import { login, userManager } from './auth/oidc'
+import { useAuth } from './auth/authContext'
 import { rememberRoute } from './lib/lastRoute'
 
 /**
@@ -70,9 +71,13 @@ export function RootShell() {
   // href, not pathname: the restore target keeps the search params, so a
   // reload returns to the same statement/month, not just the same page.
   const href = useRouterState({ select: (s) => s.location.href })
+  // Remembered PER SUBJECT (#103): with no signed-in user there is nobody to
+  // attribute the page to, so nothing is written and nothing can leak to the
+  // next person who signs in on this browser.
+  const subject = useAuth().user?.profile.sub
   useEffect(() => {
-    rememberRoute(href)
-  }, [href])
+    rememberRoute(href, subject)
+  }, [href, subject])
   if (
     pathname === '/callback' ||
     pathname === '/kiosk' ||
