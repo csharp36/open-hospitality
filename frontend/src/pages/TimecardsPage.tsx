@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Badge, Card, PageHeader, controlClass, tableClass } from '../components/ui'
 import Modal from '../components/Modal'
+import TimecardAdjustmentForm from '../components/TimecardAdjustmentForm'
 import { approveTimecard, getPunchPhoto, getTimecard, getTimecards, reopenTimecard } from '../api/client'
 import type { TimecardDayPunch, TimecardSummary } from '../api/types'
 import { errorMessage } from '../lib/errors'
@@ -637,6 +638,20 @@ export default function TimecardsPage() {
                   <p className="text-sm text-danger-red">
                     Reopen failed: {errorMessage(reopen.error)}
                   </p>
+                )}
+                {/* Corrections only while the card is open — approval locks it
+                    (409 on the server), and Reopen is the way back. The server
+                    returns the whole recomputed card, which replaces the cache
+                    directly; the list refetches for its hour totals. */}
+                {detail.data.status !== 'approved' && (
+                  <TimecardAdjustmentForm
+                    key={detail.data.timecard_id}
+                    timecard={detail.data}
+                    onSaved={(card) => {
+                      qc.setQueryData(['timecard', card.timecard_id], card)
+                      void qc.invalidateQueries({ queryKey: ['timecards'] })
+                    }}
+                  />
                 )}
                 {detail.data.status !== 'approved' && unacknowledged.length > 0 && (
                   <p className="rounded-lg bg-danger-red-soft px-4 py-3 text-sm text-danger-red">

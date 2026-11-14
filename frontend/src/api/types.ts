@@ -1446,3 +1446,18 @@ export interface GlPostOutcome {
   entry_id: number | null
   message: string | null
 }
+
+/** POST /api/timecards/{id}/adjustments — AdjustmentBody in
+ * src/usali/timecard_api.py. `adjusted_at` MUST be timezone-aware ISO 8601:
+ * punches are aware and the server merges both into one sorted timeline, so a
+ * naive value would either break the sort or force a guessed zone that moves
+ * someone's paid hours. `property_id` is optional for a single-property
+ * employee (the server fills it) and required in effect for anyone placed at
+ * two properties on that day. */
+export interface TimecardAdjustmentBody {
+  punch_type: 'clock_in' | 'lunch_start' | 'lunch_end' | 'clock_out'
+  adjusted_at: string
+  business_date: string
+  reason: string
+  property_id?: string
+}

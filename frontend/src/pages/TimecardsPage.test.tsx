@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
@@ -13,10 +13,13 @@ vi.mock('../api/client', async (importOriginal) => ({
   getTimecard: vi.fn(),
   approveTimecard: vi.fn(),
   reopenTimecard: vi.fn(),
+  addTimecardAdjustment: vi.fn(),
   getPunchPhoto: vi.fn(),
   getMe: vi.fn(),
 }))
-import { approveTimecard, reopenTimecard, getPunchPhoto, getTimecard, getTimecards, getMe } from '../api/client'
+import {
+  addTimecardAdjustment, approveTimecard, reopenTimecard, getPunchPhoto, getTimecard, getTimecards, getMe,
+} from '../api/client'
 
 function renderPage() {
   const router = createAppRouter(createMemoryHistory({ initialEntries: ['/timecards'] }))
@@ -151,6 +154,36 @@ describe('TimecardsPage', () => {
     const detail = await screen.findByRole('region', { name: 'timecard detail' })
     expect(within(detail).queryByRole('button', { name: 'Reopen' })).toBeNull()
     expect(within(detail).getByRole('button', { name: 'Approve' })).toBeInTheDocument()
+  })
+
+  // A correction ADDS a punch; the server answers with the recomputed card and
+  // the detail must show those hours, never a locally re-added number.
+  it('an open card takes a correction and shows the hours the server recomputed', async () => {
+    vi.mocked(addTimecardAdjustment).mockResolvedValue({ ...CARD, total_minutes: 540 })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: /Hank H/ }))
+    const detail = await screen.findByRole('region', { name: 'timecard detail' })
+    const form = within(detail).getByRole('region', { name: 'add a correction' })
+    fireEvent.change(within(form).getByLabelText('Day'), { target: { value: '2026-07-07' } })
+    await userEvent.selectOptions(within(form).getByLabelText('Punch'), 'clock_out')
+    fireEvent.change(within(form).getByLabelText('Time'), { target: { value: '17:00' } })
+    await userEvent.type(within(form).getByLabelText('Reason'), 'forgot to clock out')
+    await userEvent.click(within(form).getByRole('button', { name: 'Add correction' }))
+    await waitFor(() => expect(addTimecardAdjustment).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(addTimecardAdjustment).mock.calls[0]![1]).toMatchObject({
+      punch_type: 'clock_out', business_date: '2026-07-07', reason: 'forgot to clock out',
+    })
+    // 540 minutes -> "9h", straight from the response.
+    await waitFor(() => expect(within(detail).getAllByText(/9h/).length).toBeGreaterThan(0))
+  })
+
+  it('an approved card offers no correction form', async () => {
+    vi.mocked(getTimecards).mockResolvedValue([{ ...CARD, status: 'approved' }])
+    vi.mocked(getTimecard).mockResolvedValue({ ...CARD, status: 'approved' })
+    renderPage()
+    await userEvent.click(await screen.findByRole('button', { name: /Hank H/ }))
+    const detail = await screen.findByRole('region', { name: 'timecard detail' })
+    expect(within(detail).queryByRole('region', { name: 'add a correction' })).toBeNull()
   })
 
   // The list is one row per employee PER PERIOD, so it is long by construction.
