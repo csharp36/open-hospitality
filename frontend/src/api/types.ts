@@ -1446,3 +1446,18 @@ export interface GlPostOutcome {
   entry_id: number | null
   message: string | null
 }
+
+/** GET /api/payroll/employees/{id}/sick-leave — SickLeaveStatus in
+ * src/usali/sick_leave_api.py, field-for-field. Every hours figure is a
+ * decimal string; the caps are null when the employee's day length is unknown
+ * (the server then skips cap enforcement, which is the employee-favorable
+ * direction, so the UI must not invent a cap to display). */
+export interface SickLeaveStatus {
+  employee_id: number
+  balance_hours: string
+  usage_cap_hours: string | null
+  accrual_cap_hours: string | null
+  /** The recorded employer window choice, e.g. "calendar_year". */
+  usage_cap_window: string | null
+  used_this_year_hours: string
+}

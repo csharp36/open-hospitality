@@ -22,6 +22,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { Badge, Card, controlClass, controlLargeClass } from '../components/ui'
 import Modal from '../components/Modal'
 import IconButton from '../components/IconButton'
+import SickLeavePanel from '../components/SickLeavePanel'
 import {
   AlertIcon,
   BanknoteIcon,
@@ -320,6 +321,9 @@ export default function EmployeesPage() {
   const [selectedFace, setSelectedFace] = useState<number | null>(null)
   const canSetRate = hasRole(me.data, 'payroll_admin', 'org_admin', 'property_gm')
   const [selectedPayroll, setSelectedPayroll] = useState<number | null>(null)
+  // E4 sick leave rides the payroll gate: the balance is a pay-stub figure and
+  // every write is a payroll_admin action on the server.
+  const [selectedSickLeave, setSelectedSickLeave] = useState<number | null>(null)
   const [onboardOpen, setOnboardOpen] = useState(false)
   const [editing, setEditing] = useState<Employee | null>(null)
   const [confirming, setConfirming] = useState<Employee | null>(null)
@@ -534,6 +538,14 @@ export default function EmployeesPage() {
                         onClick={() => setSelectedPayroll(e.employee_id)}
                       />
                     )}
+                    {canPayroll && (
+                      <IconButton
+                        label={`Sick leave for ${e.full_name}`}
+                        tone="accent"
+                        icon={<ClockIcon width={17} height={17} />}
+                        onClick={() => setSelectedSickLeave(e.employee_id)}
+                      />
+                    )}
                     <IconButton
                       label={`Suspend ${e.full_name}`}
                       tone="warn"
@@ -649,6 +661,18 @@ export default function EmployeesPage() {
           employeeId={selectedPayroll}
           employeeName={selectedEmployee?.full_name ?? `#${selectedPayroll}`}
           onClose={() => setSelectedPayroll(null)}
+        />
+      )}
+
+      {canPayroll && selectedSickLeave !== null && (
+        <SickLeavePanel
+          key={selectedSickLeave}
+          employeeId={selectedSickLeave}
+          employeeName={
+            employees.data?.find((e) => e.employee_id === selectedSickLeave)?.full_name
+              ?? `#${selectedSickLeave}`
+          }
+          onClose={() => setSelectedSickLeave(null)}
         />
       )}
 
