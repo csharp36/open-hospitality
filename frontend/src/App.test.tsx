@@ -19,6 +19,14 @@ vi.mock('./api/checklist', () => ({
   dismissItem: vi.fn(),
   restoreItem: vi.fn(),
 }))
+// The entry route restores the SIGNED-IN SUBJECT's last page (#103), read
+// from oidc outside React; the shell remembers under the same subject from
+// the auth context. Both must agree on who is signed in.
+const SUBJECT = 'kc-tester'
+vi.mock('./auth/oidc', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./auth/oidc')>()),
+  getUser: vi.fn(async () => ({ expired: false, profile: { sub: SUBJECT, preferred_username: 'tester' } })),
+}))
 
 import { getMe } from './api/client'
 import { getChecklist } from './api/checklist'
@@ -27,6 +35,12 @@ import type { Checklist } from './api/types'
 import { CHECKLIST_KEY } from './lib/useChecklist'
 import { AuthContext, type AuthContextValue } from './auth/authContext'
 import { AUTHED_CONTEXT } from './test/fixtures'
+import type { User } from 'oidc-client-ts'
+
+const SUBJECT_CONTEXT: AuthContextValue = {
+  ...AUTHED_CONTEXT,
+  user: { expired: false, profile: { sub: SUBJECT, preferred_username: 'tester' } } as unknown as User,
+}
 
 function renderApp(auth: AuthContextValue = AUTHED_CONTEXT, initialPath = '/sos') {
   const router = createAppRouter(createMemoryHistory({ initialEntries: [initialPath] }))
@@ -86,16 +100,33 @@ describe('app shell', () => {
   })
 
   it('restores the last visited page at /', async () => {
-    localStorage.setItem('usali.last-route', '/upload')
-    renderApp(AUTHED_CONTEXT, '/')
+    localStorage.setItem('usali.last-route', JSON.stringify({ href: '/upload', subject: SUBJECT }))
+    renderApp(SUBJECT_CONTEXT, '/')
     expect(await screen.findByRole('heading', { name: 'Upload Reports' })).toBeInTheDocument()
   })
 
-  it('remembers the page you are on so the next / lands there', async () => {
+  it('remembers the page you are on, under your subject, so the next / lands there', async () => {
     localStorage.clear()
-    renderApp(AUTHED_CONTEXT, '/upload')
+    renderApp(SUBJECT_CONTEXT, '/upload')
     await screen.findByRole('heading', { name: 'Upload Reports' })
-    expect(localStorage.getItem('usali.last-route')).toBe('/upload')
+    expect(JSON.parse(localStorage.getItem('usali.last-route') ?? 'null')).toEqual({
+      href: '/upload', subject: SUBJECT,
+    })
+  })
+
+  // #103: a freshly signed-in owner must not inherit the previous person's page.
+  it('does not restore a page remembered by a different subject — / opens the dashboard', async () => {
+    localStorage.setItem('usali.last-route', JSON.stringify({ href: '/upload', subject: 'someone-else' }))
+    renderApp(SUBJECT_CONTEXT, '/')
+    expect(await screen.findByRole('heading', { name: 'Hotel overview' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Upload Reports' })).not.toBeInTheDocument()
+  })
+
+  it('remembers nothing while signed out, so an anonymous visit cannot seed the next login', async () => {
+    localStorage.clear()
+    renderApp(AUTHED_CONTEXT, '/upload') // a context with no subject
+    await screen.findByRole('heading', { name: 'Upload Reports' })
+    expect(localStorage.getItem('usali.last-route')).toBeNull()
   })
 
   it('dark-mode toggle flips the root class, aria-pressed, and back', async () => {

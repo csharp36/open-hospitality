@@ -12,6 +12,7 @@ import {
 
 import { EDITIONS } from './lib/editions'
 import { lastRoute } from './lib/lastRoute'
+import { getUser } from './auth/oidc'
 import DashboardPage from './pages/DashboardPage'
 import SosPage from './pages/SosPage'
 import CoveragePage from './pages/CoveragePage'
@@ -80,8 +81,10 @@ const dashboardRoute = createRoute({
 const entryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/',
-  beforeLoad: () => {
-    throw redirect({ href: lastRoute(isServedPath), replace: true })
+  beforeLoad: async () => {
+    // Whose page to restore: the signed-in subject's, never the browser's.
+    const user = await getUser()
+    throw redirect({ href: lastRoute(isServedPath, user?.profile.sub), replace: true })
   },
 })
 
