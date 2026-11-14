@@ -148,7 +148,7 @@ def _every_property_has(session: Session, column: InstrumentedAttribute[str]) ->
     # to one row per property; without it the wire carries every historical
     # row and Python throws them away. Behaviour is identical either way —
     # which is why no cheap test guards this. Do not "simplify" it out.
-    covered = {pid for (pid,) in session.execute(select(distinct(column)))}
+    covered = {pid for (pid,) in session.execute(select(column).distinct())}
     return properties <= covered
 
 

@@ -1239,6 +1239,10 @@ def summary_operating_statement_from_journal(
         )
         .distinct()
     ).all():
+        if schedule is None:
+            # Already excluded by the IN clause above; this narrows the
+            # Optional column type for the checker, nothing more.
+            continue
         subs_of.setdefault(schedule, set()).add(sub)
     fanned = {s: subs for s, subs in subs_of.items() if len(subs) > 1}
     if fanned:
@@ -2382,8 +2386,10 @@ def sos_journal_parity(
         )
         .group_by(UsaliFinancialFact.gl_account_code)
     ).all()
+    # `code is not None` restates the IS NOT NULL filter above for the
+    # checker: the column is Optional and the row type now says so.
     facts = {code: Decimal(str(total)).quantize(Decimal("0.0001"))
-             for code, total in fact_rows}
+             for code, total in fact_rows if code is not None}
 
     journal = _journal_nets(session, property_id, date_from, date_to)
 
