@@ -933,7 +933,7 @@ def week_projection(
 # --- publish ---------------------------------------------------------------
 
 
-def _publish_lock_stmt(schedule_id: int) -> Select[tuple[Schedule]]:
+def _publish_lock_stmt(schedule_id: int) -> Select[Schedule]:
     """The row lock for the publish path: SELECT ... FOR UPDATE on the
     schedule. Publish is a read-modify-write (version += 1) plus an audit row;
     two racing publishes without the lock would lost-update one version bump
@@ -1124,7 +1124,7 @@ def _hint_int(value: float) -> int:
     return int(Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def _rooms_occupied_select(property_id: str) -> Select[tuple[UsaliStatisticFact]]:
+def _rooms_occupied_select(property_id: str) -> Select[UsaliStatisticFact]:
     return select(UsaliStatisticFact).where(
         UsaliStatisticFact.property_id == property_id,
         UsaliStatisticFact.metric_code == "ROOMS_OCCUPIED",
