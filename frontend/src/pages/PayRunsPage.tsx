@@ -21,6 +21,7 @@ import {
   getPayRuns,
   getProperties,
 } from '../api/client'
+import PayScheduleCard from '../components/PayScheduleCard'
 import { hasRole } from '../lib/roles'
 import { errorMessage } from '../lib/errors'
 
@@ -124,6 +125,10 @@ export default function PayRunsPage() {
         title="Pay runs"
         subtitle="Run an approved pay period through the payroll provider and pull back actuals."
       />
+
+      {/* The schedule a run is cut against: same payroll_admin gate as the
+          runs themselves, scoped to the property picked below. */}
+      {propertyId !== '' && <PayScheduleCard key={propertyId} propertyId={propertyId} />}
 
       <Card>
         <form

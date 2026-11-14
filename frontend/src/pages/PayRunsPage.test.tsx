@@ -18,6 +18,14 @@ vi.mock('../api/client', async (importOriginal) => ({
   createPayRun: vi.fn(),
   fetchPayRunResults: vi.fn(),
 }))
+// The pay-schedule card has its own module; null = "not set" keeps the
+// existing tests' page quiet, and one test below gives it a schedule.
+vi.mock('../api/paySchedule', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api/paySchedule')>()),
+  getPaySchedule: vi.fn(async () => null),
+  putPaySchedule: vi.fn(),
+}))
+import { getPaySchedule } from '../api/paySchedule'
 import {
   ApiError,
   createPayRun,
@@ -246,5 +254,20 @@ describe('PayRunsPage', () => {
       await screen.findByText('Pay runs require the payroll_admin role.'),
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Create pay run' })).not.toBeInTheDocument()
+  })
+})
+
+describe('PayRunsPage pay schedule', () => {
+  it('shows the selected property’s pay schedule above the run controls', async () => {
+    vi.mocked(getMe).mockResolvedValue({ subject: 's', username: 'u', roles: ['payroll_admin'] })
+    vi.mocked(getProperties).mockResolvedValue([HISJ_PROPERTY])
+    vi.mocked(getPayRuns).mockResolvedValue([])
+    vi.mocked(getPaySchedule).mockResolvedValue({
+      property_id: 'HISJ', frequency: 'biweekly', anchor: '2026-01-05', check_date_offset_days: 5,
+    })
+    renderPage()
+    const region = await screen.findByRole('region', { name: 'pay schedule' })
+    expect(await within(region).findByText('2026-01-05')).toBeInTheDocument()
+    expect(getPaySchedule).toHaveBeenCalledWith('HISJ')
   })
 })
