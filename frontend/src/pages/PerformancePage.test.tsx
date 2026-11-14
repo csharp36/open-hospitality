@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { RouterProvider, createMemoryHistory } from '@tanstack/react-router'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AuthContext } from '../auth/authContext'
 import { AUTHED_CONTEXT } from '../test/fixtures'
@@ -225,5 +225,34 @@ describe('PerformancePage', () => {
     renderPage()
     expect(await screen.findByText(/failed to load/i)).toBeInTheDocument()
     expect(screen.queryByText(/no performance data for this window/i)).not.toBeInTheDocument()
+  })
+})
+
+describe('PerformancePage reconciliation readability', () => {
+  it('shows both sides in the metric’s unit with the gap, and keeps the raw decimals in the tooltip', async () => {
+    renderPage()
+    const recon = await screen.findByRole('region', { name: 'reconciliation' })
+    // Fixture: occupancy computed 0.8000 vs ingested 0.7100 — never the raw strings on screen.
+    const line = within(recon).getByText('computed 80.0% vs ingested 71.0%')
+    expect(line).toHaveAttribute('title', 'computed 0.8000 vs ingested 0.7100')
+    expect(within(recon).getByText('Δ +9.0 pts')).toBeInTheDocument()
+    expect(within(recon).queryByText(/0\.8000/)).not.toBeInTheDocument()
+    // ADR agrees: formatted as money, no "does not reconcile" on its row.
+    expect(within(recon).getByText('computed $150.00 vs ingested $150.20')).toBeInTheDocument()
+  })
+
+  it('flags occupancy above 100% on its tile as an inventory problem, not a result', async () => {
+    const r = sampleResponse()
+    vi.mocked(getPerformance).mockResolvedValue({ ...r, current: { ...r.current, occupancy: '1.0285' } })
+    renderPage()
+    const tile = await screen.findByRole('region', { name: 'Occupancy KPI' })
+    expect(within(tile).getByText('102.8%')).toBeInTheDocument()
+    expect(within(tile).getByRole('note')).toHaveTextContent(/Over 100%.*room inventory/)
+  })
+
+  it('shows no such flag at or below 100%', async () => {
+    renderPage()
+    const tile = await screen.findByRole('region', { name: 'Occupancy KPI' })
+    expect(within(tile).queryByRole('note')).not.toBeInTheDocument()
   })
 })
