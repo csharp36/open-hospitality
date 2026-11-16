@@ -9,14 +9,14 @@ requires-python = ">=3.12"
 dependencies = [
     "sqlalchemy>=2.1.8",
     "alembic>=1.20.1",
-    "psycopg[binary]>=3.3.8",
+    "psycopg[binary]>=3.3.9",
     "pydantic>=2.14.3",
-    "pydantic-settings>=2.16.2",
-    "typer>=0.28.0",
+    "pydantic-settings>=2.16.3",
+    "typer>=0.29.1",
     "pdfplumber>=0.11.10",
     "pyyaml>=6.0.3",
     "watchdog>=7.1.0",
-    "fastapi>=0.162.0",
+    "fastapi>=0.162.6",
     "uvicorn>=0.54.0",
     "python-multipart>=0.0.33",
     "httpx>=0.28.1",
@@ -32,14 +32,14 @@ dependencies = [
 # Face matching (Pillar F): heavy, optional, dark-flagged. The core install
 # never pays for onnxruntime; the engine imports lazily and fails loudly.
 face = [
-    "onnxruntime>=1.31.1",
+    "onnxruntime>=1.32.0",
     "numpy>=2.5.4",
     "pillow>=13.0.0",
 ]
 dev = [
     "pytest>=9.2.0",
     "testcontainers[postgres]>=4.15.0",
-    "ruff>=0.17.4",
+    "ruff>=0.17.5",
     "mypy>=2.4.1",
     "types-PyYAML",
     "types-defusedxml",
